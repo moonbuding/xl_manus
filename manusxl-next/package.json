@@ -24,6 +24,7 @@
     "e2e:dashboard": "node scripts/e2e-dashboard.mjs",
     "e2e:billing": "node scripts/e2e-billing.mjs",
     "e2e:audit": "node scripts/e2e-audit.mjs",
+    "e2e:my-computer": "node scripts/e2e-my-computer.mjs",
     "e2e:model-router": "node scripts/e2e-model-router.mjs",
     "e2e:model-quality": "node scripts/e2e-model-quality.mjs",
     "e2e:fallback": "node scripts/e2e-fallback-benchmark.mjs",

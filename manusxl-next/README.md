@@ -27,6 +27,8 @@ MANUSXL_SANDBOX_CPUS=1
 MANUSXL_SANDBOX_NETWORK=0
 MANUSXL_SANDBOX_POOL=1
 MANUSXL_WORKSPACE_QUOTA_MB=5120
+MANUSXL_MY_COMPUTER_ALLOWED_ROOTS=/Users/you/Downloads
+MANUSXL_MY_COMPUTER_PAUSED=false
 ```
 
 没有配置 `DEEPSEEK_API_KEY` 时，系统会使用本地回退文案，仍可验证任务流、SSE 和交付物下载。DeepSeek V4 默认用 `MANUSXL_DEEPSEEK_THINKING=disabled`，让规划和最终回答稳定返回 `message.content`；需要研究 `reasoning_content` 时再改成 `enabled`。
@@ -175,6 +177,14 @@ npm run e2e:local-browser:rehearsal
 该脚本会验证本地浏览器状态接口的登录保护、localhost 安全限制、CDP 状态、标签页列表和 snapshot 返回。读取页面正文默认需要配置 `MANUSXL_LOCAL_BROWSER_DOMAIN_ALLOWLIST`。
 
 Settings / 本地浏览器面板提供“登录态演练”入口：`/local-browser/rehearsal`。它会用当前 ManusXL 登录 Cookie 模拟付费文章正文，适合在 Chrome 远程调试模式下验证 local_browser 是否读到了用户本机浏览器的已登录态。`e2e:local-browser:rehearsal` 会自动启动本机 Chrome CDP、注入登录 Cookie、设置 `localhost` allowlist，并通过后端 snapshot 读回登录态正文标记。
+
+My Computer MVP 验收：
+
+```bash
+npm run e2e:my-computer
+```
+
+该脚本会验证 My Computer 本地桥接、允许目录、文件扫描、分类 dry-run + 授权执行、内容查重 dry-run、应用启动/剪贴板/鼠标动作授权、路径越权拦截和审计日志。Settings / My Computer 面板可配置允许目录、暂停本机动作，并查看最近操作。
 
 批量文件处理验收：
 

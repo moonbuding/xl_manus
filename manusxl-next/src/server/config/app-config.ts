@@ -24,6 +24,8 @@ export interface StoredAppConfig {
   promptCacheEnabled?: boolean;
   localBrowserDomainAllowlist?: string[];
   localBrowserPaused?: boolean;
+  myComputerAllowedRoots?: string[];
+  myComputerPaused?: boolean;
 }
 
 const secretFile = dataPath("config-secret");
@@ -229,6 +231,29 @@ function readStoredDomainAllowlist(value: string | undefined) {
   return normalizeDomainAllowlist(value);
 }
 
+function normalizeFilesystemRoots(value: string | string[] | undefined) {
+  const values = Array.isArray(value) ? value : (value ?? "").split(/[\n,]/);
+  return Array.from(
+    new Set(
+      values
+        .map((item) => item.trim())
+        .filter(Boolean)
+        .map((item) => item.replace(/^~(?=$|\/|\\)/, process.env.HOME ?? "~"))
+    )
+  ).slice(0, 12);
+}
+
+function readStoredFilesystemRoots(value: string | undefined) {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (Array.isArray(parsed)) return normalizeFilesystemRoots(parsed.map(String));
+  } catch {
+    return normalizeFilesystemRoots(value);
+  }
+  return normalizeFilesystemRoots(value);
+}
+
 export function getStoredAppConfig(): StoredAppConfig {
   const store = getConfigStore();
   const temperature = Number(store.get("runtime.temperature"));
@@ -236,6 +261,8 @@ export function getStoredAppConfig(): StoredAppConfig {
   const taskBudgetUsd = Number(store.get("runtime.taskBudgetUsd"));
   const promptCacheEnabled = store.get("runtime.promptCacheEnabled");
   const localBrowserPaused = store.get("localBrowser.paused");
+  const myComputerPaused = store.get("myComputer.paused");
+  const myComputerAllowedRoots = readStoredFilesystemRoots(store.get("myComputer.allowedRoots"));
   const localBrowserDomainAllowlist = readStoredDomainAllowlist(
     store.get("localBrowser.domainAllowlist")
   );
@@ -252,7 +279,9 @@ export function getStoredAppConfig(): StoredAppConfig {
     promptCacheEnabled:
       promptCacheEnabled === undefined ? undefined : promptCacheEnabled === "true",
     localBrowserDomainAllowlist,
-    localBrowserPaused: localBrowserPaused === undefined ? undefined : localBrowserPaused === "true"
+    localBrowserPaused: localBrowserPaused === undefined ? undefined : localBrowserPaused === "true",
+    myComputerAllowedRoots,
+    myComputerPaused: myComputerPaused === undefined ? undefined : myComputerPaused === "true"
   };
 }
 
@@ -260,6 +289,9 @@ export function getAppConfig() {
   const stored = getStoredAppConfig();
   const envLocalBrowserDomainAllowlist = normalizeDomainAllowlist(
     process.env.MANUSXL_LOCAL_BROWSER_DOMAIN_ALLOWLIST
+  );
+  const envMyComputerAllowedRoots = normalizeFilesystemRoots(
+    process.env.MANUSXL_MY_COMPUTER_ALLOWED_ROOTS
   );
   return {
     apiKey: stored.apiKey || process.env.DEEPSEEK_API_KEY,
@@ -280,7 +312,12 @@ export function getAppConfig() {
       stored.localBrowserDomainAllowlist && stored.localBrowserDomainAllowlist.length > 0
         ? stored.localBrowserDomainAllowlist
         : envLocalBrowserDomainAllowlist,
-    localBrowserPaused: stored.localBrowserPaused ?? process.env.MANUSXL_LOCAL_BROWSER_PAUSED === "true"
+    localBrowserPaused: stored.localBrowserPaused ?? process.env.MANUSXL_LOCAL_BROWSER_PAUSED === "true",
+    myComputerAllowedRoots:
+      stored.myComputerAllowedRoots && stored.myComputerAllowedRoots.length > 0
+        ? stored.myComputerAllowedRoots
+        : envMyComputerAllowedRoots,
+    myComputerPaused: stored.myComputerPaused ?? process.env.MANUSXL_MY_COMPUTER_PAUSED === "true"
   };
 }
 
@@ -290,6 +327,14 @@ export function getLocalBrowserDomainAllowlist() {
 
 export function isLocalBrowserPaused() {
   return getAppConfig().localBrowserPaused;
+}
+
+export function getMyComputerAllowedRoots() {
+  return getAppConfig().myComputerAllowedRoots;
+}
+
+export function isMyComputerPaused() {
+  return getAppConfig().myComputerPaused;
 }
 
 export function updateAppConfig(config: StoredAppConfig) {
@@ -335,6 +380,15 @@ export function updateAppConfig(config: StoredAppConfig) {
   }
   if (config.localBrowserPaused !== undefined) {
     store.set("localBrowser.paused", String(config.localBrowserPaused));
+  }
+  if (config.myComputerAllowedRoots !== undefined) {
+    store.set(
+      "myComputer.allowedRoots",
+      JSON.stringify(normalizeFilesystemRoots(config.myComputerAllowedRoots))
+    );
+  }
+  if (config.myComputerPaused !== undefined) {
+    store.set("myComputer.paused", String(config.myComputerPaused));
   }
   return getAppConfig();
 }

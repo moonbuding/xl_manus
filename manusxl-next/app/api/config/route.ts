@@ -7,8 +7,9 @@ import { getDeepSeekConfig } from "@/server/llm/deepseek";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export function GET() {
+export function GET(request: Request) {
   const config = getDeepSeekConfig();
+  const user = currentUserFromRequest(request);
   return NextResponse.json({
     model: config.model,
     baseUrl: config.baseUrl,
@@ -20,6 +21,8 @@ export function GET() {
     finalModel: config.finalModel,
     promptCacheEnabled: config.promptCacheEnabled,
     localBrowserDomainAllowlist: config.localBrowserDomainAllowlist,
+    myComputerAllowedRoots: user ? config.myComputerAllowedRoots : [],
+    myComputerPaused: user ? config.myComputerPaused : true,
     hasApiKey: Boolean(config.apiKey)
   });
 }
@@ -40,6 +43,8 @@ export async function PATCH(request: Request) {
     finalModel?: string;
     promptCacheEnabled?: boolean;
     localBrowserDomainAllowlist?: string[];
+    myComputerAllowedRoots?: string[];
+    myComputerPaused?: boolean;
   };
   const config = updateAppConfig({
     apiKey: body.apiKey,
@@ -52,7 +57,9 @@ export async function PATCH(request: Request) {
     executionModel: body.executionModel,
     finalModel: body.finalModel,
     promptCacheEnabled: body.promptCacheEnabled,
-    localBrowserDomainAllowlist: body.localBrowserDomainAllowlist
+    localBrowserDomainAllowlist: body.localBrowserDomainAllowlist,
+    myComputerAllowedRoots: body.myComputerAllowedRoots,
+    myComputerPaused: body.myComputerPaused
   });
   safeRecordAuditLog({
     userId: user.id,
@@ -77,6 +84,8 @@ export async function PATCH(request: Request) {
     finalModel: config.finalModel,
     promptCacheEnabled: config.promptCacheEnabled,
     localBrowserDomainAllowlist: config.localBrowserDomainAllowlist,
+    myComputerAllowedRoots: config.myComputerAllowedRoots,
+    myComputerPaused: config.myComputerPaused,
     hasApiKey: Boolean(config.apiKey)
   });
 }

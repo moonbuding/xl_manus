@@ -62,6 +62,13 @@ import type {
   LocalBrowserStatus,
   McpCatalogItem,
   McpServer,
+  MyComputerFileEntry,
+  MyComputerFilePlanMode,
+  MyComputerFilePlanResponse,
+  MyComputerFileScanResponse,
+  MyComputerOperation,
+  MyComputerOperationKind,
+  MyComputerStatus,
   Task,
   TaskTemplate,
   TaskStatus,
@@ -144,6 +151,16 @@ const defaultSkills: AgentSkill[] = [
     description: "生成地点顺序、路线段、OpenStreetMap 链接和可下载地图式 HTML/JSON 交付物。",
     triggers: ["地图", "路线", "行程", "旅行", "旅游", "地址", "附近", "周边", "map", "route"],
     toolsRequired: ["map_planner", "web_research", "artifact_writer"],
+    source: "builtin",
+    enabled: true,
+    validationStatus: "allowed"
+  },
+  {
+    id: "builtin-my-computer",
+    name: "my-computer",
+    description: "连接本机允许目录，生成文件分类、查重、重命名 dry-run，并创建应用/剪贴板/键鼠授权请求。",
+    triggers: ["My Computer", "本机", "本地文件", "Downloads", "剪贴板", "启动应用", "键鼠"],
+    toolsRequired: ["my_computer", "file_workspace"],
     source: "builtin",
     enabled: true,
     validationStatus: "allowed"
@@ -258,6 +275,10 @@ function formatCny(value: number) {
   return `¥${value.toFixed(value < 0.1 ? 4 : 2)}`;
 }
 
+function basenameForUi(pathname: string) {
+  return pathname.split(/[\\/]/).filter(Boolean).pop() ?? pathname;
+}
+
 async function readJson<T>(response: Response, fallback?: T): Promise<T> {
   const text = await response.text();
   if (!text.trim()) {
@@ -290,6 +311,17 @@ function parseDomainAllowlist(value: string) {
         })
         .map((item) => item.replace(/^\*\./, "").replace(/^\.+/, "").replace(/\.+$/, ""))
         .filter((item) => /^[a-z0-9-]+(\.[a-z0-9-]+)*$/i.test(item))
+    )
+  );
+}
+
+function parseFilesystemRoots(value: string) {
+  return Array.from(
+    new Set(
+      value
+        .split(/[\n,]/)
+        .map((item) => item.trim())
+        .filter(Boolean)
     )
   );
 }
@@ -455,6 +487,10 @@ export function AgentWorkspace() {
   const [localBrowserActionResult, setLocalBrowserActionResult] = useState<LocalBrowserActionResult | null>(null);
   const [localBrowserSafety, setLocalBrowserSafety] = useState<LocalBrowserSafetyState | null>(null);
   const [localBrowserPairing, setLocalBrowserPairing] = useState<LocalBrowserPairingStatus | null>(null);
+  const [myComputerStatus, setMyComputerStatus] = useState<MyComputerStatus | null>(null);
+  const [myComputerScan, setMyComputerScan] = useState<MyComputerFileScanResponse | null>(null);
+  const [myComputerPlan, setMyComputerPlan] = useState<MyComputerFilePlanResponse | null>(null);
+  const [myComputerActionResult, setMyComputerActionResult] = useState<MyComputerOperation | null>(null);
   const [ocrStatus, setOcrStatus] = useState<OcrStatus | null>(null);
   const [templateRun, setTemplateRun] = useState<{
     template: TaskTemplate;
@@ -477,7 +513,8 @@ export function AgentWorkspace() {
     executionModel: "deepseek-v4-flash",
     finalModel: "deepseek-v4-flash",
     promptCacheEnabled: true,
-    localBrowserDomainAllowlist: ""
+    localBrowserDomainAllowlist: "",
+    myComputerAllowedRoots: ""
   });
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [isUploadingSkill, setIsUploadingSkill] = useState(false);
@@ -489,6 +526,12 @@ export function AgentWorkspace() {
   const [isSavingLocalBrowserAllowlist, setIsSavingLocalBrowserAllowlist] = useState(false);
   const [isTogglingLocalBrowserPause, setIsTogglingLocalBrowserPause] = useState(false);
   const [isCreatingLocalBrowserPairing, setIsCreatingLocalBrowserPairing] = useState(false);
+  const [isCheckingMyComputer, setIsCheckingMyComputer] = useState(false);
+  const [isSavingMyComputer, setIsSavingMyComputer] = useState(false);
+  const [isScanningMyComputer, setIsScanningMyComputer] = useState(false);
+  const [isPlanningMyComputer, setIsPlanningMyComputer] = useState(false);
+  const [isApprovingMyComputer, setIsApprovingMyComputer] = useState(false);
+  const [isRunningMyComputerAction, setIsRunningMyComputerAction] = useState(false);
   const [localBrowserEndpoint, setLocalBrowserEndpoint] = useState("http://127.0.0.1:9222");
   const [localBrowserActionDraft, setLocalBrowserActionDraft] = useState({
     action: "navigate" as "navigate" | "click" | "type" | "press",
@@ -497,6 +540,18 @@ export function AgentWorkspace() {
     y: "",
     text: "",
     key: "Enter"
+  });
+  const [myComputerDraft, setMyComputerDraft] = useState({
+    root: "",
+    mode: "classify" as MyComputerFilePlanMode,
+    actionKind: "app_launch" as Extract<
+      MyComputerOperationKind,
+      "app_launch" | "clipboard_write" | "keyboard_shortcut" | "mouse_click"
+    >,
+    actionTarget: "Calculator",
+    actionText: "来自 ManusXL 的剪贴板测试",
+    x: "320",
+    y: "240"
   });
   const [isAddingMcp, setIsAddingMcp] = useState(false);
   const [mcpError, setMcpError] = useState<string | null>(null);
@@ -692,6 +747,28 @@ export function AgentWorkspace() {
     }
   }, []);
 
+  const refreshMyComputerStatus = useCallback(async () => {
+    setIsCheckingMyComputer(true);
+    try {
+      const response = await fetch("/api/my-computer/status", { cache: "no-store" });
+      if (!response.ok) return;
+      const data = await readJson<MyComputerStatus>(response);
+      setMyComputerStatus(data);
+      setSettingsDraft((current) => ({
+        ...current,
+        myComputerAllowedRoots: data.allowedRoots.join("\n")
+      }));
+      setMyComputerDraft((current) => ({
+        ...current,
+        root: current.root || data.allowedRoots[0] || ""
+      }));
+    } catch {
+      setMyComputerStatus(null);
+    } finally {
+      setIsCheckingMyComputer(false);
+    }
+  }, []);
+
   const createLocalBrowserPairing = useCallback(async () => {
     setIsCreatingLocalBrowserPairing(true);
     try {
@@ -795,6 +872,140 @@ export function AgentWorkspace() {
       setIsTogglingLocalBrowserPause(false);
     }
   }, []);
+
+  const saveMyComputerSettings = useCallback(async (paused?: boolean) => {
+    setIsSavingMyComputer(true);
+    try {
+      const response = await fetch("/api/my-computer/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          allowedRoots: parseFilesystemRoots(settingsDraft.myComputerAllowedRoots),
+          paused
+        })
+      });
+      const data = await readJson<MyComputerStatus>(response);
+      setMyComputerStatus(data);
+      setSettingsDraft((current) => ({
+        ...current,
+        myComputerAllowedRoots: data.allowedRoots.join("\n")
+      }));
+      setMyComputerDraft((current) => ({
+        ...current,
+        root: data.allowedRoots.includes(current.root) ? current.root : data.allowedRoots[0] || current.root
+      }));
+    } catch (caught: unknown) {
+      setError(getErrorMessage(caught, "保存 My Computer 设置失败"));
+    } finally {
+      setIsSavingMyComputer(false);
+    }
+  }, [settingsDraft.myComputerAllowedRoots]);
+
+  const scanMyComputerRoot = useCallback(async () => {
+    setIsScanningMyComputer(true);
+    setMyComputerPlan(null);
+    try {
+      const response = await fetch("/api/my-computer/files/scan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          root: myComputerDraft.root,
+          maxFiles: 120,
+          maxDepth: 2
+        })
+      });
+      const data = await readJson<MyComputerFileScanResponse>(response);
+      if (!response.ok) throw new Error((data as { error?: string }).error ?? "扫描失败");
+      setMyComputerScan(data);
+      await refreshMyComputerStatus();
+    } catch (caught: unknown) {
+      setError(getErrorMessage(caught, "扫描本机目录失败"));
+    } finally {
+      setIsScanningMyComputer(false);
+    }
+  }, [myComputerDraft.root, refreshMyComputerStatus]);
+
+  const planMyComputerFiles = useCallback(async () => {
+    setIsPlanningMyComputer(true);
+    try {
+      const response = await fetch("/api/my-computer/files/plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          root: myComputerDraft.root,
+          mode: myComputerDraft.mode,
+          maxFiles: 160
+        })
+      });
+      const data = await readJson<MyComputerFilePlanResponse & { error?: string }>(response);
+      if (!response.ok) throw new Error(data.error ?? "生成文件操作预览失败");
+      setMyComputerPlan(data);
+      setMyComputerActionResult(null);
+      await refreshMyComputerStatus();
+    } catch (caught: unknown) {
+      setError(getErrorMessage(caught, "生成 My Computer 文件计划失败"));
+    } finally {
+      setIsPlanningMyComputer(false);
+    }
+  }, [myComputerDraft.mode, myComputerDraft.root, refreshMyComputerStatus]);
+
+  const approveMyComputerOperation = useCallback(async (operationId: string, decision: "allow_once" | "always" | "deny") => {
+    setIsApprovingMyComputer(true);
+    try {
+      const response = await fetch("/api/my-computer/approvals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ operationId, decision })
+      });
+      const data = await readJson<{ operation?: MyComputerOperation; error?: string }>(response);
+      if (!response.ok || !data.operation) throw new Error(data.error ?? "授权操作失败");
+      setMyComputerActionResult(data.operation);
+      setMyComputerPlan((current) =>
+        current && current.operation.id === data.operation?.id
+          ? { ...current, operation: data.operation }
+          : current
+      );
+      await refreshMyComputerStatus();
+      if (data.operation.kind.startsWith("file_")) {
+        await scanMyComputerRoot();
+      }
+    } catch (caught: unknown) {
+      setError(getErrorMessage(caught, "执行 My Computer 授权操作失败"));
+    } finally {
+      setIsApprovingMyComputer(false);
+    }
+  }, [refreshMyComputerStatus, scanMyComputerRoot]);
+
+  const runMyComputerSystemAction = useCallback(async () => {
+    setIsRunningMyComputerAction(true);
+    try {
+      const response = await fetch("/api/my-computer/actions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: myComputerDraft.actionKind,
+          target:
+            myComputerDraft.actionKind === "clipboard_write"
+              ? undefined
+              : myComputerDraft.actionKind === "mouse_click"
+                ? "screen"
+                : myComputerDraft.actionTarget,
+          text: myComputerDraft.actionKind === "clipboard_write" ? myComputerDraft.actionText : undefined,
+          x: myComputerDraft.actionKind === "mouse_click" ? Number(myComputerDraft.x) : undefined,
+          y: myComputerDraft.actionKind === "mouse_click" ? Number(myComputerDraft.y) : undefined,
+          dryRun: true
+        })
+      });
+      const data = await readJson<{ operation?: MyComputerOperation; error?: string }>(response);
+      if (!response.ok || !data.operation) throw new Error(data.error ?? "创建本机动作失败");
+      setMyComputerActionResult(data.operation);
+      await refreshMyComputerStatus();
+    } catch (caught: unknown) {
+      setError(getErrorMessage(caught, "创建 My Computer 动作失败"));
+    } finally {
+      setIsRunningMyComputerAction(false);
+    }
+  }, [myComputerDraft, refreshMyComputerStatus]);
 
   const refreshOcrStatus = useCallback(async () => {
     try {
@@ -938,6 +1149,7 @@ export function AgentWorkspace() {
         void refreshLocalBrowserStatus();
         void refreshLocalBrowserSafety();
         void refreshLocalBrowserPairing();
+        void refreshMyComputerStatus();
         void refreshOcrStatus();
       });
       void fetch("/api/config", { cache: "no-store" })
@@ -956,7 +1168,12 @@ export function AgentWorkspace() {
             executionModel: data.executionModel,
             finalModel: data.finalModel,
             promptCacheEnabled: data.promptCacheEnabled,
-            localBrowserDomainAllowlist: data.localBrowserDomainAllowlist.join("\n")
+            localBrowserDomainAllowlist: data.localBrowserDomainAllowlist.join("\n"),
+            myComputerAllowedRoots: data.myComputerAllowedRoots.join("\n")
+          }));
+          setMyComputerDraft((current) => ({
+            ...current,
+            root: current.root || data.myComputerAllowedRoots[0] || ""
           }));
         })
         .catch((caught: unknown) => {
@@ -978,6 +1195,7 @@ export function AgentWorkspace() {
     refreshLocalBrowserSafety,
     refreshLocalBrowserPairing,
     refreshLocalBrowserStatus,
+    refreshMyComputerStatus,
     refreshMcpCatalog,
     refreshMcpServers,
     refreshOcrStatus,
@@ -1083,6 +1301,7 @@ export function AgentWorkspace() {
         await refreshSkills();
         await refreshMcpServers();
         await refreshBilling();
+        await refreshMyComputerStatus();
       }
     } catch (caught) {
       setError(getErrorMessage(caught, "认证失败"));
@@ -1264,7 +1483,8 @@ export function AgentWorkspace() {
           executionModel: settingsDraft.executionModel,
           finalModel: settingsDraft.finalModel,
           promptCacheEnabled: settingsDraft.promptCacheEnabled,
-          localBrowserDomainAllowlist: parseDomainAllowlist(settingsDraft.localBrowserDomainAllowlist)
+          localBrowserDomainAllowlist: parseDomainAllowlist(settingsDraft.localBrowserDomainAllowlist),
+          myComputerAllowedRoots: parseFilesystemRoots(settingsDraft.myComputerAllowedRoots)
         })
       });
       const data = await readJson<ConfigResponse>(response);
@@ -1272,7 +1492,8 @@ export function AgentWorkspace() {
       setSettingsDraft((current) => ({
         ...current,
         apiKey: "",
-        localBrowserDomainAllowlist: data.localBrowserDomainAllowlist.join("\n")
+        localBrowserDomainAllowlist: data.localBrowserDomainAllowlist.join("\n"),
+        myComputerAllowedRoots: data.myComputerAllowedRoots.join("\n")
       }));
     } finally {
       setIsSavingSettings(false);
@@ -1848,6 +2069,14 @@ export function AgentWorkspace() {
               本地浏览器
             </div>
             {renderLocalBrowserPanel()}
+          </section>
+
+          <section className="section-panel">
+            <div className="panel-title">
+              <Home size={14} />
+              My Computer
+            </div>
+            {renderMyComputerPanel()}
           </section>
 
           <section className="section-panel">
@@ -2539,6 +2768,352 @@ export function AgentWorkspace() {
               ? `${localBrowserActionResult.action} 已完成：${localBrowserActionResult.title ?? localBrowserActionResult.url ?? "当前页面"}`
               : localBrowserActionResult.error ?? "本地浏览器动作失败。"}
           </p>
+        ) : null}
+      </div>
+    );
+  }
+
+  function renderMyComputerPanel() {
+    const statusLabel = myComputerStatus
+      ? myComputerStatus.connected
+        ? "connected"
+        : "offline"
+      : "unknown";
+    const paused = Boolean(myComputerStatus?.paused);
+    const readyCapabilities = myComputerStatus?.capabilities.filter((capability) => capability.ready).length ?? 0;
+    const pendingCount = myComputerStatus?.pendingApprovals.length ?? 0;
+    const rootLabel = myComputerStatus?.allowedRoots[0] ?? "尚未配置";
+    const latestOperation = myComputerActionResult ?? myComputerPlan?.operation;
+
+    return (
+      <div className="sandbox-panel">
+        <div className="metric-list compact">
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">桌面桥接</span>
+              <span className="metric-meta">
+                {myComputerStatus?.bridge ?? "next-local"} · {myComputerStatus?.platform ?? "loading"}
+              </span>
+            </div>
+            <strong>{statusLabel}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">允许目录</span>
+              <span className="metric-meta">{rootLabel}</span>
+            </div>
+            <strong>{myComputerStatus?.allowedRoots.length ?? 0}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">能力</span>
+              <span className="metric-meta">文件操作、应用启动、剪贴板、键鼠授权</span>
+            </div>
+            <strong>{readyCapabilities}/{myComputerStatus?.capabilities.length ?? 0}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">动作授权</span>
+              <span className="metric-meta">
+                {paused ? "My Computer 已暂停" : pendingCount ? `${pendingCount} 个操作等待确认` : "每次执行前确认"}
+              </span>
+            </div>
+            <strong>{paused ? "paused" : pendingCount ? "pending" : "active"}</strong>
+          </div>
+        </div>
+
+        <label className="settings-field">
+          <span>允许访问的本机目录</span>
+          <textarea
+            value={settingsDraft.myComputerAllowedRoots}
+            onChange={(event) =>
+              setSettingsDraft((current) => ({
+                ...current,
+                myComputerAllowedRoots: event.target.value
+              }))
+            }
+            placeholder={"/Users/you/Downloads\n/Users/you/Documents/Work"}
+          />
+        </label>
+        <div className="panel-actions">
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isCheckingMyComputer}
+            onClick={() => void refreshMyComputerStatus()}
+          >
+            {isCheckingMyComputer ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />}
+            检测连接
+          </button>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isSavingMyComputer}
+            onClick={() => void saveMyComputerSettings(myComputerStatus?.paused)}
+          >
+            {isSavingMyComputer ? <Loader2 size={15} className="spin" /> : <CheckCircle2 size={15} />}
+            保存目录
+          </button>
+          <button
+            type="button"
+            className={paused ? "secondary-button" : "danger-button"}
+            disabled={isSavingMyComputer}
+            onClick={() => void saveMyComputerSettings(!paused)}
+          >
+            {paused ? <Play size={15} /> : <CircleStop size={15} />}
+            {paused ? "恢复 My Computer" : "暂停 My Computer"}
+          </button>
+        </div>
+
+        <div className="browser-action-grid">
+          <label className="settings-field">
+            <span>目标目录</span>
+            <input
+              value={myComputerDraft.root}
+              onChange={(event) =>
+                setMyComputerDraft((current) => ({ ...current, root: event.target.value }))
+              }
+              placeholder={rootLabel}
+            />
+          </label>
+          <label className="settings-field">
+            <span>文件任务</span>
+            <select
+              value={myComputerDraft.mode}
+              onChange={(event) =>
+                setMyComputerDraft((current) => ({
+                  ...current,
+                  mode: event.target.value as MyComputerFilePlanMode
+                }))
+              }
+            >
+              <option value="classify">按类型分类</option>
+              <option value="dedupe">内容查重</option>
+              <option value="rename">批量重命名</option>
+            </select>
+          </label>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isScanningMyComputer}
+            onClick={() => void scanMyComputerRoot()}
+          >
+            {isScanningMyComputer ? <Loader2 size={15} className="spin" /> : <Search size={15} />}
+            扫描
+          </button>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isPlanningMyComputer}
+            onClick={() => void planMyComputerFiles()}
+          >
+            {isPlanningMyComputer ? <Loader2 size={15} className="spin" /> : <FileArchive size={15} />}
+            生成 Dry-run
+          </button>
+        </div>
+
+        {myComputerScan ? (
+          <div className="browser-operation-list">
+            <div className="browser-operation-item">
+              <div>
+                <span>扫描完成</span>
+                <small>
+                  {myComputerScan.root} · {myComputerScan.total} 项
+                  {myComputerScan.truncated ? " · 已截断" : ""}
+                </small>
+              </div>
+              <strong className="operation-status is-completed">scan</strong>
+            </div>
+            {myComputerScan.entries.slice(0, 5).map((entry: MyComputerFileEntry) => (
+              <div className="browser-operation-item" key={entry.path}>
+                <div>
+                  <span>{entry.name}</span>
+                  <small>
+                    {entry.category ?? entry.kind} · {formatSize(entry.size)}
+                  </small>
+                </div>
+                <strong className="operation-status is-started">{entry.kind}</strong>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        {myComputerPlan ? (
+          <div className="browser-operation-list">
+            <div className="browser-operation-item">
+              <div>
+                <span>{myComputerPlan.operation.description}</span>
+                <small>
+                  {myComputerPlan.summary.actionCount} 个动作 · {myComputerPlan.summary.affectedFiles} 个文件
+                </small>
+              </div>
+              <strong className={`operation-status is-${myComputerPlan.operation.status}`}>
+                {myComputerPlan.operation.status}
+              </strong>
+            </div>
+            {myComputerPlan.operation.actions?.slice(0, 6).map((action) => (
+              <div className="browser-operation-item" key={action.id}>
+                <div>
+                  <span>{basenameForUi(action.sourcePath)} → {basenameForUi(action.targetPath)}</span>
+                  <small>{action.reason}</small>
+                </div>
+                <strong className="operation-status is-pending_approval">{action.type}</strong>
+              </div>
+            ))}
+            {myComputerPlan.operation.status === "pending_approval" ? (
+              <div className="panel-actions">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={isApprovingMyComputer}
+                  onClick={() => void approveMyComputerOperation(myComputerPlan.operation.id, "allow_once")}
+                >
+                  {isApprovingMyComputer ? <Loader2 size={15} className="spin" /> : <CheckCircle2 size={15} />}
+                  允许一次
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={isApprovingMyComputer}
+                  onClick={() => void approveMyComputerOperation(myComputerPlan.operation.id, "always")}
+                >
+                  Always Allow
+                </button>
+                <button
+                  type="button"
+                  className="danger-button"
+                  disabled={isApprovingMyComputer}
+                  onClick={() => void approveMyComputerOperation(myComputerPlan.operation.id, "deny")}
+                >
+                  拒绝
+                </button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        <div className="browser-action-grid">
+          <label className="settings-field">
+            <span>系统动作</span>
+            <select
+              value={myComputerDraft.actionKind}
+              onChange={(event) =>
+                setMyComputerDraft((current) => ({
+                  ...current,
+                  actionKind: event.target.value as typeof current.actionKind
+                }))
+              }
+            >
+              <option value="app_launch">启动应用</option>
+              <option value="clipboard_write">写入剪贴板</option>
+              <option value="keyboard_shortcut">键盘快捷键</option>
+              <option value="mouse_click">鼠标点击</option>
+            </select>
+          </label>
+          {myComputerDraft.actionKind === "clipboard_write" ? (
+            <label className="settings-field">
+              <span>剪贴板文本</span>
+              <input
+                value={myComputerDraft.actionText}
+                onChange={(event) =>
+                  setMyComputerDraft((current) => ({ ...current, actionText: event.target.value }))
+                }
+              />
+            </label>
+          ) : myComputerDraft.actionKind === "mouse_click" ? (
+            <div className="browser-coordinate-row">
+              <label className="settings-field">
+                <span>X</span>
+                <input
+                  value={myComputerDraft.x}
+                  onChange={(event) => setMyComputerDraft((current) => ({ ...current, x: event.target.value }))}
+                  inputMode="numeric"
+                />
+              </label>
+              <label className="settings-field">
+                <span>Y</span>
+                <input
+                  value={myComputerDraft.y}
+                  onChange={(event) => setMyComputerDraft((current) => ({ ...current, y: event.target.value }))}
+                  inputMode="numeric"
+                />
+              </label>
+            </div>
+          ) : (
+            <label className="settings-field">
+              <span>{myComputerDraft.actionKind === "app_launch" ? "应用名" : "快捷键"}</span>
+              <input
+                value={myComputerDraft.actionTarget}
+                onChange={(event) =>
+                  setMyComputerDraft((current) => ({ ...current, actionTarget: event.target.value }))
+                }
+                placeholder={myComputerDraft.actionKind === "app_launch" ? "Calculator" : "cmd+c"}
+              />
+            </label>
+          )}
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isRunningMyComputerAction}
+            onClick={() => void runMyComputerSystemAction()}
+          >
+            {isRunningMyComputerAction ? <Loader2 size={15} className="spin" /> : <Play size={15} />}
+            生成授权请求
+          </button>
+        </div>
+
+        {latestOperation ? (
+          <div className="browser-operation-list">
+            <div className="browser-operation-item">
+              <div>
+                <span>{latestOperation.description}</span>
+                <small>{latestOperation.error ?? latestOperation.target}</small>
+              </div>
+              <strong className={`operation-status is-${latestOperation.status}`}>{latestOperation.status}</strong>
+            </div>
+            {latestOperation.status === "pending_approval" && !latestOperation.actions?.length ? (
+              <div className="panel-actions">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={isApprovingMyComputer}
+                  onClick={() => void approveMyComputerOperation(latestOperation.id, "allow_once")}
+                >
+                  允许一次执行
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={isApprovingMyComputer}
+                  onClick={() => void approveMyComputerOperation(latestOperation.id, "always")}
+                >
+                  Always Allow
+                </button>
+                <button
+                  type="button"
+                  className="danger-button"
+                  disabled={isApprovingMyComputer}
+                  onClick={() => void approveMyComputerOperation(latestOperation.id, "deny")}
+                >
+                  拒绝
+                </button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {myComputerStatus?.recentOperations.length ? (
+          <div className="browser-operation-list">
+            {myComputerStatus.recentOperations.slice(0, 4).map((operation) => (
+              <div className="browser-operation-item" key={operation.id}>
+                <div>
+                  <span>{operation.kind}</span>
+                  <small>{operation.description}</small>
+                </div>
+                <strong className={`operation-status is-${operation.status}`}>{operation.status}</strong>
+              </div>
+            ))}
+          </div>
         ) : null}
       </div>
     );

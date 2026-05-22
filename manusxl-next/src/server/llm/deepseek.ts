@@ -101,7 +101,9 @@ export function getDeepSeekConfig() {
     executionModel: config.executionModel,
     finalModel: config.finalModel,
     promptCacheEnabled: config.promptCacheEnabled,
-    localBrowserDomainAllowlist: config.localBrowserDomainAllowlist
+    localBrowserDomainAllowlist: config.localBrowserDomainAllowlist,
+    myComputerAllowedRoots: config.myComputerAllowedRoots,
+    myComputerPaused: config.myComputerPaused
   };
 }
 

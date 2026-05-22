@@ -127,6 +127,102 @@ export interface AuditVerifyResult {
   error?: string;
 }
 
+export type MyComputerBridgeType = "next-local" | "electron" | "tauri";
+
+export type MyComputerOperationKind =
+  | "file_scan"
+  | "file_classify"
+  | "file_dedupe"
+  | "file_rename"
+  | "file_move"
+  | "app_launch"
+  | "clipboard_write"
+  | "keyboard_shortcut"
+  | "mouse_click"
+  | "terminal_command";
+
+export type MyComputerOperationStatus =
+  | "planned"
+  | "pending_approval"
+  | "approved"
+  | "completed"
+  | "blocked"
+  | "failed";
+
+export type MyComputerApprovalDecision = "allow_once" | "always" | "deny";
+
+export type MyComputerFilePlanMode = "classify" | "dedupe" | "rename";
+
+export interface MyComputerFileEntry {
+  path: string;
+  name: string;
+  extension: string;
+  kind: "file" | "directory";
+  size: number;
+  modifiedAt: string;
+  category?: string;
+  hash?: string;
+}
+
+export interface MyComputerFileAction {
+  id: string;
+  type: "move" | "rename";
+  sourcePath: string;
+  targetPath: string;
+  reason: string;
+  duplicateGroupId?: string;
+}
+
+export interface MyComputerOperation {
+  id: string;
+  ownerId?: string;
+  kind: MyComputerOperationKind;
+  status: MyComputerOperationStatus;
+  target: string;
+  description: string;
+  dryRun: boolean;
+  requiresApproval: boolean;
+  approvalDecision?: MyComputerApprovalDecision;
+  actions?: MyComputerFileAction[];
+  result?: Record<string, unknown>;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MyComputerStatus {
+  connected: boolean;
+  bridge: MyComputerBridgeType;
+  platform: NodeJS.Platform | string;
+  paused: boolean;
+  allowedRoots: string[];
+  capabilities: Array<{
+    id: MyComputerOperationKind | "desktop_bridge";
+    label: string;
+    ready: boolean;
+    requiresApproval: boolean;
+    note: string;
+  }>;
+  recentOperations: MyComputerOperation[];
+  pendingApprovals: MyComputerOperation[];
+}
+
+export interface MyComputerFileScanResponse {
+  root: string;
+  total: number;
+  truncated: boolean;
+  entries: MyComputerFileEntry[];
+}
+
+export interface MyComputerFilePlanResponse {
+  operation: MyComputerOperation;
+  summary: {
+    mode: MyComputerFilePlanMode;
+    actionCount: number;
+    affectedFiles: number;
+  };
+}
+
 export interface ToolCallPayload {
   toolName: string;
   arguments: Record<string, unknown>;
@@ -276,6 +372,8 @@ export interface ConfigResponse {
   finalModel: string;
   promptCacheEnabled: boolean;
   localBrowserDomainAllowlist: string[];
+  myComputerAllowedRoots: string[];
+  myComputerPaused: boolean;
   hasApiKey: boolean;
 }
 

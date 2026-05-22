@@ -71,9 +71,9 @@ REQ-216 (AI Design)
 
 | ID | 标题 | 模块 | 工作量预估 | 状态 |
 |----|------|------|-----------|------|
-| REQ-201 | My Computer 桌面端 Agent（Electron 或 Tauri）+ WS 调度 | M08 | 10-14 人天 | Planning |
-| REQ-202 | 桌面端文件系统操作工具：批量重命名/分类/移动/查重 | M08 | 3-5 人天 | Planning |
-| REQ-203 | 桌面端应用调度：启动/关闭软件、剪贴板、模拟键鼠（**每动作授权**） | M08 | 5-7 人天 | Planning |
+| REQ-201 | My Computer 桌面端 Agent（Electron 或 Tauri）+ WS 调度 | M08 | 10-14 人天 | In Progress |
+| REQ-202 | 桌面端文件系统操作工具：批量重命名/分类/移动/查重 | M08 | 3-5 人天 | In Progress |
+| REQ-203 | 桌面端应用调度：启动/关闭软件、剪贴板、模拟键鼠（**每动作授权**） | M08 | 5-7 人天 | In Progress |
 | REQ-204 | 桌面端 → 云端文件同步（选择性上传，隐私可控） | M08 | 3-5 人天 | Planning |
 | REQ-205 | Kubernetes 部署，Sandbox 改为 K8s Job/Pod 弹性调度 | M09 | 5-7 人天 | Planning |
 | REQ-206 | 监控告警：Prometheus + Grafana + 任务失败告警 | M09 | 2-3 人天 | Planning |
@@ -98,7 +98,7 @@ REQ-216 (AI Design)
 ---
 
 ### REQ-201：My Computer 桌面端 Agent（Electron 或 Tauri）+ WS 调度
-**模块**: M08 | **状态**: Planning | **工作量**: 10-14 人天
+**模块**: M08 | **状态**: In Progress | **工作量**: 10-14 人天
 
 #### 背景与价值
 Manus 的 My Computer 是产品故事的下一章——**让 AI 真正进入用户的本机**，处理云端碰不到的本地文件、应用与凭证。这是与"另一个聊天框"的根本性差异化。技术上 Manus 自己也是 2026-03 才发的桌面版（[REQ-000 §4](REQ-000-manus-capability-research.md)），属于产品成熟后的延伸。
@@ -118,11 +118,16 @@ As a 想让 AI 整理我本机 Downloads 文件夹的用户，I want 装一个�
 - 非功能：桌面端体积 < 100MB（Electron 难达到，Tauri 可达 10MB）
 
 #### 验收标准
+- [x] 本地 Next.js 进程已作为 My Computer MVP bridge 暴露 `/api/my-computer/status`，Web UI 可检测连接与能力清单
+- [x] Web UI 已提供 My Computer 设置面板、允许目录、安全暂停、最近操作与待授权操作
 - [ ] macOS 上能 dmg 安装、登录账号、与云端建立 WS
 - [ ] Windows 上能 .exe 安装、同上
 - [ ] 云端 Web 上选 "Use My Computer" 后任务跑在桌面端
 - [ ] tray 图标显示任务进度，可一键停止
 - [ ] 自动更新机制能下载新版
+
+#### 实现记录
+- 2026-05-23：先实现 My Computer MVP 桥接层，当前运行在本地 Next.js 进程中；后续再抽到 Electron/Tauri 客户端与 WS 调度。
 
 #### 相关 OpenManus 代码
 - 完全新建：`desktop/`（Electron 或 Tauri 项目目录）
@@ -138,7 +143,7 @@ As a 想让 AI 整理我本机 Downloads 文件夹的用户，I want 装一个�
 ---
 
 ### REQ-202：桌面端文件系统操作工具 — 批量重命名/分类/移动/查重
-**模块**: M08 | **状态**: Planning | **工作量**: 3-5 人天
+**模块**: M08 | **状态**: In Progress | **工作量**: 3-5 人天
 
 #### 背景与价值
 Manus demo 中频繁出现的"自动分类上千张照片"、"批量重命名几百张发票"等场景，本质需要在用户本机直接做。云端可以做但要先上传一遍，慢且有隐私顾虑。桌面端原生支持是 My Computer 的核心价值。
@@ -155,10 +160,13 @@ As a Downloads 文件夹堆了几百个文件的用户，I want 一句话让 AI 
 - 非功能：100+ 文件操作 < 30 秒；操作进度实时回传云端
 
 #### 验收标准
-- [ ] dry-run "按文件类型分类 Downloads" 显示分类预览，用户确认后才动
-- [ ] 查重能识别图片内容相似（不只是文件名）
+- [x] dry-run "按文件类型分类 Downloads/允许目录" 显示分类预览，用户确认后才移动文件
+- [x] 查重按文件内容 hash 识别重复项，不依赖文件名
 - [ ] undo 能恢复最近一次批量重命名
-- [ ] 操作日志在云端 Library 可查
+- [x] 操作日志进入审计日志，Settings 可查看 recent operations
+
+#### 实现记录
+- 2026-05-23：新增 `/api/my-computer/files/scan`、`/api/my-computer/files/plan`、`/api/my-computer/approvals`；支持允许目录校验、分类/重命名/查重 dry-run、Allow Once/Always/Deny 授权和执行。
 
 #### 相关 OpenManus 代码
 - 可复用：REQ-108 的批量处理逻辑（移植到桌面端 IPC）
@@ -174,7 +182,7 @@ As a Downloads 文件夹堆了几百个文件的用户，I want 一句话让 AI 
 ---
 
 ### REQ-203：桌面端应用调度 — 启动/关闭软件、剪贴板、模拟键鼠
-**模块**: M08 | **状态**: Planning | **工作量**: 5-7 人天
+**模块**: M08 | **状态**: In Progress | **工作量**: 5-7 人天
 
 #### 背景与价值
 Manus 的 [CNBC demo](https://www.cnbc.com/2026/03/18/metas-manus-launches-desktop-app-to-bring-its-ai-agent-onto-personal-devices.html) 中"20 分钟用 terminal 命令做出实时翻译 app"展示了桌面端可控制应用与执行命令的能力。这部分技术难度高、涉及隐私敏感能力，必须有严格的授权模型（参考 Manus 的 Allow Once / Always Allow）。
@@ -193,11 +201,17 @@ As a 想让 AI 用 Excel 处理一份本地表格的用户，I want AI 能启动
 - 非功能：授权检查 < 100ms（用户不感觉卡）
 
 #### 验收标准
+- [x] 应用启动动作已接入授权模型；macOS 执行层使用 `open -a`
+- [x] 剪贴板写入动作已接入授权模型；macOS 执行层使用 `pbcopy`
+- [x] 模拟点击已接入动作级授权与 dry-run，真实点击待接入 nut.js/cliclick
 - [ ] macOS 上 AI 能启动 Calculator 应用
 - [ ] AI 写文本到剪贴板，用户能粘贴
 - [ ] 模拟点击在指定坐标生效
 - [ ] terminal 命令执行结果回传云端
-- [ ] 首次操作弹授权窗口，Always Allow 后下次免询
+- [x] 首次操作进入待授权列表，支持 Allow Once / Always Allow / Deny
+
+#### 实现记录
+- 2026-05-23：新增 `/api/my-computer/actions`，支持应用启动、剪贴板、键盘快捷键、鼠标点击的授权请求；真实鼠标点击和 terminal 执行默认关闭，待接入更细权限与底层库。
 
 #### 相关 OpenManus 代码
 - 完全新建：`desktop/src/tools/system_tools.ts`

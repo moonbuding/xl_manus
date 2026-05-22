@@ -10,6 +10,11 @@ import {
   screenshotLocalBrowserTab,
   snapshotLocalBrowserTab
 } from "@/server/local-browser/cdp";
+import {
+  createMyComputerSystemOperation,
+  getMyComputerStatus,
+  planMyComputerFileOperation
+} from "@/server/my-computer/my-computer";
 import { runSandboxedCommand } from "@/server/sandbox/docker-sandbox";
 import {
   hasExecutableSkillForPrompt,
@@ -131,6 +136,7 @@ export type AgentToolName =
   | "web_research"
   | "web_fetch"
   | "local_browser"
+  | "my_computer"
   | "file_reader"
   | "file_workspace"
   | "batch_file_ops"
@@ -213,6 +219,12 @@ export const TOOL_METADATA: AgentToolMetadata[] = [
     namespace: "web",
     description: "读取用户本地 Chrome 当前标签页的已登录页面快照，支持截图和基础导航，受域名 allowlist 限制。",
     fallbackTools: ["web_fetch", "web_research", "data_analysis"]
+  },
+  {
+    name: "my_computer",
+    namespace: "file",
+    description: "调度 My Computer 本机能力：扫描允许目录、生成文件分类/查重/重命名 dry-run，以及创建应用/剪贴板/键鼠授权请求。",
+    fallbackTools: ["batch_file_ops", "file_workspace", "task_planner"]
   },
   {
     name: "file_reader",
@@ -317,6 +329,9 @@ export function selectToolsForPrompt(prompt: string, ownerId?: string): AgentToo
   if (/本地浏览器|已登录态|登录态|paywall|captcha|cdp|chrome/.test(lower)) {
     selected.push("local_browser");
   }
+  if (/my computer|本机|本地文件|桌面端|downloads|documents|下载目录|剪贴板|启动应用|打开应用|键鼠|鼠标|键盘/.test(lower)) {
+    selected.push("my_computer");
+  }
   if (/mcp|github|slack|notion|filesystem|外部工具|第三方工具/.test(lower)) {
     selected.push("mcp_call");
   }
@@ -370,6 +385,9 @@ export function inferToolsForStep(step: string): AgentToolName[] {
   if (/https?:\/\//i.test(step)) candidates.push("web_fetch");
   if (/网页|搜索|调研|竞品|市场|news|web|research/.test(lower)) candidates.push("web_research");
   if (/本地浏览器|已登录态|登录态|paywall|captcha|cdp|chrome/.test(lower)) candidates.push("local_browser");
+  if (/my computer|本机|本地文件|桌面端|downloads|documents|下载目录|剪贴板|启动应用|打开应用|键鼠|鼠标|键盘/.test(lower)) {
+    candidates.push("my_computer");
+  }
   if (/上传文件|文件摘要|附件|读取.*(文件|pdf|docx|xlsx|csv|excel|word)|解析.*(文件|pdf|docx|xlsx|csv|excel|word)/.test(lower)) {
     candidates.push("file_reader");
   }
@@ -715,6 +733,69 @@ async function runLocalBrowser(input: AgentToolInput): Promise<AgentToolResult> 
     payload: {
       ...snapshot,
       promptHint: input.prompt.slice(0, 160)
+    } as unknown as Record<string, unknown>
+  };
+}
+
+async function runMyComputer(input: AgentToolInput): Promise<AgentToolResult> {
+  const joinedPrompt = `${input.step} ${input.prompt}`;
+  const lower = joinedPrompt.toLowerCase();
+  const status = await getMyComputerStatus(input.ownerId);
+  const root = status.allowedRoots[0];
+
+  if (/剪贴板|clipboard/.test(lower)) {
+    const operation = await createMyComputerSystemOperation({
+      ownerId: input.ownerId,
+      kind: "clipboard_write",
+      text: input.step.slice(0, 500) || "ManusXL My Computer clipboard draft",
+      dryRun: true
+    });
+    return {
+      toolName: "my_computer",
+      ok: true,
+      observation: "已创建剪贴板写入授权请求，等待用户 Allow Once 或 Always Allow 后执行。",
+      payload: { status, operation } as unknown as Record<string, unknown>
+    };
+  }
+
+  if (/启动|打开.*应用|app|calculator|excel|word|pages|numbers/.test(lower)) {
+    const appName =
+      joinedPrompt.match(/(?:启动|打开)\s*([A-Za-z0-9\u4e00-\u9fa5 ._-]{2,40})/)?.[1]?.trim() ??
+      "Calculator";
+    const operation = await createMyComputerSystemOperation({
+      ownerId: input.ownerId,
+      kind: "app_launch",
+      target: appName,
+      dryRun: true
+    });
+    return {
+      toolName: "my_computer",
+      ok: true,
+      observation: `已创建启动 ${appName} 的动作授权请求，尚未真正打开应用。`,
+      payload: { status, operation } as unknown as Record<string, unknown>
+    };
+  }
+
+  const mode: "classify" | "dedupe" | "rename" =
+    /查重|重复|duplicate|dedupe/.test(lower)
+      ? "dedupe"
+      : /重命名|rename/.test(lower)
+        ? "rename"
+        : "classify";
+  const plan = await planMyComputerFileOperation({
+    ownerId: input.ownerId,
+    root,
+    mode,
+    maxFiles: 120
+  });
+
+  return {
+    toolName: "my_computer",
+    ok: true,
+    observation: `已在 My Computer 允许目录生成 ${mode} dry-run，共 ${plan.summary.actionCount} 个待授权动作；默认不改动本机文件。`,
+    payload: {
+      status,
+      plan
     } as unknown as Record<string, unknown>
   };
 }
@@ -2652,6 +2733,8 @@ export async function executeAgentTool(
       return runWebFetch(input);
     case "local_browser":
       return runLocalBrowser(input);
+    case "my_computer":
+      return runMyComputer(input);
     case "file_reader":
       return runFileReader(input);
     case "file_workspace":
