@@ -113,6 +113,14 @@ Settings / 数据库面板会显示当前运行 provider、SQLite 待迁移行�
 
 Prometheus 可以抓取根路径 `/metrics`，当前暴露任务总数、状态分布、成功率、平均/p99 延迟、LLM 调用/Token/成本、最近一小时成本速率、审计日志与沙盒健康指标。默认本地开发不需要鉴权；生产环境可设置 `MANUSXL_METRICS_TOKEN`，然后用 `Authorization: Bearer <token>` 抓取。
 
+Docker Compose 提供可选的 observability profile，会启动 Prometheus、AlertManager 和 Grafana，并自动 provision 数据源与 ManusXL Overview dashboard：
+
+```bash
+docker compose --profile observability up --build
+```
+
+默认端口：Prometheus `http://localhost:9090`，AlertManager `http://localhost:9093`，Grafana `http://localhost:3002`（默认账号 `admin` / `manusxl`）。生产环境建议修改 `GRAFANA_ADMIN_PASSWORD`，并在 `deploy/alertmanager/alertmanager.yml` 中接入真实 Email / Slack 通道。
+
 ## E2E 演示验收
 
 先启动本地服务，然后运行：
@@ -161,9 +169,10 @@ Prometheus 指标验收：
 
 ```bash
 npm run e2e:metrics
+npm run e2e:observability
 ```
 
-该脚本会验证 `/metrics` 返回 Prometheus text/plain、关键指标齐全，并确认没有把 `user_id`、`task_id`、`prompt` 放入高基数 label。
+这些脚本会验证 `/metrics` 返回 Prometheus text/plain、关键指标齐全、没有把 `user_id`、`task_id`、`prompt` 放入高基数 label，并校验 Prometheus/Grafana/AlertManager 配置和 dashboard 模板。
 
 真实 PostgreSQL 并发写入验收：
 
@@ -218,6 +227,7 @@ npm run e2e:batch
 - Python / Shell 工具支持 Docker 沙盒执行、CPU/内存/PID/网络限制、本地 fallback 和 workspace 磁盘配额
 - Settings 沙盒状态面板与一键自检
 - `/metrics` Prometheus 指标端点，覆盖任务、LLM 成本、审计与沙盒健康基础指标
+- Prometheus / Grafana / AlertManager observability profile 与 dashboard provisioning 模板
 - 审计日志、CSV 导出和 hash chain 校验
 - 批量文件重命名/分类 dry-run 清单与可下载批处理包
 - stdio MCP Server 接入、工具发现、工具调用和 Agent `mcp_call`

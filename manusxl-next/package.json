@@ -37,6 +37,7 @@
     "e2e:pg-docker": "node scripts/e2e-postgres-docker.mjs",
     "e2e:database-status": "node scripts/e2e-database-status.mjs",
     "e2e:metrics": "node scripts/e2e-prometheus-metrics.mjs",
+    "e2e:observability": "node scripts/e2e-observability-config.mjs",
     "e2e:local-browser": "node scripts/e2e-local-browser.mjs",
     "e2e:local-browser:rehearsal": "node scripts/e2e-local-browser-rehearsal.mjs",
     "e2e:skill": "node scripts/e2e-skill-runner.mjs",

@@ -316,12 +316,14 @@ As a 运维者，I want 任务失败率超 10% 时立即收到通知，So that �
 #### 验收标准
 - [x] `/metrics` 暴露 Prometheus text/plain 指标，覆盖任务总数/状态/成功率/平均延迟/p99/LLM 成本/审计/沙盒健康
 - [x] Prometheus 指标不包含 `user_id`、`task_id`、`prompt` 等高基数 label
+- [x] Prometheus / Grafana / AlertManager 配置已加入 Docker Compose observability profile
+- [x] dashboard 模板开箱即用（自动 provisioning）
 - [ ] Grafana 上能看到所有关键指标的实时图
 - [ ] 故意触发失败任务后能在 5 分钟内收到告警邮件
-- [ ] dashboard 模板开箱即用（自动 provisioning）
 
 #### 实现记录
 - 2026-05-23：参考 OpenManus `logger.py` 的日志入口，先在 Next.js 侧补齐 `/metrics` Prometheus exporter；当前覆盖任务、LLM 成本、审计和 Docker 沙盒健康基础指标，Grafana/AlertManager 模板待后续补齐。
+- 2026-05-23：新增 Docker Compose observability profile、Prometheus scrape/alert rules、AlertManager 配置骨架、Grafana datasource/dashboard provisioning 和 ManusXL Overview dashboard；真实 Email/Slack 告警通道待生产密钥接入后实测。
 
 #### 相关 OpenManus 代码
 - 可复用：[OpenManus-main/app/logger.py](../OpenManus-main/app/logger.py) — loguru 已有，加 metrics
