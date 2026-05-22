@@ -45,6 +45,7 @@ import type {
   ConfigResponse,
   ContextMetricsSummary,
   CreateTaskResponse,
+  McpCatalogItem,
   McpServer,
   Task,
   TaskTemplate,
@@ -386,6 +387,7 @@ export function AgentWorkspace() {
   const [templates, setTemplates] = useState<TaskTemplate[]>([]);
   const [skills, setSkills] = useState<AgentSkill[]>([]);
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
+  const [mcpCatalog, setMcpCatalog] = useState<McpCatalogItem[]>([]);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [authDraft, setAuthDraft] = useState({
     phone: "",
@@ -600,6 +602,17 @@ export function AgentWorkspace() {
     }
   }, []);
 
+  const refreshMcpCatalog = useCallback(async () => {
+    try {
+      const response = await fetch("/api/mcp/catalog", { cache: "no-store" });
+      if (!response.ok) return;
+      const data = await readJson<{ catalog: McpCatalogItem[] }>(response, { catalog: [] });
+      setMcpCatalog(data.catalog);
+    } catch {
+      setMcpCatalog([]);
+    }
+  }, []);
+
   const connectStream = useCallback(
     (taskId: string) => {
       closeStream();
@@ -653,6 +666,7 @@ export function AgentWorkspace() {
         void refreshTemplates();
         void refreshSkills();
         void refreshMcpServers();
+        void refreshMcpCatalog();
         void refreshBilling();
         void refreshSandboxStatus();
         void refreshOcrStatus();
@@ -688,6 +702,7 @@ export function AgentWorkspace() {
     closeStream,
     refreshAuthUser,
     refreshBilling,
+    refreshMcpCatalog,
     refreshMcpServers,
     refreshOcrStatus,
     refreshSandboxStatus,
@@ -1063,6 +1078,18 @@ export function AgentWorkspace() {
     } finally {
       setIsAddingMcp(false);
     }
+  }
+
+  function applyMcpCatalogItem(item: McpCatalogItem) {
+    setMcpError(null);
+    setMcpDraft({
+      name: item.name,
+      type: item.type,
+      url: item.url ?? "",
+      command: item.command ?? "",
+      args: item.args.join(" "),
+      env: item.envTemplate.map((key) => `${key}=`).join("\n")
+    });
   }
 
   async function toggleMcpServer(serverId: string, enabled: boolean) {
@@ -1484,10 +1511,12 @@ export function AgentWorkspace() {
             </div>
             <McpServerPanel
               servers={mcpServers}
+              catalog={mcpCatalog}
               draft={mcpDraft}
               error={mcpError}
               isAdding={isAddingMcp}
               onDraftChange={(patch) => setMcpDraft((current) => ({ ...current, ...patch }))}
+              onApplyCatalog={applyMcpCatalogItem}
               onAdd={() => void addMcpServer()}
               onToggle={(serverId, enabled) => void toggleMcpServer(serverId, enabled)}
               onDelete={(serverId) => void deleteMcpServer(serverId)}
@@ -2349,10 +2378,12 @@ function SkillList({
 
 function McpServerPanel({
   servers,
+  catalog,
   draft,
   error,
   isAdding,
   onDraftChange,
+  onApplyCatalog,
   onAdd,
   onToggle,
   onDelete,
@@ -2360,6 +2391,7 @@ function McpServerPanel({
   onToolToggle
 }: {
   servers: McpServer[];
+  catalog: McpCatalogItem[];
   draft: {
     name: string;
     type: "sse" | "stdio";
@@ -2371,6 +2403,7 @@ function McpServerPanel({
   error: string | null;
   isAdding: boolean;
   onDraftChange: (patch: Partial<typeof draft>) => void;
+  onApplyCatalog: (item: McpCatalogItem) => void;
   onAdd: () => void;
   onToggle: (serverId: string, enabled: boolean) => void;
   onDelete: (serverId: string) => void;
@@ -2381,6 +2414,18 @@ function McpServerPanel({
 
   return (
     <div className="mcp-panel">
+      {catalog.length > 0 ? (
+        <div className="mcp-market">
+          {catalog.slice(0, 6).map((item) => (
+            <button key={item.id} type="button" className="mcp-market-item" onClick={() => onApplyCatalog(item)}>
+              <span className="skill-name">{item.name}</span>
+              <span className="skill-meta">
+                {item.tags.slice(0, 2).join(" / ")} · {item.type}
+              </span>
+            </button>
+          ))}
+        </div>
+      ) : null}
       <div className="mcp-form">
         <label className="settings-field">
           <span>名称</span>

@@ -1091,13 +1091,15 @@ a {
 }
 
 .skill-list,
-.mcp-list {
+.mcp-list,
+.mcp-market {
   display: grid;
   gap: 8px;
 }
 
 .skill-item,
-.mcp-item {
+.mcp-item,
+.mcp-market-item {
   min-width: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 20px;
@@ -1107,6 +1109,20 @@ a {
   border-radius: 8px;
   background: var(--bg);
   padding: 9px 10px;
+}
+
+.mcp-market {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.mcp-market-item {
+  display: block;
+  cursor: pointer;
+  text-align: left;
+}
+
+.mcp-market-item:hover {
+  border-color: var(--sage);
 }
 
 .mcp-item {

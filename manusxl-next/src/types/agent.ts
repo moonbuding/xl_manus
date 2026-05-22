@@ -265,6 +265,19 @@ export interface McpServer {
   updatedAt: string;
 }
 
+export interface McpCatalogItem {
+  id: string;
+  name: string;
+  description: string;
+  type: McpServerType;
+  command?: string;
+  args: string[];
+  url?: string;
+  envTemplate: string[];
+  tags: string[];
+  safetyNote: string;
+}
+
 export interface CreateMcpServerRequest {
   name: string;
   type: McpServerType;

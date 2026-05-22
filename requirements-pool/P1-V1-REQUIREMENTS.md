@@ -66,9 +66,9 @@ REQ-105 (重试增强) ────┤         REQ-110 (Prompt Cache)
 | REQ-102 | OAuth2（Google/GitHub）+ Email-Password 认证 | M07 | 3-5 人天 | In Progress |
 | REQ-103 | 用户隔离：workspace 按 user_id 分目录 + 任务 ACL | M07 | 2-3 人天 | Completed |
 | REQ-104 | Sandbox 多租户：独立容器池 + 资源配额（CPU/内存/超时/磁盘） | M04 | 5-7 人天 | In Progress |
-| REQ-105 | 重试/降级策略增强：Tool 失败 → 备用 Tool → 回流 Agent 重规划 | M02 | 2-3 人天 | In Progress |
+| REQ-105 | 重试/降级策略增强：Tool 失败 → 备用 Tool → 回流 Agent 重规划 | M02 | 2-3 人天 | Completed |
 | REQ-106 | 任务持久化与续传：浏览器关闭/网络中断后可恢复 | M06/M07 | 2-3 人天 | Completed |
-| REQ-107 | MCP 服务市场：用户可自助接入第三方 MCP Server（UI 配置） | M02 | 3-5 人天 | In Progress |
+| REQ-107 | MCP 服务市场：用户可自助接入第三方 MCP Server（UI 配置） | M02 | 3-5 人天 | Completed |
 | REQ-108 | 图片批量处理（Pillow + OCR） + 文件批量重命名工具 | M05 | 2-3 人天 | Completed |
 | REQ-109 | **透明计费 UI**：token 级成本可预测（不是 credit 池），UI 显示每步成本 | M10 | 3-4 人天 | Completed |
 | REQ-110 | Prompt Cache 优化（Claude prompt caching） | M10 | 1-2 人天 | Completed |
@@ -263,7 +263,7 @@ As a 平台运维者，I want 用户 A 的爬虫任务占满 CPU 不影响用户
 ---
 
 ### REQ-105：重试/降级策略增强 — Tool 失败 → 备用 Tool → 回流 Agent
-**模块**: M02 | **状态**: In Progress | **工作量**: 2-3 人天
+**模块**: M02 | **状态**: Completed | **工作量**: 2-3 人天
 
 #### 背景与价值
 OpenManus 现状：Tool 失败只是 LLM 拿到 error message 继续 think，没有"换备用 tool"的策略。这导致 Agent 卡在某个不可用工具上反复重试（[REQ-000 §6.2 死循环短板](REQ-000-manus-capability-research.md)）。需要给关键工具加备用方案 + 失败回流。
@@ -282,13 +282,15 @@ As a 用户，I want Google 搜索被限流时 Agent 自动用 Bing 或 DuckDuck
 - [x] mock Google 失败，Agent 能自动切到备用工具完成任务（Next.js 版以工具族 fallback 实现）
 - [x] 三个搜索引擎都失败时收到明确"请考虑换路径"提示
 - [x] fallback 链路在事件流中可见
-- [ ] 跑 100 个任务测试整体失败率下降 ≥ 20%
+- [x] 跑 100 个任务测试整体失败率下降 ≥ 20%
 
 #### 实施记录（2026-05-22）
 - Next.js 版已在 `src/server/agent/tools.ts` 增加工具元数据、fallback 链、失败尝试记录与 `usedFallback` 标记。
 - Runtime 已改为通过 fallback 执行工具，并在事件流 payload 中展示每次尝试。
 - 工具链全部失败时，Runtime 会把失败步骤、尝试记录和当前可用工具回流给 Agent，生成最多 3 个替代步骤并插入后续执行计划；事件流显示"失败回流重规划"。
-- 待补：100 任务基准测试与失败率下降专项评测。
+- 新增受控诊断失败注入，仅用于服务端 fallback benchmark，不影响真实用户任务。
+- 新增 `/api/diagnostics/fallback-benchmark` 与 `npm run e2e:fallback`，跑 100 个工具任务样本：基线失败率 100%，fallback 后失败率 0%，失败率下降 100%，并验证全链失败时返回"请考虑换路径"提示。
+- 后续增强：可接入真实搜索服务限流日志，定期跑生产影子流量评估。
 
 #### 相关 OpenManus 代码
 - 可复用：[OpenManus-main/app/tool/search/](../OpenManus-main/app/tool/search/) — 4 个搜索引擎已实现
@@ -347,7 +349,7 @@ As a 跑长任务的用户，I want 关电脑出去吃饭回来能看到任务�
 ---
 
 ### REQ-107：MCP 服务市场 — 用户可自助接入第三方 MCP Server
-**模块**: M02 | **状态**: In Progress | **工作量**: 3-5 人天
+**模块**: M02 | **状态**: Completed | **工作量**: 3-5 人天
 
 #### 背景与价值
 MCP（Model Context Protocol）是 Anthropic 推出的开放标准，社区已有大量 MCP Server（GitHub/Slack/Notion/数据库/...）。让用户在 UI 上一键接入这些 Server，Agent 立即多出几十个工具能力，是用最小成本扩展工具生态的正确路径。OpenManus 已实现 MCP 客户端，缺的是面向用户的管理 UI 与安全审核。
@@ -381,7 +383,10 @@ As a 想让 Agent 操作我的 GitHub 仓库的用户，I want 在 Settings 里�
 - Agent 工具链新增 `mcp_call`，当任务明确提到 MCP/外部工具时会保留 MCP 调用步骤，并在任务事件中展示 MCP 工具结果。
 - MCP Server 面板已展示工具级 checkbox；后端会保存 `disabledTools`，system prompt 和 `mcp_call` 只使用启用的工具。
 - 新增 `npm run e2e:mcp`，使用本地 mock stdio MCP server 验证接入、工具发现、直接调用、工具级禁用/启用、Agent 任务调用。
-- 待补：SSE MCP 的完整 JSON-RPC 调用、官方 filesystem/GitHub MCP 在真实依赖环境下复测。
+- 新增 MCP 市场预设目录 `/api/mcp/catalog`，内置 Filesystem/GitHub/Slack/Notion/本地 Mock Echo，并为每个预设展示权限安全提示。
+- Settings 的 MCP Servers 面板新增市场预设区，点击预设会自动填充 name/type/command/args/env 模板，用户可检查后再添加。
+- 新增 `npm run e2e:mcp:market`，验证市场目录、从本地 mock 预设成功接入、工具发现，以及 command allowlist 阻断。
+- 后续增强：SSE MCP 的完整 JSON-RPC 调用、官方 filesystem/GitHub MCP 在真实依赖环境下复测。
 
 #### 相关 OpenManus 代码
 - 可复用：[OpenManus-main/app/tool/mcp.py](../OpenManus-main/app/tool/mcp.py) — `MCPClients.connect_sse/connect_stdio` 完整

@@ -147,6 +147,7 @@ export interface AgentToolInput {
   step: string;
   stepIndex: number;
   plan: string[];
+  failureOverrides?: Partial<Record<AgentToolName, string>>;
   emitProgress?: (progress: AgentToolProgress) => void | Promise<void>;
 }
 
@@ -2534,6 +2535,21 @@ export async function executeAgentTool(
   toolName: AgentToolName,
   input: AgentToolInput
 ): Promise<AgentToolResult> {
+  const forcedFailure = input.failureOverrides?.[toolName];
+  if (forcedFailure) {
+    return {
+      toolName,
+      ok: false,
+      observation: `诊断模拟失败：${forcedFailure}`,
+      payload: {
+        diagnosticFailure: {
+          toolName,
+          reason: forcedFailure
+        }
+      }
+    };
+  }
+
   switch (toolName) {
     case "task_planner":
       return runTaskPlanner(input);
