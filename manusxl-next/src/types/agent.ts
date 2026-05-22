@@ -210,6 +210,39 @@ export interface ConfigResponse {
   hasApiKey: boolean;
 }
 
+export interface DatabaseTableCount {
+  table: string;
+  rows: number;
+}
+
+export interface DatabaseStatus {
+  requestedProvider: "sqlite" | "postgres";
+  activeProvider: "sqlite" | "postgres";
+  runtimePostgresReady: boolean;
+  note: string;
+  sqlite: {
+    path: string;
+    exists: boolean;
+    tables: DatabaseTableCount[];
+    totalRows: number;
+  };
+  postgres: {
+    configured: boolean;
+    databaseUrlMasked?: string;
+    cliAvailable: boolean;
+    cliVersion?: string;
+    expectedTableCount: number;
+    schemaReady?: boolean;
+    schemaTableCount?: number;
+    error?: string;
+  };
+  commands: {
+    dryRun: string;
+    emitSql: string;
+    migrate: string;
+  };
+}
+
 export interface TaskTemplate {
   id: string;
   ownerId?: string;

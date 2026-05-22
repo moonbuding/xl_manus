@@ -78,6 +78,7 @@ npm run docker:check
 ```
 
 登录后也可以在 Web 界面的 Settings / 沙盒面板查看 Docker 镜像、资源限制、容器池状态，并运行 Python + Shell 沙盒自检。
+Settings / 数据库面板会显示当前运行 provider、SQLite 待迁移行数、PostgreSQL CLI/schema 检查结果和迁移命令。
 
 检查 DeepSeek 连通性可在登录后调用 `POST /api/config/llm-test`。该接口只返回模型、耗时和脱敏错误原因，不返回 API Key。
 
@@ -108,6 +109,14 @@ npm run e2e:mcp
 ```
 
 该脚本会使用本地 mock stdio MCP server 验证 `initialize`、`tools/list`、`tools/call`、工具级启停，并确认 Agent 任务中会调用 `mcp_call`。
+
+数据库迁移状态验收：
+
+```bash
+npm run e2e:database-status
+```
+
+该脚本会验证数据库状态接口的登录保护、SQLite 行数统计、PostgreSQL CLI/schema 检查字段和迁移命令提示。
 
 批量文件处理验收：
 

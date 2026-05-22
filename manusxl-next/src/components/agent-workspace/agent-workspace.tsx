@@ -9,6 +9,7 @@ import {
   CircleStop,
   Clock3,
   Code2,
+  Database,
   Download,
   FileArchive,
   FileJson,
@@ -45,6 +46,7 @@ import type {
   ConfigResponse,
   ContextMetricsSummary,
   CreateTaskResponse,
+  DatabaseStatus,
   McpCatalogItem,
   McpServer,
   Task,
@@ -408,6 +410,7 @@ export function AgentWorkspace() {
   const [billingSummary, setBillingSummary] = useState<BillingSummary | null>(null);
   const [sandboxStatus, setSandboxStatus] = useState<SandboxStatus | null>(null);
   const [sandboxSelfTest, setSandboxSelfTest] = useState<SandboxSelfTestResult | null>(null);
+  const [databaseStatus, setDatabaseStatus] = useState<DatabaseStatus | null>(null);
   const [ocrStatus, setOcrStatus] = useState<OcrStatus | null>(null);
   const [templateRun, setTemplateRun] = useState<{
     template: TaskTemplate;
@@ -434,6 +437,7 @@ export function AgentWorkspace() {
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [isUploadingSkill, setIsUploadingSkill] = useState(false);
   const [isRunningSandboxTest, setIsRunningSandboxTest] = useState(false);
+  const [isCheckingDatabase, setIsCheckingDatabase] = useState(false);
   const [isAddingMcp, setIsAddingMcp] = useState(false);
   const [mcpError, setMcpError] = useState<string | null>(null);
   const [mcpDraft, setMcpDraft] = useState({
@@ -532,6 +536,20 @@ export function AgentWorkspace() {
       setSandboxStatus(await readJson<SandboxStatus>(response));
     } catch {
       setSandboxStatus(null);
+    }
+  }, []);
+
+  const refreshDatabaseStatus = useCallback(async (checkPostgres = false) => {
+    if (checkPostgres) setIsCheckingDatabase(true);
+    try {
+      const suffix = checkPostgres ? "?check=1" : "";
+      const response = await fetch(`/api/database/status${suffix}`, { cache: "no-store" });
+      if (!response.ok) return;
+      setDatabaseStatus(await readJson<DatabaseStatus>(response));
+    } catch {
+      setDatabaseStatus(null);
+    } finally {
+      if (checkPostgres) setIsCheckingDatabase(false);
     }
   }, []);
 
@@ -671,6 +689,7 @@ export function AgentWorkspace() {
         void refreshMcpCatalog();
         void refreshBilling();
         void refreshSandboxStatus();
+        void refreshDatabaseStatus();
         void refreshOcrStatus();
       });
       void fetch("/api/config", { cache: "no-store" })
@@ -704,6 +723,7 @@ export function AgentWorkspace() {
     closeStream,
     refreshAuthUser,
     refreshBilling,
+    refreshDatabaseStatus,
     refreshMcpCatalog,
     refreshMcpServers,
     refreshOcrStatus,
@@ -1504,6 +1524,14 @@ export function AgentWorkspace() {
 
           <section className="section-panel">
             <div className="panel-title">
+              <Database size={14} />
+              数据库
+            </div>
+            {renderDatabasePanel()}
+          </section>
+
+          <section className="section-panel">
+            <div className="panel-title">
               <SquareTerminal size={14} />
               沙盒
             </div>
@@ -1581,6 +1609,86 @@ export function AgentWorkspace() {
           <div className="panel-title">最近任务</div>
           {renderTaskLibrary(10)}
         </section>
+      </div>
+    );
+  }
+
+  function renderDatabasePanel() {
+    const providerLabel = databaseStatus
+      ? `${databaseStatus.requestedProvider} / ${databaseStatus.activeProvider}`
+      : "loading";
+    const pgStatus = databaseStatus
+      ? databaseStatus.postgres.schemaReady === true
+        ? "ready"
+        : databaseStatus.postgres.schemaReady === false
+          ? "unready"
+          : databaseStatus.postgres.configured
+            ? "configured"
+            : "unset"
+      : "loading";
+    const tableSummary = databaseStatus
+      ? databaseStatus.sqlite.tables
+          .filter((table) => table.rows > 0)
+          .slice(0, 4)
+          .map((table) => `${table.table}:${table.rows}`)
+          .join(" · ") || "暂无表数据"
+      : "检查中";
+
+    return (
+      <div className="sandbox-panel">
+        <div className="metric-list compact">
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">运行模式</span>
+              <span className="metric-meta">{databaseStatus?.note ?? "检查中"}</span>
+            </div>
+            <strong>{providerLabel}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">SQLite</span>
+              <span className="metric-meta">{tableSummary}</span>
+            </div>
+            <strong>{databaseStatus?.sqlite.totalRows ?? 0}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">PostgreSQL</span>
+              <span className="metric-meta">
+                {databaseStatus?.postgres.error ??
+                  databaseStatus?.postgres.databaseUrlMasked ??
+                  "未配置 DATABASE_URL"}
+              </span>
+            </div>
+            <strong>{pgStatus}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">迁移命令</span>
+              <span className="metric-meta">{databaseStatus?.commands.dryRun ?? "npm run db:pg:dry-run"}</span>
+            </div>
+            <strong>
+              {databaseStatus?.postgres.schemaTableCount === undefined
+                ? `${databaseStatus?.postgres.expectedTableCount ?? 10} tables`
+                : `${databaseStatus.postgres.schemaTableCount}/${databaseStatus.postgres.expectedTableCount}`}
+            </strong>
+          </div>
+        </div>
+        <div className="panel-actions">
+          <button type="button" className="secondary-button" onClick={() => void refreshDatabaseStatus()}>
+            <RefreshCw size={15} />
+            刷新状态
+          </button>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isCheckingDatabase}
+            onClick={() => void refreshDatabaseStatus(true)}
+          >
+            {isCheckingDatabase ? <Loader2 size={15} className="spin" /> : <Database size={15} />}
+            检查 PG
+          </button>
+        </div>
       </div>
     );
   }

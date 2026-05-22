@@ -1342,6 +1342,10 @@ a {
   padding: 9px 10px;
 }
 
+.metric-item > div {
+  min-width: 0;
+}
+
 .metric-name {
   display: block;
   color: var(--ink);
@@ -1355,6 +1359,9 @@ a {
   color: var(--muted);
   font-size: 10px;
   font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .metric-item strong {

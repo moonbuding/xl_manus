@@ -124,6 +124,7 @@ As a 想让多个用户同时跑任务的运维者，I want 数据库不会因�
 - 新增 `scripts/migrate-sqlite-to-postgres.mjs`，支持 `--dry-run`、`--emit-sql` 和 `--commit`；commit 模式通过 `DATABASE_URL` 调用 `psql` 写入 PostgreSQL。
 - 新增 `npm run db:pg:dry-run`、`npm run db:pg:emit-sql`、`npm run db:pg:migrate` 与 `npm run e2e:pg-migration`。
 - `docker-compose.yml` 已加入 `postgres:16` 服务与持久化卷，`.env.local.example` 保留 `MANUSXL_DATABASE_PROVIDER=sqlite` 作为当前开发模式默认值。
+- 新增 `/api/database/status` 与 Settings / 数据库面板，展示当前 provider、SQLite 待迁移行数、PostgreSQL CLI/schema 检查结果和迁移命令；新增 `npm run e2e:database-status`。
 - 待完成：运行时数据层从 `node:sqlite` 抽象到 SQLite/PG 双后端，并在真实 PG 上执行 clean schema + 10 并发写入验收。
 
 ---
