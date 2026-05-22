@@ -164,6 +164,8 @@ npm run e2e:local-browser
 
 该脚本会验证本地浏览器状态接口的登录保护、localhost 安全限制、CDP 状态、标签页列表和 snapshot 返回。读取页面正文默认需要配置 `MANUSXL_LOCAL_BROWSER_DOMAIN_ALLOWLIST`。
 
+Settings / 本地浏览器面板提供“登录态演练”入口：`/local-browser/rehearsal`。它会用当前 ManusXL 登录 Cookie 模拟付费文章正文，适合在 Chrome 远程调试模式下验证 local_browser 是否读到了用户本机浏览器的已登录态。使用时把 `localhost` 加入本地浏览器 allowlist。
+
 批量文件处理验收：
 
 ```bash

@@ -53,7 +53,18 @@ function createClient() {
     return { response, body };
   }
 
-  return { fetchJson };
+  async function fetchText(pathname, init, allowError = false) {
+    const response = await fetch(url(pathname), {
+      ...init,
+      headers: mergeHeaders(init?.headers)
+    });
+    rememberCookies(response.headers);
+    const text = await response.text();
+    if (!allowError) assert(response.ok, `${pathname} 请求失败：${response.status} ${text}`);
+    return { response, text };
+  }
+
+  return { fetchJson, fetchText };
 }
 
 async function postJson(pathname, body, client = createClient(), allowError = false) {
@@ -117,6 +128,11 @@ async function main() {
   assert(verified.body.user?.email === email, "邮箱验证没有登录正确用户");
   assert(verified.body.accessToken, "邮箱验证没有返回 access token");
   assert(verified.body.refreshToken, "邮箱验证没有返回 refresh token");
+  const rehearsalPage = await client.fetchText("/local-browser/rehearsal");
+  assert(
+    rehearsalPage.text.includes("MANUSXL_LOCAL_BROWSER_AUTHENTICATED_REHEARSAL"),
+    "本地浏览器登录态演练页没有显示已登录正文"
+  );
 
   const authStatus = await client.fetchJson("/api/auth/status");
   assert(["development", "smtp"].includes(authStatus.body.email?.mode), "认证状态缺少邮箱投递模式");
@@ -166,6 +182,7 @@ async function main() {
       "email register",
       "email delivery",
       "email verify",
+      "local browser auth rehearsal",
       "auth status",
       "bearer token",
       "refresh rotation",

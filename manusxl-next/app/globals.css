@@ -95,6 +95,70 @@ a {
   letter-spacing: 0;
 }
 
+.rehearsal-page {
+  min-height: 100vh;
+  display: grid;
+  align-content: start;
+  gap: 22px;
+  padding: clamp(24px, 7vw, 72px);
+  background: var(--bg);
+}
+
+.rehearsal-hero,
+.rehearsal-article {
+  width: min(900px, 100%);
+}
+
+.rehearsal-hero h1 {
+  margin: 16px 0 12px;
+  color: var(--ink);
+  font-size: clamp(38px, 8vw, 84px);
+  line-height: 0.98;
+  letter-spacing: 0;
+}
+
+.rehearsal-hero p,
+.rehearsal-article p {
+  margin: 0;
+  max-width: 780px;
+  color: var(--ink-soft);
+  font-size: 17px;
+  line-height: 1.7;
+}
+
+.rehearsal-article {
+  display: grid;
+  gap: 14px;
+  border-top: 1px solid var(--line);
+  padding-top: 22px;
+}
+
+.rehearsal-article h2 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 28px;
+  letter-spacing: 0;
+}
+
+.rehearsal-status {
+  width: fit-content;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+}
+
+.rehearsal-status.is-open {
+  color: var(--sage);
+  background: var(--surface-soft);
+}
+
+.rehearsal-status.is-locked {
+  color: #9f2a22;
+  background: #fff1f0;
+}
+
 .auth-switch {
   display: flex;
   align-items: center;

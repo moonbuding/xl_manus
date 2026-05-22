@@ -735,6 +735,7 @@ As a 已经登录了 The Information / Bloomberg / 知网的用户，I want Agen
 - 新增 `/api/local-browser/extension/safety`，配对扩展可在 popup 中一键暂停/恢复本地浏览器操作。
 - 新增扩展侧逐操作确认：`navigate/click/type/press` 执行前会生成 pending approval，配对扩展 popup 可逐条允许/拒绝；未配对扩展、拒绝或超时都会阻止真实 CDP 动作。
 - 新增 `/api/local-browser/extension/approval`，扩展可无 Cookie 处理待确认操作，审计记录会显示 `pending_approval` / `approved` / `blocked` 状态。
+- 新增 `/local-browser/rehearsal` 登录态文章演练页，使用当前 ManusXL 登录 Cookie 模拟付费正文；Settings / 本地浏览器面板提供入口，配合 allowlist=`localhost` 可验证 local_browser 读取用户已登录态。
 - 新增 `npm run e2e:local-browser`，覆盖未登录保护、非 localhost 地址拦截、CDP 状态、标签页列表、extension pairing、extension approval guard、extension pause、allowlist 保存、pause guard、snapshot、screenshot 和 action guard。
 - 待补：真实付费站点/验证码场景验收。
 

@@ -2277,6 +2277,10 @@ export function AgentWorkspace() {
             {isCreatingLocalBrowserPairing ? <Loader2 size={15} className="spin" /> : <Globe size={15} />}
             生成配对码
           </button>
+          <a className="secondary-button" href="/local-browser/rehearsal" target="_blank" rel="noreferrer">
+            <Globe size={15} />
+            登录态演练
+          </a>
         </div>
         {localBrowserPairing?.activeCode ? (
           <div className="pairing-code-panel">
