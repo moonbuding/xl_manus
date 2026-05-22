@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -35,10 +35,21 @@ interface UserRow {
   data_json: string;
 }
 
+interface AuthSessionRow {
+  id: string;
+  user_id: string;
+  refresh_token_hash: string;
+  revoked_at: string | null;
+  expires_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
 interface SessionPayload {
   sub: string;
   type: "access" | "refresh";
   exp: number;
+  sid?: string;
 }
 
 interface AuthPersistenceAdapter {
@@ -48,6 +59,9 @@ interface AuthPersistenceAdapter {
   getByPhone: (phone: string) => UserRow | undefined;
   getById: (userId: string) => UserRow | undefined;
   upsert: (row: UserRow) => void;
+  createSession: (row: AuthSessionRow) => void;
+  getSessionById: (sessionId: string) => AuthSessionRow | undefined;
+  revokeSession: (sessionId: string, revokedAt: string) => void;
 }
 
 function openAuthDb() {
@@ -65,6 +79,19 @@ function openAuthDb() {
       updated_at TEXT NOT NULL,
       data_json TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS auth_sessions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      refresh_token_hash TEXT NOT NULL,
+      revoked_at TEXT,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_id ON auth_sessions(user_id);
+    CREATE INDEX IF NOT EXISTS idx_auth_sessions_refresh_token_hash ON auth_sessions(refresh_token_hash);
   `);
   ensureAuthColumns(db);
   return db;
@@ -113,6 +140,24 @@ function upsertUserRowSqlite(db: DatabaseSync, row: UserRow) {
     );
 }
 
+function createAuthSessionSqlite(db: DatabaseSync, row: AuthSessionRow) {
+  db.prepare(
+    `
+    INSERT INTO auth_sessions
+      (id, user_id, refresh_token_hash, revoked_at, expires_at, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `
+  ).run(
+    row.id,
+    row.user_id,
+    row.refresh_token_hash,
+    row.revoked_at,
+    row.expires_at,
+    row.created_at,
+    row.updated_at
+  );
+}
+
 function createSqliteAuthStore(): AuthPersistenceAdapter {
   const db = openAuthDb();
   return {
@@ -124,7 +169,19 @@ function createSqliteAuthStore(): AuthPersistenceAdapter {
       db.prepare("SELECT * FROM users WHERE phone = ?").get(normalizePhone(phone)) as UserRow | undefined,
     getById: (userId) =>
       db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as UserRow | undefined,
-    upsert: (row) => upsertUserRowSqlite(db, row)
+    upsert: (row) => upsertUserRowSqlite(db, row),
+    createSession: (row) => createAuthSessionSqlite(db, row),
+    getSessionById: (sessionId) =>
+      db.prepare("SELECT * FROM auth_sessions WHERE id = ?").get(sessionId) as AuthSessionRow | undefined,
+    revokeSession: (sessionId, revokedAt) => {
+      db.prepare(
+        `
+        UPDATE auth_sessions
+        SET revoked_at = ?, updated_at = ?
+        WHERE id = ? AND revoked_at IS NULL
+      `
+      ).run(revokedAt, revokedAt, sessionId);
+    }
   };
 }
 
@@ -175,6 +232,28 @@ function selectUserRowJson(whereSql: string) {
   `;
 }
 
+function selectAuthSessionRowJson(whereSql: string) {
+  return `
+    SELECT json_build_object(
+      'id', id,
+      'user_id', user_id,
+      'refresh_token_hash', refresh_token_hash,
+      'revoked_at', revoked_at,
+      'expires_at', expires_at,
+      'created_at', created_at,
+      'updated_at', updated_at
+    )::text
+    FROM auth_sessions
+    WHERE ${whereSql}
+    LIMIT 1;
+  `;
+}
+
+function parsePostgresAuthSessionRow(output: string) {
+  const line = output.trim();
+  return line ? (JSON.parse(line) as AuthSessionRow) : undefined;
+}
+
 function upsertUserRowPostgres(row: UserRow) {
   runPsql([
     "-c",
@@ -206,6 +285,25 @@ function upsertUserRowPostgres(row: UserRow) {
   ]);
 }
 
+function createAuthSessionPostgres(row: AuthSessionRow) {
+  runPsql([
+    "-c",
+    `
+      INSERT INTO auth_sessions
+        (id, user_id, refresh_token_hash, revoked_at, expires_at, created_at, updated_at)
+      VALUES (
+        ${postgresValue(row.id)},
+        ${postgresValue(row.user_id)},
+        ${postgresValue(row.refresh_token_hash)},
+        ${postgresValue(row.revoked_at)},
+        ${postgresValue(row.expires_at)},
+        ${postgresValue(row.created_at)},
+        ${postgresValue(row.updated_at)}
+      );
+    `
+  ]);
+}
+
 function createPostgresAuthStore(): AuthPersistenceAdapter {
   ensurePostgresSchema();
   return {
@@ -223,7 +321,23 @@ function createPostgresAuthStore(): AuthPersistenceAdapter {
       parsePostgresUserRow(
         runPsql(["-At", "-c", selectUserRowJson(`id = ${postgresValue(userId)}`)])
       ),
-    upsert: upsertUserRowPostgres
+    upsert: upsertUserRowPostgres,
+    createSession: createAuthSessionPostgres,
+    getSessionById: (sessionId) =>
+      parsePostgresAuthSessionRow(
+        runPsql(["-At", "-c", selectAuthSessionRowJson(`id = ${postgresValue(sessionId)}`)])
+      ),
+    revokeSession: (sessionId, revokedAt) => {
+      runPsql([
+        "-c",
+        `
+          UPDATE auth_sessions
+          SET revoked_at = ${postgresValue(revokedAt)}, updated_at = ${postgresValue(revokedAt)}
+          WHERE id = ${postgresValue(sessionId)}
+            AND revoked_at IS NULL;
+        `
+      ]);
+    }
   };
 }
 
@@ -249,7 +363,9 @@ function createAuthStore(): AuthPersistenceAdapter {
 }
 
 function getAuthStore() {
-  globalForAuth.manusxlAuthStore ??= createAuthStore();
+  if (!globalForAuth.manusxlAuthStore || typeof globalForAuth.manusxlAuthStore.createSession !== "function") {
+    globalForAuth.manusxlAuthStore = createAuthStore();
+  }
   globalForAuth.manusxlAuthStore.ensureSchema();
   return globalForAuth.manusxlAuthStore;
 }
@@ -281,6 +397,10 @@ function verifyToken(token: string, type: SessionPayload["type"]) {
   const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8")) as SessionPayload;
   if (payload.type !== type || payload.exp < Math.floor(Date.now() / 1000)) return undefined;
   return payload;
+}
+
+function hashRefreshToken(refreshToken: string) {
+  return createHash("sha256").update(refreshToken).digest("hex");
 }
 
 function hashPassword(password: string) {
@@ -533,10 +653,23 @@ export function readUser(userId: string) {
 
 export function makeSessionTokens(userId: string) {
   const now = Math.floor(Date.now() / 1000);
-  return {
-    accessToken: makeToken({ sub: userId, type: "access", exp: now + accessMaxAgeSeconds }),
-    refreshToken: makeToken({ sub: userId, type: "refresh", exp: now + refreshMaxAgeSeconds })
+  const sessionId = createId("ses");
+  const refreshExpiresAt = now + refreshMaxAgeSeconds;
+  const tokens = {
+    accessToken: makeToken({ sub: userId, sid: sessionId, type: "access", exp: now + accessMaxAgeSeconds }),
+    refreshToken: makeToken({ sub: userId, sid: sessionId, type: "refresh", exp: refreshExpiresAt })
   };
+  const createdAt = new Date(now * 1000).toISOString();
+  getAuthStore().createSession({
+    id: sessionId,
+    user_id: userId,
+    refresh_token_hash: hashRefreshToken(tokens.refreshToken),
+    revoked_at: null,
+    expires_at: new Date(refreshExpiresAt * 1000).toISOString(),
+    created_at: createdAt,
+    updated_at: createdAt
+  });
+  return tokens;
 }
 
 export function getAuthCookieNames() {
@@ -568,11 +701,29 @@ export function readAuthUserFromAccessToken(token: string | null | undefined) {
 
 export function refreshAccessToken(refreshToken: string) {
   const payload = verifyToken(refreshToken, "refresh");
-  if (!payload) return undefined;
+  if (!payload?.sid) return undefined;
+  const session = getAuthStore().getSessionById(payload.sid);
+  if (
+    !session ||
+    session.user_id !== payload.sub ||
+    session.revoked_at ||
+    session.refresh_token_hash !== hashRefreshToken(refreshToken) ||
+    Date.parse(session.expires_at) < Date.now()
+  ) {
+    return undefined;
+  }
   const user = readUser(payload.sub);
   if (!user) return undefined;
+  getAuthStore().revokeSession(session.id, new Date().toISOString());
   return {
     user,
     ...makeSessionTokens(user.id)
   };
+}
+
+export function revokeRefreshToken(refreshToken: string | null | undefined) {
+  if (!refreshToken) return;
+  const payload = verifyToken(refreshToken, "refresh");
+  if (!payload?.sid) return;
+  getAuthStore().revokeSession(payload.sid, new Date().toISOString());
 }

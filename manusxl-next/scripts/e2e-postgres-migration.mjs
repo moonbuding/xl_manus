@@ -139,6 +139,7 @@ try {
 
   const schema = readFileSync(schemaPath, "utf8");
   assert.match(schema, /CREATE TABLE IF NOT EXISTS users/);
+  assert.match(schema, /CREATE TABLE IF NOT EXISTS auth_sessions/);
   assert.match(schema, /CREATE TABLE IF NOT EXISTS tasks/);
   assert.match(schema, /CREATE TABLE IF NOT EXISTS task_steps/);
   assert.match(schema, /CREATE INDEX IF NOT EXISTS idx_task_steps_task_id/);

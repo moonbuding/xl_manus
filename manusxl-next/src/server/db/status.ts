@@ -13,6 +13,7 @@ import type { DatabaseStatus, DatabaseTableCount } from "@/types/agent";
 const sqlitePath = dataPath("manusxl.sqlite");
 const expectedTables = [
   "users",
+  "auth_sessions",
   "tasks",
   "task_steps",
   "task_files",

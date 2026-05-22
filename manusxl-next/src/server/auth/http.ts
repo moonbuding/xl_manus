@@ -7,6 +7,8 @@ import {
 } from "@/server/auth/auth-store";
 import type { AuthUser } from "@/types/agent";
 
+type SessionTokens = ReturnType<typeof makeSessionTokens>;
+
 export function currentUserFromRequest(request: Request) {
   const authorization = request.headers.get("authorization") ?? "";
   const bearer = authorization.match(/^Bearer\s+(.+)$/i)?.[1];
@@ -21,8 +23,7 @@ export function requireAuth(request: Request): AuthUser | NextResponse {
   return currentUserFromRequest(request) ?? unauthorized();
 }
 
-export function jsonWithSession(body: unknown, userId: string) {
-  const tokens = makeSessionTokens(userId);
+export function jsonWithSession(body: unknown, userId: string, tokens: SessionTokens = makeSessionTokens(userId)) {
   const responseBody =
     body && typeof body === "object" && !Array.isArray(body)
       ? { ...body, accessToken: tokens.accessToken, refreshToken: tokens.refreshToken }
@@ -60,8 +61,7 @@ export function jsonClearingSession(body: unknown) {
   return response;
 }
 
-export function redirectWithSession(url: string, userId: string) {
-  const tokens = makeSessionTokens(userId);
+export function redirectWithSession(url: string, userId: string, tokens: SessionTokens = makeSessionTokens(userId)) {
   const response = NextResponse.redirect(url);
   const {
     accessCookieName,

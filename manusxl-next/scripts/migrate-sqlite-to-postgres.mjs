@@ -28,6 +28,20 @@ export const migrationTables = [
     ]
   },
   {
+    name: "auth_sessions",
+    primaryKey: "id",
+    jsonColumns: new Set(),
+    columns: [
+      "id",
+      "user_id",
+      "refresh_token_hash",
+      "revoked_at",
+      "expires_at",
+      "created_at",
+      "updated_at"
+    ]
+  },
+  {
     name: "tasks",
     primaryKey: "id",
     jsonColumns: new Set(["data_json"]),

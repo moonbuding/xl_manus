@@ -13,6 +13,16 @@ CREATE TABLE IF NOT EXISTS users (
   data_json JSONB NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS auth_sessions (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  refresh_token_hash TEXT NOT NULL,
+  revoked_at TEXT,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS tasks (
   id TEXT PRIMARY KEY,
   owner_id TEXT,
@@ -143,6 +153,8 @@ CREATE INDEX IF NOT EXISTS idx_task_files_task_id ON task_files(task_id);
 CREATE INDEX IF NOT EXISTS idx_task_files_owner_id ON task_files(owner_id);
 CREATE INDEX IF NOT EXISTS idx_uploaded_files_owner_id ON uploaded_files(owner_id);
 CREATE INDEX IF NOT EXISTS idx_uploaded_files_created_at ON uploaded_files(created_at);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_id ON auth_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_refresh_token_hash ON auth_sessions(refresh_token_hash);
 CREATE INDEX IF NOT EXISTS idx_mcp_servers_owner_id ON mcp_servers(owner_id);
 CREATE INDEX IF NOT EXISTS idx_skill_settings_owner_id ON skill_settings(owner_id);
 CREATE INDEX IF NOT EXISTS idx_task_templates_owner_id ON task_templates(owner_id);

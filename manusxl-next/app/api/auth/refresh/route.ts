@@ -19,5 +19,9 @@ export function POST(request: Request) {
   );
   const refreshed = refreshAccessToken(cookies[refreshCookieName] ?? "");
   if (!refreshed) return NextResponse.json({ error: "Refresh token invalid" }, { status: 401 });
-  return jsonWithSession({ user: refreshed.user }, refreshed.user.id);
+  return jsonWithSession(
+    { user: refreshed.user },
+    refreshed.user.id,
+    { accessToken: refreshed.accessToken, refreshToken: refreshed.refreshToken }
+  );
 }

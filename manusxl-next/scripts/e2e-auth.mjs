@@ -100,11 +100,23 @@ async function main() {
 
   const refreshed = await postJson("/api/auth/refresh", {}, client);
   assert(refreshed.body.accessToken, "refresh 没有返回新的 access token");
+  assert(refreshed.body.refreshToken, "refresh 没有返回新的 refresh token");
   assert(refreshed.body.user?.email === email, "refresh 后用户不一致");
+
+  const oldRefreshRejected = await fetch(url("/api/auth/refresh"), {
+    method: "POST",
+    headers: { Cookie: `manusxl_refresh=${verified.body.refreshToken}` }
+  });
+  assert(oldRefreshRejected.status === 401, "旧 refresh token 在轮换后仍可续期");
 
   await client.fetchJson("/api/auth/logout", { method: "POST" });
   const loggedOutMe = await client.fetchJson("/api/auth/me", undefined, true);
   assert(loggedOutMe.response.status === 401, "logout 后 cookie 仍可访问 /api/auth/me");
+  const logoutRefreshRejected = await fetch(url("/api/auth/refresh"), {
+    method: "POST",
+    headers: { Cookie: `manusxl_refresh=${refreshed.body.refreshToken}` }
+  });
+  assert(logoutRefreshRejected.status === 401, "logout 后 refresh token 仍可续期");
 
   const loginClient = createClient();
   const loggedIn = await postJson("/api/auth/login", { email, password }, loginClient);
@@ -113,7 +125,15 @@ async function main() {
   console.log(JSON.stringify({
     ok: true,
     email,
-    checked: ["unauthorized", "email register", "email verify", "bearer token", "refresh", "logout", "email login"]
+    checked: [
+      "unauthorized",
+      "email register",
+      "email verify",
+      "bearer token",
+      "refresh rotation",
+      "logout revocation",
+      "email login"
+    ]
   }, null, 2));
 }
 

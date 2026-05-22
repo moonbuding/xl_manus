@@ -120,7 +120,7 @@ As a 想让多个用户同时跑任务的运维者，I want 数据库不会因�
 - 缓解：dry-run 模式先校验 row count 一致；用户确认后才真正写
 
 #### 实施记录
-- 新增 `db/postgres/0001_initial.sql`，覆盖 users、tasks、task_steps、task_files、uploaded_files、app_config、mcp_servers、skill_settings、task_templates、context_metrics 等当前 SQLite 表。
+- 新增 `db/postgres/0001_initial.sql`，覆盖 users、auth_sessions、tasks、task_steps、task_files、uploaded_files、app_config、mcp_servers、skill_settings、task_templates、context_metrics 等当前 SQLite 表。
 - 新增 `scripts/migrate-sqlite-to-postgres.mjs`，支持 `--dry-run`、`--emit-sql` 和 `--commit`；commit 模式通过 `DATABASE_URL` 调用 `psql` 写入 PostgreSQL。
 - 新增统一 PostgreSQL 客户端探测与执行入口：优先使用本机 `psql`，本机缺失时可自动使用 Docker 镜像 `postgres:16` 内的 `psql`，运行时 adapter、数据库状态检查和迁移脚本共用这一能力。
 - 新增 `npm run db:pg:dry-run`、`npm run db:pg:emit-sql`、`npm run db:pg:migrate` 与 `npm run e2e:pg-migration`。
@@ -130,7 +130,7 @@ As a 想让多个用户同时跑任务的运维者，I want 数据库不会因�
 - 新增 Context 指标 runtime adapter：同样按 provider 切换 context_metrics，覆盖 Prompt Cache、Context 面板和 Billing 汇总读取路径；不可用时安全回退 SQLite。
 - 新增上传文件索引 runtime adapter：uploaded_files 按 provider 切换，覆盖文件上传解析、任务绑定上传文件、批量文件处理和图片处理读取路径；不可用时安全回退 SQLite。
 - 新增系统配置 runtime adapter：app_config 按 provider 切换，覆盖 DeepSeek Key、模型路由、预算、Prompt Cache 开关和 Settings 保存配置路径；不可用时安全回退 SQLite。
-- 新增认证用户 runtime adapter：users 按 provider 切换，覆盖手机号验证码、邮箱注册登录、JWT 用户读取和 OAuth upsert；不可用时安全回退 SQLite。
+- 新增认证用户 runtime adapter：users/auth_sessions 按 provider 切换，覆盖手机号验证码、邮箱注册登录、JWT 用户读取、OAuth upsert、refresh token 轮换和 logout 撤销；不可用时安全回退 SQLite。
 - 新增任务模板 runtime adapter：task_templates 按 provider 切换，覆盖公共模板种子、私有模板保存/读取/删除、tag 过滤和 owner 隔离；不可用时安全回退 SQLite。
 - 新增 Skill 设置 runtime adapter：skill_settings 按 provider 切换，覆盖内置/本地 Skill 启用状态、用户隔离和未知工具阻断后的开关读取；不可用时安全回退 SQLite。
 - 新增 MCP Server runtime adapter：mcp_servers 按 provider 切换，覆盖 server 新增/刷新/启停/删除、工具级禁用和 Agent `mcp_call` 读取路径；不可用时安全回退 SQLite。
@@ -173,7 +173,8 @@ As a 第一次访问产品的用户，I want 点 "Sign in with Google" 一键登
 - 新增 `npm run e2e:auth`，覆盖未登录 401、邮箱注册/验证、Bearer token、refresh、logout 与邮箱密码登录。
 - 新增 `/api/auth/oauth/google|github/start` 与 `/callback`，实现 OAuth state cookie、code 换 token、userinfo 拉取和用户创建；未配置 Client ID/Secret 时安全返回错误。
 - 登录页新增 Google/GitHub 入口；后续填入 `MANUSXL_GOOGLE_CLIENT_ID/SECRET` 或 `MANUSXL_GITHUB_CLIENT_ID/SECRET` 即可启用真实第三方登录。
-- 待补：真实邮件发送服务、refresh token 服务端撤销表、生产 OAuth 回调域名配置验收。
+- 新增 `auth_sessions` 会话表，refresh token 带 session id 并保存哈希；refresh 时轮换并撤销旧 token，logout 时撤销当前 refresh token，`npm run e2e:auth` 已覆盖旧 token/退出后 token 无法续期。
+- 待补：真实邮件发送服务、生产 OAuth 回调域名配置验收。
 
 #### 相关 OpenManus 代码
 - 完全新建：`app/auth/`（用户模型、OAuth flow、JWT）
