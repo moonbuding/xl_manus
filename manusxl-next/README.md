@@ -49,6 +49,7 @@ MANUSXL_SMTP_PASSWORD=your_smtp_password
 
 ```bash
 open http://localhost:3001/api/auth/oauth/google/start?dev=1
+open http://localhost:3001/api/auth/oauth/github/start?dev=1
 ```
 
 真实 OAuth 上线时，在第三方后台把回调地址配置为 Settings / 认证面板展示的 `/api/auth/oauth/{provider}/callback`，并填入 `MANUSXL_GOOGLE_CLIENT_ID/SECRET` 或 `MANUSXL_GITHUB_CLIENT_ID/SECRET`。
@@ -160,11 +161,12 @@ MANUSXL_PG_E2E_DATABASE_URL=postgresql://manusxl:manusxl@localhost:5432/manusxl 
 
 ```bash
 npm run e2e:local-browser
+npm run e2e:local-browser:rehearsal
 ```
 
 该脚本会验证本地浏览器状态接口的登录保护、localhost 安全限制、CDP 状态、标签页列表和 snapshot 返回。读取页面正文默认需要配置 `MANUSXL_LOCAL_BROWSER_DOMAIN_ALLOWLIST`。
 
-Settings / 本地浏览器面板提供“登录态演练”入口：`/local-browser/rehearsal`。它会用当前 ManusXL 登录 Cookie 模拟付费文章正文，适合在 Chrome 远程调试模式下验证 local_browser 是否读到了用户本机浏览器的已登录态。使用时把 `localhost` 加入本地浏览器 allowlist。
+Settings / 本地浏览器面板提供“登录态演练”入口：`/local-browser/rehearsal`。它会用当前 ManusXL 登录 Cookie 模拟付费文章正文，适合在 Chrome 远程调试模式下验证 local_browser 是否读到了用户本机浏览器的已登录态。`e2e:local-browser:rehearsal` 会自动启动本机 Chrome CDP、注入登录 Cookie、设置 `localhost` allowlist，并通过后端 snapshot 读回登录态正文标记。
 
 批量文件处理验收：
 

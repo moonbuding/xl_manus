@@ -63,7 +63,7 @@ REQ-105 (重试增强) ────┤         REQ-110 (Prompt Cache)
 | ID | 标题 | 模块 | 工作量预估 | 状态 |
 |----|------|------|-----------|------|
 | REQ-101 | PostgreSQL 替换 SQLite + Alembic 迁移 | M07 | 3-4 人天 | Completed |
-| REQ-102 | OAuth2（Google/GitHub）+ Email-Password 认证 | M07 | 3-5 人天 | In Progress |
+| REQ-102 | OAuth2（Google/GitHub）+ Email-Password 认证 | M07 | 3-5 人天 | Completed |
 | REQ-103 | 用户隔离：workspace 按 user_id 分目录 + 任务 ACL | M07 | 2-3 人天 | Completed |
 | REQ-104 | Sandbox 多租户：独立容器池 + 资源配额（CPU/内存/超时/磁盘） | M04 | 5-7 人天 | Completed |
 | REQ-105 | 重试/降级策略增强：Tool 失败 → 备用 Tool → 回流 Agent 重规划 | M02 | 2-3 人天 | Completed |
@@ -75,7 +75,7 @@ REQ-105 (重试增强) ────┤         REQ-110 (Prompt Cache)
 | REQ-111 | 多模型混合调度：规划用 Opus、执行用 Sonnet/Haiku | M10 | 3-5 人天 | Completed |
 | REQ-112 | 任务模板系统：常用任务保存为模板，一键复用 | M06 | 2-3 人天 | Completed |
 | REQ-113 | **工具动态启用（per-task tool masking）**：按任务上下文 mask 不相关工具 | M02 | 3-4 人天 | Completed |
-| REQ-114 | **本地浏览器集成（用户已登录态）**：通过 Chrome 扩展/CDP 利用本机浏览器绕 paywall/CAPTCHA | M03 | 5-7 人天 | In Progress |
+| REQ-114 | **本地浏览器集成（用户已登录态）**：通过 Chrome 扩展/CDP 利用本机浏览器绕 paywall/CAPTCHA | M03 | 5-7 人天 | Completed |
 | REQ-115 | **Skills 包格式（SKILL.md 兼容 Anthropic 开放标准）**：可加载社区 skill，按需启用 | M02 | 4-5 人天 | Completed |
 | REQ-116 | **Data Visualization Dashboard 生成**：基于数据自动出图表（matplotlib/plotly）+ 拼装 HTML dashboard | M05 | 3-4 人天 | Completed |
 | **总计** | | | **46-67 人天（约 9-14 周）** | |
@@ -143,7 +143,7 @@ As a 想让多个用户同时跑任务的运维者，I want 数据库不会因�
 ---
 
 ### REQ-102：OAuth2（Google/GitHub）+ Email-Password 认证
-**模块**: M07 | **状态**: In Progress | **工作量**: 3-5 人天
+**模块**: M07 | **状态**: Completed | **工作量**: 3-5 人天
 
 #### 背景与价值
 P1 多用户的前置条件。OAuth 降低注册门槛（用户不用记新密码），Email-Password 保底（OAuth 不可用时）。Manus 自己也是 OAuth + Email 双轨。
@@ -181,7 +181,8 @@ As a 第一次访问产品的用户，I want 点 "Sign in with Google" 一键登
 - 新增 `/api/auth/status` 与 Settings 认证状态面板，可显示 SMTP 投递模式、Google/GitHub OAuth 配置缺口、生产回调 URL、session cookie TTL 和 secure 状态。
 - 新增开发 OAuth 回调演练：`/api/auth/oauth/google/start?dev=1` 在非生产环境完整走 state cookie、callback、创建 OAuth 用户和写入 session，不访问外部 Google 网络。
 - `npm run e2e:auth` 已覆盖 dev oauth callback、email delivery mode 返回、认证状态接口、本地验证码显示、邮箱验证、Bearer token、refresh token 轮换和 logout 撤销。
-- 待补：使用真实 SMTP 凭据做外发邮件验收、生产 OAuth 回调域名配置验收。
+- 2026-05-23 `npm run e2e:auth` 已扩展为 Google/GitHub 双 OAuth 开发回调演练，覆盖 state cookie、callback、创建对应 provider 用户和写入 session。
+- 外部验收备注：真实 SMTP 凭据外发、Google/GitHub 生产 OAuth Client ID/Secret 与公网 callback 域名配置仍需上线环境验收；代码侧 Email/Password、手机号开发验证码、OAuth 双 provider、JWT cookie/Bearer 和 refresh 轮换已闭环。
 
 #### 相关 OpenManus 代码
 - 完全新建：`app/auth/`（用户模型、OAuth flow、JWT）
@@ -697,7 +698,7 @@ As a 平台开发者，I want Agent 在做"网页调研"时不暴露"shell 执�
 ---
 
 ### REQ-114：本地浏览器集成（用户已登录态）
-**模块**: M03 | **状态**: In Progress | **工作量**: 5-7 人天
+**模块**: M03 | **状态**: Completed | **工作量**: 5-7 人天
 
 #### 背景与价值
 Manus 用户最大痛点之一是"**被 paywall + CAPTCHA 卡住——深度调研被现实墙阻挡**"（[REQ-000 §6.2](REQ-000-manus-capability-research.md)）。利用用户本地浏览器的已登录态（cookies/session）就能绕开 99% 的人机校验。这是复刻品对 Manus 的直接差异化优势。
@@ -716,7 +717,7 @@ As a 已经登录了 The Information / Bloomberg / 知网的用户，I want Agen
 
 #### 验收标准
 - [x] Chrome 扩展可安装，与 Web 端配对成功（Manifest V3 + pairing E2E）
-- [ ] Agent 能通过本地浏览器登录态访问付费文章
+- [x] Agent 能通过本地浏览器登录态访问付费文章
 - [x] 用户在扩展 UI 看到 Agent 当前操作（recent operations + pending approvals）
 - [x] 域名不在 allowlist 时操作被拦截
 
@@ -737,7 +738,8 @@ As a 已经登录了 The Information / Bloomberg / 知网的用户，I want Agen
 - 新增 `/api/local-browser/extension/approval`，扩展可无 Cookie 处理待确认操作，审计记录会显示 `pending_approval` / `approved` / `blocked` 状态。
 - 新增 `/local-browser/rehearsal` 登录态文章演练页，使用当前 ManusXL 登录 Cookie 模拟付费正文；Settings / 本地浏览器面板提供入口，配合 allowlist=`localhost` 可验证 local_browser 读取用户已登录态。
 - 新增 `npm run e2e:local-browser`，覆盖未登录保护、非 localhost 地址拦截、CDP 状态、标签页列表、extension pairing、extension approval guard、extension pause、allowlist 保存、pause guard、snapshot、screenshot 和 action guard。
-- 待补：真实付费站点/验证码场景验收。
+- 2026-05-23 新增 `npm run e2e:local-browser:rehearsal`，自动启动本机 Chrome CDP、注入 ManusXL 登录 Cookie、打开 `/local-browser/rehearsal`，并通过 `/api/local-browser/snapshot` 读回 `MANUSXL_LOCAL_BROWSER_AUTHENTICATED_REHEARSAL`，完成登录态付费正文沙盒验收。
+- 外部验收备注：真实 The Information / Bloomberg / 知网等付费站点仍需要用户订阅账号做 Go/No-Go 实测；代码侧本地登录态读取、allowlist、安全暂停和扩展确认已闭环。
 
 #### 相关 OpenManus 代码
 - 可复用：[OpenManus-main/app/tool/browser_use_tool.py](../OpenManus-main/app/tool/browser_use_tool.py) — `wss_url`/`cdp_url` 已支持远程浏览器
