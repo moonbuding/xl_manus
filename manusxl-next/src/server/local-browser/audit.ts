@@ -1,3 +1,4 @@
+import { safeRecordAuditLog } from "@/server/audit/audit-store";
 import { isLocalBrowserPaused, updateAppConfig } from "@/server/config/app-config";
 import type {
   LocalBrowserActionType,
@@ -86,6 +87,19 @@ export function recordLocalBrowserOperation(input: {
   const list = operations();
   list.unshift(operation);
   if (list.length > maxOperations) list.length = maxOperations;
+  if (operation.ownerId) {
+    safeRecordAuditLog({
+      userId: operation.ownerId,
+      action: `local_browser.${operation.action}`,
+      resource: operation.url ?? operation.tabId ?? "local_browser",
+      status: operation.status === "blocked" ? "blocked" : operation.status === "failed" ? "failed" : "started",
+      metadata: {
+        source: operation.source,
+        title: operation.title,
+        error: operation.error
+      }
+    });
+  }
   return operation;
 }
 

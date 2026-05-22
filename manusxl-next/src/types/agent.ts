@@ -91,6 +91,42 @@ export interface AuthStatus {
   };
 }
 
+export type AuditLogStatus = "started" | "completed" | "failed" | "blocked";
+
+export interface AuditLog {
+  id: string;
+  userId?: string;
+  taskId?: string;
+  stepId?: string;
+  action: string;
+  resource: string;
+  status: AuditLogStatus;
+  ip?: string;
+  userAgent?: string;
+  metadata: Record<string, unknown>;
+  metadataHash: string;
+  previousHash: string;
+  entryHash: string;
+  createdAt: string;
+}
+
+export interface AuditLogListResponse {
+  logs: AuditLog[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface AuditVerifyResult {
+  ok: boolean;
+  total: number;
+  checkedAt: string;
+  firstHash?: string;
+  lastHash?: string;
+  brokenAt?: string;
+  error?: string;
+}
+
 export interface ToolCallPayload {
   toolName: string;
   arguments: Record<string, unknown>;

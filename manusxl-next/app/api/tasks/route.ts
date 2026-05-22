@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { enqueueAgentTask } from "@/server/agent/scheduler";
+import { requestAuditContext, safeRecordAuditLog } from "@/server/audit/audit-store";
 import { currentUserFromRequest, unauthorized } from "@/server/auth/http";
 import { listUploadedFileRecords } from "@/server/files/readers";
 import { getDeepSeekConfig } from "@/server/llm/deepseek";
@@ -44,6 +45,20 @@ export async function POST(request: Request) {
       user.id,
       uploadedFileRecords.map((file) => file.id)
     );
+    safeRecordAuditLog({
+      userId: user.id,
+      taskId: task.id,
+      action: "task.create",
+      resource: `task:${task.id}`,
+      status: "completed",
+      ...requestAuditContext(request),
+      metadata: {
+        model,
+        promptLength: prompt.length,
+        uploadedFileCount: uploadedFileRecords.length,
+        queued: true
+      }
+    });
     const queue = enqueueAgentTask(task.id);
 
     return NextResponse.json({

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requestAuditContext, safeRecordAuditLog } from "@/server/audit/audit-store";
 import { getAuthCookieNames, refreshAccessToken } from "@/server/auth/auth-store";
 import { jsonWithSession } from "@/server/auth/http";
 
@@ -19,6 +20,14 @@ export function POST(request: Request) {
   );
   const refreshed = refreshAccessToken(cookies[refreshCookieName] ?? "");
   if (!refreshed) return NextResponse.json({ error: "Refresh token invalid" }, { status: 401 });
+  safeRecordAuditLog({
+    userId: refreshed.user.id,
+    action: "auth.refresh",
+    resource: "session",
+    status: "completed",
+    ...requestAuditContext(request),
+    metadata: { rotated: true }
+  });
   return jsonWithSession(
     { user: refreshed.user },
     refreshed.user.id,

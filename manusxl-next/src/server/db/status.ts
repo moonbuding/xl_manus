@@ -22,7 +22,8 @@ const expectedTables = [
   "mcp_servers",
   "skill_settings",
   "task_templates",
-  "context_metrics"
+  "context_metrics",
+  "audit_logs"
 ];
 
 function quoteIdentifier(value: string) {

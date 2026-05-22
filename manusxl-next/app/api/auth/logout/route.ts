@@ -1,5 +1,6 @@
+import { requestAuditContext, safeRecordAuditLog } from "@/server/audit/audit-store";
 import { getAuthCookieNames, revokeRefreshToken } from "@/server/auth/auth-store";
-import { jsonClearingSession } from "@/server/auth/http";
+import { currentUserFromRequest, jsonClearingSession } from "@/server/auth/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -20,6 +21,16 @@ function refreshTokenFromRequest(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const user = currentUserFromRequest(request);
   revokeRefreshToken(refreshTokenFromRequest(request));
+  if (user) {
+    safeRecordAuditLog({
+      userId: user.id,
+      action: "auth.logout",
+      resource: "session",
+      status: "completed",
+      ...requestAuditContext(request)
+    });
+  }
   return jsonClearingSession({ ok: true });
 }

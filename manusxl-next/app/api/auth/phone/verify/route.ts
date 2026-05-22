@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requestAuditContext, safeRecordAuditLog } from "@/server/audit/audit-store";
 import { verifyPhoneLogin } from "@/server/auth/auth-store";
 import { jsonWithSession } from "@/server/auth/http";
 
@@ -12,6 +13,14 @@ export async function POST(request: Request) {
     const user = verifyPhoneLogin({
       phone: body.phone ?? "",
       code: body.verificationCode ?? body.code ?? ""
+    });
+    safeRecordAuditLog({
+      userId: user.id,
+      action: "auth.login",
+      resource: "phone",
+      status: "completed",
+      ...requestAuditContext(request),
+      metadata: { method: "phone", phoneSuffix: user.phone?.slice(-4) }
     });
     return jsonWithSession({ user }, user.id);
   } catch (error) {

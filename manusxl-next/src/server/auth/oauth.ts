@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { NextResponse } from "next/server";
+import { requestAuditContext, safeRecordAuditLog } from "@/server/audit/audit-store";
 import { getAuthCookieNames, upsertOAuthUser } from "@/server/auth/auth-store";
 import { getEmailDeliveryStatus } from "@/server/auth/email";
 import { redirectWithSession } from "@/server/auth/http";
@@ -233,6 +234,18 @@ export async function finishOAuth(providerParam: string, request: Request) {
       providerAccountId: profile.providerAccountId,
       email: profile.email,
       displayName: profile.displayName
+    });
+    safeRecordAuditLog({
+      userId: user.id,
+      action: "auth.oauth",
+      resource: provider,
+      status: "completed",
+      ...requestAuditContext(request),
+      metadata: {
+        provider,
+        providerAccountId: profile.providerAccountId,
+        email: user.email
+      }
     });
     const response = redirectWithSession(`${appBaseUrl(request)}/`, user.id);
     response.cookies.set(stateCookieName(provider), "", { httpOnly: true, path: "/", maxAge: 0 });

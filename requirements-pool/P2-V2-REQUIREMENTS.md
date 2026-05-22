@@ -77,7 +77,7 @@ REQ-216 (AI Design)
 | REQ-204 | 桌面端 → 云端文件同步（选择性上传，隐私可控） | M08 | 3-5 人天 | Planning |
 | REQ-205 | Kubernetes 部署，Sandbox 改为 K8s Job/Pod 弹性调度 | M09 | 5-7 人天 | Planning |
 | REQ-206 | 监控告警：Prometheus + Grafana + 任务失败告警 | M09 | 2-3 人天 | Planning |
-| REQ-207 | 审计日志：所有 Agent 操作可追溯（合规需求） | M07 | 3-4 人天 | Planning |
+| REQ-207 | 审计日志：所有 Agent 操作可追溯（合规需求） | M07 | 3-4 人天 | Completed |
 | REQ-208 | 团队/组织功能：多人共享任务、权限矩阵 | M07 | 5-7 人天 | Planning |
 | REQ-209 | 工作流模板市场：用户保存常用任务模板，社区分享 | M06 | 4-5 人天 | Planning |
 | REQ-210 | Browser-Use 升级到视觉模型（截图驱动，无需 DOM 索引） | M03 | 4-5 人天 | Planning |
@@ -311,7 +311,7 @@ As a 运维者，I want 任务失败率超 10% 时立即收到通知，So that �
 ---
 
 ### REQ-207：审计日志 — 所有 Agent 操作可追溯
-**模块**: M07 | **状态**: Planning | **工作量**: 3-4 人天
+**模块**: M07 | **状态**: Completed | **工作量**: 3-4 人天
 
 #### 背景与价值
 企业用户必需。当一个任务"做错事"时（如改了不该改的文件），必须能追溯到"哪个 user、哪个 task、哪个 step、用了哪个 tool、动了哪些资源"。合规要求（GDPR/SOC2）也需要审计日志。
@@ -329,10 +329,18 @@ As a 企业 admin，I want 能查谁在何时通过 Agent 做了什么操作，S
 - 非功能：写日志异步批量，不影响主路径
 
 #### 验收标准
-- [ ] 跑 1 个任务后审计表能查到所有 tool 调用记录
-- [ ] 导出 CSV 可读，含所有字段
-- [ ] 尝试 UPDATE/DELETE 审计表被数据库 trigger 拒绝
-- [ ] hash chain 校验脚本能验证连续性
+- [x] 跑 1 个任务后审计表能查到所有 tool 调用记录
+- [x] 导出 CSV 可读，含所有字段
+- [x] 尝试 UPDATE/DELETE 审计表被数据库 trigger 拒绝
+- [x] hash chain 校验脚本能验证连续性
+
+#### 实施记录（2026-05-23）
+- 新增 `audit_logs` 表，字段覆盖 user/task/step/action/resource/status/ip/user_agent/metadata_hash/previous_hash/entry_hash/created_at，并接入 SQLite 与 PostgreSQL schema。
+- 审计日志以 per-user hash chain 方式追加写入；SQLite/PG 均创建 append-only trigger，阻止 UPDATE/DELETE。
+- 新增 `/api/audit/logs` 与 `/api/audit/verify`，支持登录态隔离查询、CSV 导出和 hash chain 连续性校验。
+- Settings 新增"审计日志"面板，展示最近操作、链路校验状态、记录数和 CSV 导出入口。
+- 已接入认证登录/登出/refresh/OAuth、配置更新、任务创建、Agent tool_call/tool_result、artifact、finished/failed、本地浏览器操作等关键事件。
+- 新增 `npm run e2e:audit`，覆盖未登录保护、登录审计、配置审计、任务创建审计、工具调用审计、hash chain 校验和 CSV 导出。
 
 #### 相关 OpenManus 代码
 - 可复用：P1 REQ-106 的事件流持久化（部分重叠）

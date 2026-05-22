@@ -146,6 +146,23 @@ CREATE TABLE IF NOT EXISTS context_metrics (
   data_json JSONB NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id TEXT PRIMARY KEY,
+  user_id TEXT,
+  task_id TEXT,
+  step_id TEXT,
+  action TEXT NOT NULL,
+  resource TEXT NOT NULL,
+  status TEXT NOT NULL,
+  ip TEXT,
+  user_agent TEXT,
+  metadata_json JSONB NOT NULL,
+  metadata_hash TEXT NOT NULL,
+  previous_hash TEXT NOT NULL,
+  entry_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_owner_id ON tasks(owner_id);
 CREATE INDEX IF NOT EXISTS idx_task_steps_task_id ON task_steps(task_id);
 CREATE INDEX IF NOT EXISTS idx_task_steps_owner_id ON task_steps(owner_id);
@@ -162,5 +179,26 @@ CREATE INDEX IF NOT EXISTS idx_task_templates_is_public ON task_templates(is_pub
 CREATE INDEX IF NOT EXISTS idx_context_metrics_task_id ON context_metrics(task_id);
 CREATE INDEX IF NOT EXISTS idx_context_metrics_prefix_hash ON context_metrics(prefix_hash);
 CREATE INDEX IF NOT EXISTS idx_context_metrics_created_at ON context_metrics(created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_user_id ON audit_logs(user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_task_id ON audit_logs(task_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at);
+
+CREATE OR REPLACE FUNCTION prevent_audit_logs_mutation()
+RETURNS trigger AS $$
+BEGIN
+  RAISE EXCEPTION 'audit_logs are append-only';
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS audit_logs_no_update ON audit_logs;
+CREATE TRIGGER audit_logs_no_update
+BEFORE UPDATE ON audit_logs
+FOR EACH ROW EXECUTE FUNCTION prevent_audit_logs_mutation();
+
+DROP TRIGGER IF EXISTS audit_logs_no_delete ON audit_logs;
+CREATE TRIGGER audit_logs_no_delete
+BEFORE DELETE ON audit_logs
+FOR EACH ROW EXECUTE FUNCTION prevent_audit_logs_mutation();
 
 COMMIT;

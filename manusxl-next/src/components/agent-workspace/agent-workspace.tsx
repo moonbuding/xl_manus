@@ -31,6 +31,7 @@ import {
   Search,
   Send,
   Settings,
+  ShieldCheck,
   Sparkles,
   SquareTerminal,
   Trash2,
@@ -46,6 +47,8 @@ import type {
   AuthResponse,
   AuthStatus,
   AuthUser,
+  AuditLog,
+  AuditVerifyResult,
   BillingSummary,
   ConfigResponse,
   ContextMetricsSummary,
@@ -424,6 +427,8 @@ export function AgentWorkspace() {
   const [mcpCatalog, setMcpCatalog] = useState<McpCatalogItem[]>([]);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [auditVerify, setAuditVerify] = useState<AuditVerifyResult | null>(null);
   const [authDraft, setAuthDraft] = useState({
     phone: "",
     email: "",
@@ -435,6 +440,7 @@ export function AgentWorkspace() {
   const [authMode, setAuthMode] = useState<AuthMode>("phone");
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [isAuthSubmitting, setIsAuthSubmitting] = useState(false);
+  const [isRefreshingAudit, setIsRefreshingAudit] = useState(false);
   const [activeTask, setActiveTask] = useState<Task | null>(null);
   const [activeNav, setActiveNav] = useState<NavigationView>("workspace");
   const [config, setConfig] = useState<ConfigResponse | null>(null);
@@ -569,6 +575,28 @@ export function AgentWorkspace() {
       setAuthStatus(await readJson<AuthStatus>(response));
     } catch {
       setAuthStatus(null);
+    }
+  }, []);
+
+  const refreshAudit = useCallback(async () => {
+    setIsRefreshingAudit(true);
+    try {
+      const [logsResponse, verifyResponse] = await Promise.all([
+        fetch("/api/audit/logs?limit=8", { cache: "no-store" }),
+        fetch("/api/audit/verify", { cache: "no-store" })
+      ]);
+      if (logsResponse.ok) {
+        const data = await readJson<{ logs: AuditLog[] }>(logsResponse, { logs: [] });
+        setAuditLogs(data.logs);
+      }
+      if (verifyResponse.ok) {
+        setAuditVerify(await readJson<AuditVerifyResult>(verifyResponse));
+      }
+    } catch {
+      setAuditLogs([]);
+      setAuditVerify(null);
+    } finally {
+      setIsRefreshingAudit(false);
     }
   }, []);
 
@@ -899,6 +927,7 @@ export function AgentWorkspace() {
         await resumePendingTasks();
         await refreshTasks();
         void refreshAuthStatus();
+        void refreshAudit();
         void refreshTemplates();
         void refreshSkills();
         void refreshMcpServers();
@@ -941,6 +970,7 @@ export function AgentWorkspace() {
     };
   }, [
     closeStream,
+    refreshAudit,
     refreshAuthStatus,
     refreshAuthUser,
     refreshBilling,
@@ -1798,6 +1828,14 @@ export function AgentWorkspace() {
 
           <section className="section-panel">
             <div className="panel-title">
+              <ShieldCheck size={14} />
+              审计日志
+            </div>
+            {renderAuditPanel()}
+          </section>
+
+          <section className="section-panel">
+            <div className="panel-title">
               <SquareTerminal size={14} />
               沙盒
             </div>
@@ -1959,6 +1997,70 @@ export function AgentWorkspace() {
             <RefreshCw size={15} />
             刷新认证
           </button>
+        </div>
+      </div>
+    );
+  }
+
+  function renderAuditPanel() {
+    const verifyLabel = auditVerify ? (auditVerify.ok ? "verified" : "broken") : "checking";
+    const lastHash = auditVerify?.lastHash ? auditVerify.lastHash.slice(0, 12) : "-";
+
+    return (
+      <div className="sandbox-panel">
+        <div className="metric-list compact">
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">Hash Chain</span>
+              <span className="metric-meta">
+                {auditVerify?.error ?? `last ${lastHash}`}
+              </span>
+            </div>
+            <strong>{verifyLabel}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">记录数</span>
+              <span className="metric-meta">
+                {auditVerify?.checkedAt
+                  ? new Date(auditVerify.checkedAt).toLocaleTimeString()
+                  : "等待校验"}
+              </span>
+            </div>
+            <strong>{auditVerify?.total ?? auditLogs.length}</strong>
+          </div>
+        </div>
+        {auditLogs.length ? (
+          <div className="browser-operation-list">
+            {auditLogs.map((log) => (
+              <div className="browser-operation-item" key={log.id}>
+                <div>
+                  <span>{log.action}</span>
+                  <small>
+                    {log.resource} · {log.taskId ?? "no-task"} · {new Date(log.createdAt).toLocaleTimeString()}
+                  </small>
+                </div>
+                <strong className={`operation-status is-${log.status}`}>{log.status}</strong>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="muted-note">暂无审计记录。</p>
+        )}
+        <div className="panel-actions">
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isRefreshingAudit}
+            onClick={() => void refreshAudit()}
+          >
+            {isRefreshingAudit ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />}
+            刷新审计
+          </button>
+          <a className="secondary-button" href="/api/audit/logs?format=csv&limit=200">
+            <Download size={15} />
+            导出 CSV
+          </a>
         </div>
       </div>
     );

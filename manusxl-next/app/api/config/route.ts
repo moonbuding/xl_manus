@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requestAuditContext, safeRecordAuditLog } from "@/server/audit/audit-store";
 import { currentUserFromRequest, unauthorized } from "@/server/auth/http";
 import { updateAppConfig } from "@/server/config/app-config";
 import { getDeepSeekConfig } from "@/server/llm/deepseek";
@@ -52,6 +53,17 @@ export async function PATCH(request: Request) {
     finalModel: body.finalModel,
     promptCacheEnabled: body.promptCacheEnabled,
     localBrowserDomainAllowlist: body.localBrowserDomainAllowlist
+  });
+  safeRecordAuditLog({
+    userId: user.id,
+    action: "config.update",
+    resource: "app_config",
+    status: "completed",
+    ...requestAuditContext(request),
+    metadata: {
+      fields: Object.keys(body).filter((key) => body[key as keyof typeof body] !== undefined),
+      hasApiKeyUpdate: Boolean(body.apiKey)
+    }
   });
 
   return NextResponse.json({

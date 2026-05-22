@@ -144,6 +144,14 @@ npm run e2e:database-status
 
 该脚本会验证数据库状态接口的登录保护、SQLite 行数统计、PostgreSQL CLI/schema 检查字段和迁移命令提示。
 
+审计日志验收：
+
+```bash
+npm run e2e:audit
+```
+
+该脚本会验证审计接口登录保护、登录/配置/任务/工具调用审计记录、per-user hash chain 连续性校验和 CSV 导出。Settings / 审计日志面板可查看最近记录并导出。
+
 真实 PostgreSQL 并发写入验收：
 
 ```bash
@@ -188,6 +196,7 @@ npm run e2e:batch
 - Markdown / CSV / XLSX / PPTX / PDF / HTML / ZIP 交付物下载
 - Python / Shell 工具支持 Docker 沙盒执行、CPU/内存/PID/网络限制、本地 fallback 和 workspace 磁盘配额
 - Settings 沙盒状态面板与一键自检
+- 审计日志、CSV 导出和 hash chain 校验
 - 批量文件重命名/分类 dry-run 清单与可下载批处理包
 - stdio MCP Server 接入、工具发现、工具调用和 Agent `mcp_call`
 - Docker Compose 一键启动

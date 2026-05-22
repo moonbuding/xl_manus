@@ -2,6 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { byteSize, createId } from "@/lib/id";
+import { safeRecordAuditLog } from "@/server/audit/audit-store";
 import { dataPath } from "@/server/data-root";
 import {
   canUsePostgresRuntime,
@@ -542,6 +543,41 @@ function queueEventPersist(state: TaskStoreState, task: Task, event: AgentEvent)
   recordQueueDuration(state, performance.now() - startedAt);
 }
 
+function auditTaskEvent(task: Task, event: AgentEvent) {
+  if (!task.ownerId) return;
+  if (!["tool_call", "tool_result", "artifact", "finished", "failed"].includes(event.type)) return;
+  const payload = event.payload as Record<string, unknown> | undefined;
+  const toolName =
+    typeof payload?.toolName === "string"
+      ? payload.toolName
+      : event.type === "tool_call" && payload?.arguments && typeof payload.arguments === "object"
+        ? String((payload.arguments as Record<string, unknown>).toolName ?? event.title ?? "tool")
+        : event.title ?? event.type;
+  const action =
+    event.type === "tool_call"
+      ? "agent.tool_call"
+      : event.type === "tool_result"
+        ? "agent.tool_result"
+        : event.type === "artifact"
+          ? "agent.artifact"
+          : `task.${event.type}`;
+  safeRecordAuditLog({
+    userId: task.ownerId,
+    taskId: task.id,
+    stepId: event.id,
+    action,
+    resource: event.type.startsWith("tool") ? `tool:${toolName}` : `task:${task.id}`,
+    status: event.type === "failed" ? "failed" : event.type === "tool_call" ? "started" : "completed",
+    metadata: {
+      eventType: event.type,
+      stepIndex: event.stepIndex,
+      title: event.title,
+      contentLength: event.content?.length ?? 0,
+      payloadKeys: payload ? Object.keys(payload).slice(0, 12) : []
+    }
+  });
+}
+
 function persistArtifactManifest(task: Task) {
   const dir = taskArtifactDir(task.id, task.ownerId);
   mkdirSync(dir, { recursive: true });
@@ -694,6 +730,7 @@ export function addTaskEvent(
   task.updatedAt = fullEvent.createdAt;
   const state = getState();
   queueEventPersist(state, task, fullEvent);
+  auditTaskEvent(task, fullEvent);
 
   const subscribers = state.subscribers.get(taskId);
   subscribers?.forEach((subscriber) => subscriber(fullEvent));
