@@ -29,6 +29,7 @@ MANUSXL_SANDBOX_POOL=1
 MANUSXL_WORKSPACE_QUOTA_MB=5120
 MANUSXL_MY_COMPUTER_ALLOWED_ROOTS=/Users/you/Downloads
 MANUSXL_MY_COMPUTER_PAUSED=false
+MANUSXL_METRICS_TOKEN=
 ```
 
 没有配置 `DEEPSEEK_API_KEY` 时，系统会使用本地回退文案，仍可验证任务流、SSE 和交付物下载。DeepSeek V4 默认用 `MANUSXL_DEEPSEEK_THINKING=disabled`，让规划和最终回答稳定返回 `message.content`；需要研究 `reasoning_content` 时再改成 `enabled`。
@@ -110,6 +111,8 @@ Settings / 数据库面板会显示当前运行 provider、SQLite 待迁移行�
 
 检查 DeepSeek 连通性可在登录后调用 `POST /api/config/llm-test`。该接口只返回模型、耗时和脱敏错误原因，不返回 API Key。
 
+Prometheus 可以抓取根路径 `/metrics`，当前暴露任务总数、状态分布、成功率、平均/p99 延迟、LLM 调用/Token/成本、最近一小时成本速率、审计日志与沙盒健康指标。默认本地开发不需要鉴权；生产环境可设置 `MANUSXL_METRICS_TOKEN`，然后用 `Authorization: Bearer <token>` 抓取。
+
 ## E2E 演示验收
 
 先启动本地服务，然后运行：
@@ -153,6 +156,14 @@ npm run e2e:audit
 ```
 
 该脚本会验证审计接口登录保护、登录/配置/任务/工具调用审计记录、per-user hash chain 连续性校验和 CSV 导出。Settings / 审计日志面板可查看最近记录并导出。
+
+Prometheus 指标验收：
+
+```bash
+npm run e2e:metrics
+```
+
+该脚本会验证 `/metrics` 返回 Prometheus text/plain、关键指标齐全，并确认没有把 `user_id`、`task_id`、`prompt` 放入高基数 label。
 
 真实 PostgreSQL 并发写入验收：
 
@@ -206,6 +217,7 @@ npm run e2e:batch
 - Markdown / CSV / XLSX / PPTX / PDF / HTML / ZIP 交付物下载
 - Python / Shell 工具支持 Docker 沙盒执行、CPU/内存/PID/网络限制、本地 fallback 和 workspace 磁盘配额
 - Settings 沙盒状态面板与一键自检
+- `/metrics` Prometheus 指标端点，覆盖任务、LLM 成本、审计与沙盒健康基础指标
 - 审计日志、CSV 导出和 hash chain 校验
 - 批量文件重命名/分类 dry-run 清单与可下载批处理包
 - stdio MCP Server 接入、工具发现、工具调用和 Agent `mcp_call`

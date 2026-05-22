@@ -76,7 +76,7 @@ REQ-216 (AI Design)
 | REQ-203 | 桌面端应用调度：启动/关闭软件、剪贴板、模拟键鼠（**每动作授权**） | M08 | 5-7 人天 | In Progress |
 | REQ-204 | 桌面端 → 云端文件同步（选择性上传，隐私可控） | M08 | 3-5 人天 | Planning |
 | REQ-205 | Kubernetes 部署，Sandbox 改为 K8s Job/Pod 弹性调度 | M09 | 5-7 人天 | Planning |
-| REQ-206 | 监控告警：Prometheus + Grafana + 任务失败告警 | M09 | 2-3 人天 | Planning |
+| REQ-206 | 监控告警：Prometheus + Grafana + 任务失败告警 | M09 | 2-3 人天 | In Progress |
 | REQ-207 | 审计日志：所有 Agent 操作可追溯（合规需求） | M07 | 3-4 人天 | Completed |
 | REQ-208 | 团队/组织功能：多人共享任务、权限矩阵 | M07 | 5-7 人天 | Planning |
 | REQ-209 | 工作流模板市场：用户保存常用任务模板，社区分享 | M06 | 4-5 人天 | Planning |
@@ -297,7 +297,7 @@ As a 平台运维者面对 500 并发用户，I want 系统自动起更多节点
 ---
 
 ### REQ-206：监控告警 — Prometheus + Grafana + 任务失败告警
-**模块**: M09 | **状态**: Planning | **工作量**: 2-3 人天
+**模块**: M09 | **状态**: In Progress | **工作量**: 2-3 人天
 
 #### 背景与价值
 P1 之前没有系统监控（只有 loguru 日志）。到 P2 进入生产化阶段，必须有可观测性：任务成功率/延迟/成本/容器健康都要图表化，关键指标要告警。
@@ -314,9 +314,14 @@ As a 运维者，I want 任务失败率超 10% 时立即收到通知，So that �
 - 非功能：指标采集不增加 API 延迟 > 5ms
 
 #### 验收标准
+- [x] `/metrics` 暴露 Prometheus text/plain 指标，覆盖任务总数/状态/成功率/平均延迟/p99/LLM 成本/审计/沙盒健康
+- [x] Prometheus 指标不包含 `user_id`、`task_id`、`prompt` 等高基数 label
 - [ ] Grafana 上能看到所有关键指标的实时图
 - [ ] 故意触发失败任务后能在 5 分钟内收到告警邮件
 - [ ] dashboard 模板开箱即用（自动 provisioning）
+
+#### 实现记录
+- 2026-05-23：参考 OpenManus `logger.py` 的日志入口，先在 Next.js 侧补齐 `/metrics` Prometheus exporter；当前覆盖任务、LLM 成本、审计和 Docker 沙盒健康基础指标，Grafana/AlertManager 模板待后续补齐。
 
 #### 相关 OpenManus 代码
 - 可复用：[OpenManus-main/app/logger.py](../OpenManus-main/app/logger.py) — loguru 已有，加 metrics
