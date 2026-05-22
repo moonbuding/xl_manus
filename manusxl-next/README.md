@@ -71,7 +71,7 @@ npm run db:pg:emit-sql
 npm run db:pg:migrate
 ```
 
-任务运行时已支持第一阶段 PostgreSQL adapter：当 `MANUSXL_DATABASE_PROVIDER=postgres`、`DATABASE_URL` 和 `psql` CLI 都可用时，任务、步骤流、交付物元数据、上传文件索引、系统配置、认证用户、MCP Server 配置、任务模板、Skill 启用状态和 Context 指标会写入 PostgreSQL。Docker 镜像已内置 `postgresql-client`，用于生产容器内执行 schema 初始化和任务写入。
+任务运行时已支持第一阶段 PostgreSQL adapter：当 `MANUSXL_DATABASE_PROVIDER=postgres`、`DATABASE_URL` 和 `psql` 客户端可用时，任务、步骤流、交付物元数据、上传文件索引、系统配置、认证用户、MCP Server 配置、任务模板、Skill 启用状态和 Context 指标会写入 PostgreSQL。系统会优先使用本机 `psql`；如果本机未安装但已有 Docker 镜像 `postgres:16`，会自动用 Docker 内的 `psql`。Docker 镜像已内置 `postgresql-client`，用于生产容器内执行 schema 初始化和任务写入。
 
 检查 Docker 配置文件：
 
@@ -80,7 +80,7 @@ npm run docker:check
 ```
 
 登录后也可以在 Web 界面的 Settings / 沙盒面板查看 Docker 镜像、资源限制、容器池状态，并运行 Python + Shell 沙盒自检。
-Settings / 数据库面板会显示当前运行 provider、SQLite 待迁移行数、PostgreSQL CLI/schema 检查结果和迁移命令。
+Settings / 数据库面板会显示当前运行 provider、SQLite 待迁移行数、PostgreSQL 客户端来源、schema 检查结果和迁移命令。
 
 检查 DeepSeek 连通性可在登录后调用 `POST /api/config/llm-test`。该接口只返回模型、耗时和脱敏错误原因，不返回 API Key。
 

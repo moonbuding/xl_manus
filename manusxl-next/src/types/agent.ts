@@ -230,6 +230,7 @@ export interface DatabaseStatus {
     configured: boolean;
     databaseUrlMasked?: string;
     cliAvailable: boolean;
+    cliSource?: "local" | "docker";
     cliVersion?: string;
     expectedTableCount: number;
     schemaReady?: boolean;

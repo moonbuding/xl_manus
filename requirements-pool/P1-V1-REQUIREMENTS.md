@@ -122,9 +122,10 @@ As a 想让多个用户同时跑任务的运维者，I want 数据库不会因�
 #### 实施记录
 - 新增 `db/postgres/0001_initial.sql`，覆盖 users、tasks、task_steps、task_files、uploaded_files、app_config、mcp_servers、skill_settings、task_templates、context_metrics 等当前 SQLite 表。
 - 新增 `scripts/migrate-sqlite-to-postgres.mjs`，支持 `--dry-run`、`--emit-sql` 和 `--commit`；commit 模式通过 `DATABASE_URL` 调用 `psql` 写入 PostgreSQL。
+- 新增统一 PostgreSQL 客户端探测与执行入口：优先使用本机 `psql`，本机缺失时可自动使用 Docker 镜像 `postgres:16` 内的 `psql`，运行时 adapter、数据库状态检查和迁移脚本共用这一能力。
 - 新增 `npm run db:pg:dry-run`、`npm run db:pg:emit-sql`、`npm run db:pg:migrate` 与 `npm run e2e:pg-migration`。
 - `docker-compose.yml` 已加入 `postgres:16` 服务与持久化卷，`.env.local.example` 保留 `MANUSXL_DATABASE_PROVIDER=sqlite` 作为当前开发模式默认值。
-- 新增 `/api/database/status` 与 Settings / 数据库面板，展示当前 provider、SQLite 待迁移行数、PostgreSQL CLI/schema 检查结果和迁移命令；新增 `npm run e2e:database-status`。
+- 新增 `/api/database/status` 与 Settings / 数据库面板，展示当前 provider、SQLite 待迁移行数、PostgreSQL 客户端来源、schema 检查结果和迁移命令；新增 `npm run e2e:database-status`。
 - 新增任务存储第一阶段 runtime adapter：当 `MANUSXL_DATABASE_PROVIDER=postgres`、`DATABASE_URL` 与 `psql` 可用时，tasks、task_steps、task_files 会通过 PostgreSQL schema 写入；不可用时安全回退 SQLite。
 - 新增 Context 指标 runtime adapter：同样按 provider 切换 context_metrics，覆盖 Prompt Cache、Context 面板和 Billing 汇总读取路径；不可用时安全回退 SQLite。
 - 新增上传文件索引 runtime adapter：uploaded_files 按 provider 切换，覆盖文件上传解析、任务绑定上传文件、批量文件处理和图片处理读取路径；不可用时安全回退 SQLite。

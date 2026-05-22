@@ -1,11 +1,11 @@
-import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dataPath } from "@/server/data-root";
 import {
   canUsePostgresRuntime,
   checkPsqlCli,
   postgresDatabaseUrl,
-  requestedDatabaseProvider
+  requestedDatabaseProvider,
+  runPsql
 } from "@/server/db/provider";
 import { getManusDb } from "@/server/sqlite";
 import type { DatabaseStatus, DatabaseTableCount } from "@/types/agent";
@@ -76,26 +76,21 @@ function checkPostgresSchema(databaseUrl: string | undefined) {
     WHERE table_schema = 'public'
       AND table_name IN (${expectedTables.map((table) => `'${table}'`).join(", ")});
   `;
-  const result = spawnSync("psql", [databaseUrl, "-At", "-c", query], {
-    encoding: "utf8",
-    timeout: 5000,
-    stdio: "pipe"
-  });
-
-  if (result.status !== 0) {
+  try {
+    const output = runPsql(["-At", "-c", query], { databaseUrl, timeoutMs: 5000 });
+    const schemaTableCount = Number(output.trim());
+    return {
+      schemaReady: schemaTableCount === expectedTables.length,
+      schemaTableCount,
+      error: undefined
+    };
+  } catch (error) {
     return {
       schemaReady: false,
       schemaTableCount: 0,
-      error: (result.stderr || result.stdout || "无法连接 PostgreSQL").trim()
+      error: error instanceof Error ? error.message : "无法连接 PostgreSQL"
     };
   }
-
-  const schemaTableCount = Number(result.stdout.trim());
-  return {
-    schemaReady: schemaTableCount === expectedTables.length,
-    schemaTableCount,
-    error: undefined
-  };
 }
 
 export function getDatabaseStatus(options: { checkPostgres?: boolean } = {}): DatabaseStatus {
@@ -119,7 +114,7 @@ export function getDatabaseStatus(options: { checkPostgres?: boolean } = {}): Da
     runtimePostgresReady: activeProvider === "postgres",
     note:
       activeProvider === "postgres"
-        ? "任务、步骤和交付物元数据会写入 PostgreSQL；其余配置类表会继续分阶段迁移。"
+      ? "运行时数据会写入 PostgreSQL；SQLite 可作为本地开发回退。"
         : requestedProvider === "postgres"
           ? "已请求 PostgreSQL，但缺少 DATABASE_URL 或 psql CLI，当前回退 SQLite。"
         : "当前开发模式使用 SQLite；PostgreSQL 迁移可先 dry-run 或生成 SQL。",
@@ -133,11 +128,12 @@ export function getDatabaseStatus(options: { checkPostgres?: boolean } = {}): Da
       configured: Boolean(databaseUrl),
       databaseUrlMasked: maskDatabaseUrl(databaseUrl),
       cliAvailable: psql.available,
+      cliSource: psql.source,
       cliVersion: psql.version,
       expectedTableCount: expectedTables.length,
       schemaReady: postgresCheck.schemaReady,
       schemaTableCount: postgresCheck.schemaTableCount,
-      error: postgresCheck.error
+      error: postgresCheck.error ?? psql.error
     },
     commands: {
       dryRun: "npm run db:pg:dry-run",

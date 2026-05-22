@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { createId } from "@/lib/id";
@@ -9,8 +8,8 @@ import { dataPath } from "@/server/data-root";
 import {
   canUsePostgresRuntime,
   checkPsqlCli,
-  postgresDatabaseUrl,
-  requestedDatabaseProvider
+  requestedDatabaseProvider,
+  runPsql
 } from "@/server/db/provider";
 import { getManusDb } from "@/server/sqlite";
 import { listTasks } from "@/server/tasks/task-store";
@@ -244,21 +243,6 @@ function postgresValue(value: unknown, options: { json?: boolean } = {}) {
   if (typeof value === "number") return Number.isFinite(value) ? String(value) : "NULL";
   if (typeof value === "boolean") return value ? "1" : "0";
   return quotePostgresString(String(value));
-}
-
-function runPsql(args: string[]) {
-  const databaseUrl = postgresDatabaseUrl();
-  if (!databaseUrl) throw new Error("DATABASE_URL 未配置，无法使用 PostgreSQL Context 指标存储");
-
-  const result = spawnSync("psql", [databaseUrl, "-v", "ON_ERROR_STOP=1", "-X", "-q", ...args], {
-    encoding: "utf8",
-    maxBuffer: 16 * 1024 * 1024,
-    stdio: ["pipe", "pipe", "pipe"]
-  });
-  if (result.status !== 0) {
-    throw new Error((result.stderr || result.stdout || "psql 执行失败").trim());
-  }
-  return result.stdout;
 }
 
 function ensurePostgresSchema() {

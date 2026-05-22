@@ -1,9 +1,9 @@
-import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { checkPsqlClient, runPsql } from "./lib/psql-runner.mjs";
 
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const defaultSqlitePath = join(projectRoot, ".manusxl-data", "manusxl.sqlite");
@@ -319,17 +319,6 @@ export function dryRunMigration(options = {}) {
   return summarizeRows(options.sqlitePath ?? defaultSqlitePath);
 }
 
-function runPsql(databaseUrl, args) {
-  const result = spawnSync("psql", [databaseUrl, "-v", "ON_ERROR_STOP=1", ...args], {
-    encoding: "utf8",
-    stdio: "pipe"
-  });
-  if (result.status !== 0) {
-    throw new Error((result.stderr || result.stdout || "psql 执行失败").trim());
-  }
-  return result.stdout.trim();
-}
-
 function commitMigration(options) {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
@@ -339,13 +328,18 @@ function commitMigration(options) {
     throw new Error(`找不到 PostgreSQL schema：${options.schemaPath}`);
   }
 
-  runPsql(databaseUrl, ["-f", options.schemaPath]);
+  const psql = checkPsqlClient();
+  if (!psql.available) {
+    throw new Error(psql.error ?? "未找到可用的 psql 客户端");
+  }
+
+  runPsql(databaseUrl, ["-f", options.schemaPath], { client: psql });
   const tempDir = mkdtempSync(join(tmpdir(), "manusxl-pg-migration-"));
   const sqlPath = join(tempDir, "sqlite-to-postgres.sql");
   try {
     const generated = generateMigrationSql({ sqlitePath: options.sqlitePath });
     writeFileSync(sqlPath, generated.sql);
-    runPsql(databaseUrl, ["-f", sqlPath]);
+    runPsql(databaseUrl, ["-f", sqlPath], { client: psql });
     return generated.summary;
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
@@ -365,6 +359,9 @@ function printHelp() {
   --dry-run          只统计待迁移行数
   --emit-sql <path>  生成可人工审阅的 INSERT/UPSERT SQL
   --commit           应用 schema 并写入 DATABASE_URL 指向的 PostgreSQL
+
+说明：
+  commit 会优先使用本机 psql；如果本机未安装，但已有 Docker 镜像 postgres:16，会自动用 Docker 内的 psql。
 `.trim());
 }
 

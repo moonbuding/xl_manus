@@ -1633,6 +1633,16 @@ export function AgentWorkspace() {
           .map((table) => `${table.table}:${table.rows}`)
           .join(" · ") || "暂无表数据"
       : "检查中";
+    const pgClientLabel = databaseStatus?.postgres.cliAvailable
+      ? `psql:${databaseStatus.postgres.cliSource ?? "local"}`
+      : "psql:missing";
+    const pgMeta = databaseStatus
+      ? `${pgClientLabel} · ${
+          databaseStatus.postgres.error ??
+          databaseStatus.postgres.databaseUrlMasked ??
+          "未配置 DATABASE_URL"
+        }`
+      : "检查中";
 
     return (
       <div className="sandbox-panel">
@@ -1654,11 +1664,7 @@ export function AgentWorkspace() {
           <div className="metric-item">
             <div>
               <span className="metric-name">PostgreSQL</span>
-              <span className="metric-meta">
-                {databaseStatus?.postgres.error ??
-                  databaseStatus?.postgres.databaseUrlMasked ??
-                  "未配置 DATABASE_URL"}
-              </span>
+              <span className="metric-meta">{pgMeta}</span>
             </div>
             <strong>{pgStatus}</strong>
           </div>
