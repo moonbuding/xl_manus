@@ -1,7 +1,10 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
 const baseUrl = process.env.MANUSXL_E2E_BASE_URL ?? "http://localhost:3001";
+const execFileAsync = promisify(execFile);
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -154,6 +157,26 @@ async function main() {
     body: JSON.stringify({ operationId: appLaunch.body.operation.id, decision: "deny" })
   });
   assert(deniedApp.body.operation.status === "blocked", "拒绝启动应用后状态应为 blocked");
+  if (process.platform === "darwin") {
+    const calculatorLaunch = await client.fetchJson("/api/my-computer/actions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "app_launch", target: "Calculator", dryRun: true })
+    });
+    assert(calculatorLaunch.body.operation.status === "pending_approval", "Calculator 启动应等待授权");
+    const approvedCalculator = await client.fetchJson("/api/my-computer/approvals", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ operationId: calculatorLaunch.body.operation.id, decision: "allow_once" })
+    });
+    assert(approvedCalculator.body.operation.status === "completed", "Calculator 授权启动后未完成");
+    assert(approvedCalculator.body.operation.result?.launched === "Calculator", "Calculator 启动结果不正确");
+    try {
+      await execFileAsync("osascript", ["-e", 'tell application "Calculator" to quit'], { timeout: 4000 });
+    } catch {
+      // Cleanup is best-effort; launch verification above is the actual assertion.
+    }
+  }
 
   const clipboard = await client.fetchJson("/api/my-computer/actions", {
     method: "POST",
@@ -268,6 +291,7 @@ async function main() {
       "file operation undo",
       "content dedupe dry-run",
       "app launch authorization",
+      ...(process.platform === "darwin" ? ["calculator launch execution"] : []),
       "clipboard read/write execution",
       "persistent always allow",
       "mouse authorization",

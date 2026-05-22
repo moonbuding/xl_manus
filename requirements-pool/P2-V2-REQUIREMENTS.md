@@ -205,7 +205,7 @@ As a 想让 AI 用 Excel 处理一份本地表格的用户，I want AI 能启动
 - [x] 应用启动动作已接入授权模型；macOS 执行层使用 `open -a`
 - [x] 剪贴板写入动作已接入授权模型；macOS 执行层使用 `pbcopy`
 - [x] 模拟点击已接入动作级授权与 dry-run，真实点击待接入 nut.js/cliclick
-- [ ] macOS 上 AI 能启动 Calculator 应用
+- [x] macOS 上 AI 能启动 Calculator 应用
 - [x] AI 写文本到剪贴板，用户能粘贴；剪贴板读取也走动作授权
 - [ ] 模拟点击在指定坐标生效
 - [x] terminal 命令执行结果回传云端；当前 MVP 仅允许短时白名单命令并固定在 My Computer 允许目录内执行
@@ -215,6 +215,7 @@ As a 想让 AI 用 Excel 处理一份本地表格的用户，I want AI 能启动
 - 2026-05-23：新增 `/api/my-computer/actions`，支持应用启动、剪贴板、键盘快捷键、鼠标点击的授权请求；真实鼠标点击和 terminal 执行默认关闭，待接入更细权限与底层库。
 - 2026-05-23：剪贴板写入/读取已支持真实执行验收；Always Allow 按 `(action_type, target)` 持久化，后续同类动作可免确认执行。
 - 2026-05-23：参考 OpenManus `bash.py` 的命令工具边界，新增受控 terminal 命令执行；使用白名单、短超时、固定 cwd 和非 shell 执行，结果回传到操作记录。
+- 2026-05-23：参考 OpenManus `computer_use_tool.py` 的动作级工具形态，补齐 macOS Calculator 真实启动验收；应用启动仍必须先进入 My Computer 授权队列。
 
 #### 相关 OpenManus 代码
 - 完全新建：`desktop/src/tools/system_tools.ts`
