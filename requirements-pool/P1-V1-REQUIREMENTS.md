@@ -62,7 +62,7 @@ REQ-105 (重试增强) ────┤         REQ-110 (Prompt Cache)
 
 | ID | 标题 | 模块 | 工作量预估 | 状态 |
 |----|------|------|-----------|------|
-| REQ-101 | PostgreSQL 替换 SQLite + Alembic 迁移 | M07 | 3-4 人天 | In Progress |
+| REQ-101 | PostgreSQL 替换 SQLite + Alembic 迁移 | M07 | 3-4 人天 | Completed |
 | REQ-102 | OAuth2（Google/GitHub）+ Email-Password 认证 | M07 | 3-5 人天 | In Progress |
 | REQ-103 | 用户隔离：workspace 按 user_id 分目录 + 任务 ACL | M07 | 2-3 人天 | Completed |
 | REQ-104 | Sandbox 多租户：独立容器池 + 资源配额（CPU/内存/超时/磁盘） | M04 | 5-7 人天 | Completed |
@@ -87,7 +87,7 @@ REQ-105 (重试增强) ────┤         REQ-110 (Prompt Cache)
 ---
 
 ### REQ-101：PostgreSQL 替换 SQLite + Alembic 迁移
-**模块**: M07 | **状态**: In Progress | **工作量**: 3-4 人天
+**模块**: M07 | **状态**: Completed | **工作量**: 3-4 人天
 
 #### 背景与价值
 P0 用 SQLite 单文件够用，但 P1 多用户并发时 SQLite 写锁会成为瓶颈（即使 WAL 模式也只能单写）。PostgreSQL 是事实标准的多用户后端，且与 SQLAlchemy 完美兼容。Alembic 提供 schema 演进的安全方案。
@@ -104,9 +104,9 @@ As a 想让多个用户同时跑任务的运维者，I want 数据库不会因�
 - 非功能：连接池 20-50；prepared statements 缓存
 
 #### 验收标准
-- [ ] Alembic upgrade head 在干净 PG 上能建表（Next.js 版以 `db/postgres/0001_initial.sql` + `psql` 脚本替代，待真实 PG 验收）
+- [x] Alembic upgrade head 在干净 PG 上能建表（Next.js 版以 `db/postgres/0001_initial.sql` + `psql` 脚本替代，`npm run e2e:pg-docker` 已在临时 PG 容器验收）
 - [x] 数据迁移脚本能把 P0 的 SQLite 数据完整搬过去（`npm run e2e:pg-migration` 覆盖 dry-run/SQL 输出结构）
-- [ ] 10 并发任务写 task_steps 不报锁错
+- [x] 10 并发任务写 task_steps 不报锁错（临时 `postgres:16` 容器内 10 writers x 25 events = 250 rows）
 - [x] 切回 SQLite（环境变量）开发模式仍可用（`npm run e2e:database-status` 覆盖）
 
 #### 相关 OpenManus 代码
@@ -138,7 +138,7 @@ As a 想让多个用户同时跑任务的运维者，I want 数据库不会因�
 - PostgreSQL 客户端探测已支持 `MANUSXL_PSQL_BIN`，并自动识别 macOS 常见安装路径 `/Library/PostgreSQL/17/bin/psql`、`/Library/PostgreSQL/16/bin/psql`、Homebrew `psql`，数据库状态页和迁移脚本会显示本机可用客户端。
 - 新增 `npm run e2e:pg-concurrency`，在真实 PostgreSQL 上创建独立临时 schema，执行 clean schema 初始化，并用 10 个并发 writer 写入 `task_steps` 验证无 SQLite 式写锁；需要设置 `MANUSXL_PG_E2E_DATABASE_URL` 或 `DATABASE_URL`。
 - 新增 `npm run e2e:pg-docker`，可在本机已有 `postgres:16` 镜像时自动启动临时 PostgreSQL 容器，执行真实并发验收后自动清理；缺少镜像时给出 `docker pull postgres:16` 提示，不自动拉取。
-- 待完成：在真实 PG 上执行 clean schema + 10 并发写入验收，并根据结果决定是否把 REQ-101 状态切为 Completed。
+- 2026-05-23 已在临时 `postgres:16` 容器执行真实 PG clean schema + 10 并发写入验收：`insertedTaskSteps=250`，无锁错误；REQ-101 状态切为 Completed。
 
 ---
 
