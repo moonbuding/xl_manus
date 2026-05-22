@@ -420,8 +420,11 @@ As a 有 500 张发票需要按"日期-供应商-金额"重命名的财务，I w
 - PDF 解析已增强 ToUnicode 字体映射，中文简历类 PDF 不再输出乱码。
 - Agent 新增 `batch_file_ops` 工具，可基于上传文件摘要生成批量重命名/分类 dry-run JSON，不改动原文件。
 - `batch_file_ops` 已扩展为可下载交付物：`batch-file-ops-plan.json`、`batch-file-ops-plan.csv`、`apply-batch-file-ops.sh`、`batch-file-ops-package.zip`。
+- 上传文件已建立后端台账，任务创建会绑定真实文件 ID，Agent 执行时会把附件挂载到任务工作区 `tmp/uploads`，后续图片处理/OCR 可直接读取原文件。
+- Agent 新增 `batch_image_process` 工具，支持基于真实上传图片执行压缩、最长边缩放、旋转和 JPEG/PNG/GIF/TIFF 格式转换，并输出 JSON/CSV 报告与 ZIP 结果包。
 - 新增 `npm run e2e:batch`，覆盖上传解析、Agent 调用 `batch_file_ops`、dry-run 清单与 ZIP 包内容校验。
-- 待补：真实图片压缩/旋转/格式转换、OCR 依赖与大批量进度回调。
+- 新增 `npm run e2e:image`，覆盖上传图片解析、真实文件挂载、Agent 调用 `batch_image_process`、结果报告与 ZIP 包校验。
+- 待补：OCR 依赖与大批量进度回调；100 张图片压缩性能需在专用样本集上继续压测。
 
 #### 相关 OpenManus 代码
 - 可复用：OpenManus 已有 `Pillow~=11.1.0` 依赖

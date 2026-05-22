@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { enqueueAgentTask } from "@/server/agent/scheduler";
 import { currentUserFromRequest, unauthorized } from "@/server/auth/http";
+import { listUploadedFileRecords } from "@/server/files/readers";
 import { getDeepSeekConfig } from "@/server/llm/deepseek";
 import { createTask, listTasks } from "@/server/tasks/task-store";
 import type { CreateTaskRequest } from "@/types/agent";
@@ -26,8 +27,23 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Prompt is required" }, { status: 400 });
     }
 
+    const requestedFileIds = Array.isArray(body.fileIds)
+      ? body.fileIds.map((fileId) => String(fileId).trim()).filter(Boolean)
+      : [];
+    const uploadedFileRecords =
+      requestedFileIds.length > 0 ? listUploadedFileRecords(user.id, requestedFileIds) : [];
+
+    if (uploadedFileRecords.length !== new Set(requestedFileIds).size) {
+      return NextResponse.json({ error: "部分上传文件不存在或不属于当前用户" }, { status: 400 });
+    }
+
     const model = body.model?.trim() || getDeepSeekConfig().model;
-    const task = createTask(prompt, model, user.id);
+    const task = createTask(
+      prompt,
+      model,
+      user.id,
+      uploadedFileRecords.map((file) => file.id)
+    );
     const queue = enqueueAgentTask(task.id);
 
     return NextResponse.json({

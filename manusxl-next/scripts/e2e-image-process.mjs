@@ -1,13 +1,10 @@
 const baseUrl = process.env.MANUSXL_E2E_BASE_URL ?? "http://localhost:3001";
 const timeoutMs = Number(process.env.MANUSXL_E2E_TIMEOUT_MS ?? 180000);
 const phone = process.env.MANUSXL_E2E_PHONE ?? "18800000001";
-
 const cookieJar = new Map();
 
 function assert(condition, message) {
-  if (!condition) {
-    throw new Error(message);
-  }
+  if (!condition) throw new Error(message);
 }
 
 function url(pathname) {
@@ -60,44 +57,29 @@ async function fetchBuffer(pathname) {
   return body;
 }
 
-function findEndOfCentralDirectory(buffer) {
+function readZipEntryNames(buffer) {
   const minimumOffset = Math.max(0, buffer.length - 65557);
+  let endOffset = -1;
   for (let offset = buffer.length - 22; offset >= minimumOffset; offset -= 1) {
     if (buffer.readUInt32LE(offset) === 0x06054b50) {
-      return offset;
+      endOffset = offset;
+      break;
     }
   }
-  throw new Error("ZIP 结构不完整：未找到 central directory");
-}
+  assert(endOffset >= 0, "ZIP 结构不完整");
 
-function readZipEntries(buffer) {
-  const endOffset = findEndOfCentralDirectory(buffer);
   const entryCount = buffer.readUInt16LE(endOffset + 10);
   let centralOffset = buffer.readUInt32LE(endOffset + 16);
-  const entries = [];
-
+  const names = [];
   for (let index = 0; index < entryCount; index += 1) {
     assert(buffer.readUInt32LE(centralOffset) === 0x02014b50, "ZIP central directory 损坏");
-
-    const compressedSize = buffer.readUInt32LE(centralOffset + 20);
     const nameLength = buffer.readUInt16LE(centralOffset + 28);
     const extraLength = buffer.readUInt16LE(centralOffset + 30);
     const commentLength = buffer.readUInt16LE(centralOffset + 32);
-    const localOffset = buffer.readUInt32LE(centralOffset + 42);
-    const name = buffer
-      .subarray(centralOffset + 46, centralOffset + 46 + nameLength)
-      .toString("utf8");
-
-    const localNameLength = buffer.readUInt16LE(localOffset + 26);
-    const localExtraLength = buffer.readUInt16LE(localOffset + 28);
-    const dataOffset = localOffset + 30 + localNameLength + localExtraLength;
-    const data = buffer.subarray(dataOffset, dataOffset + compressedSize);
-
-    entries.push({ name, data });
+    names.push(buffer.subarray(centralOffset + 46, centralOffset + 46 + nameLength).toString("utf8"));
     centralOffset += 46 + nameLength + extraLength + commentLength;
   }
-
-  return entries;
+  return names;
 }
 
 async function loginForE2E() {
@@ -120,13 +102,13 @@ async function loginForE2E() {
 async function analyzeUpload(name, content, type) {
   const formData = new FormData();
   formData.set("file", new File([content], name, { type }));
-
   const uploaded = await fetchJson("/api/files/analyze", {
     method: "POST",
     body: formData
   });
-  assert(uploaded.file?.summary, `${name} 没有返回解析摘要`);
-  console.log(`上传解析通过：${uploaded.file.name}`);
+  assert(uploaded.file?.id, `${name} 没有返回文件 ID`);
+  assert(uploaded.file?.metadata?.format === "image", `${name} 没有识别为图片`);
+  console.log(`上传图片解析通过：${uploaded.file.name}`);
   return uploaded.file;
 }
 
@@ -147,7 +129,6 @@ async function waitForTask(taskId) {
     signal: controller.signal
   });
   rememberCookies(response.headers);
-
   assert(response.ok, `SSE 连接失败：${response.status}`);
   assert(response.body, "当前 Node 版本不支持读取 SSE stream");
 
@@ -160,7 +141,6 @@ async function waitForTask(taskId) {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-
       buffer += decoder.decode(value, { stream: true });
       let boundary = buffer.indexOf("\n\n");
       while (boundary >= 0) {
@@ -171,17 +151,13 @@ async function waitForTask(taskId) {
           .filter((line) => line.startsWith("data: "))
           .map((line) => line.slice(6))
           .join("\n");
-
         if (data) {
           const event = JSON.parse(data);
           events.push(event);
           process.stdout.write(`· ${event.type}: ${event.title ?? "Agent event"}\n`);
           if (event.type === "finished") return events;
-          if (event.type === "failed") {
-            throw new Error(`任务失败：${event.content ?? "unknown error"}`);
-          }
+          if (event.type === "failed") throw new Error(`任务失败：${event.content ?? "unknown error"}`);
         }
-
         boundary = buffer.indexOf("\n\n");
       }
     }
@@ -200,80 +176,52 @@ function artifactByName(task, name) {
 }
 
 async function main() {
-  console.log(`ManusXL batch files E2E base URL: ${baseUrl}`);
+  console.log(`ManusXL image process E2E base URL: ${baseUrl}`);
   await loginForE2E();
 
-  const files = await Promise.all([
-    analyzeUpload(
-      "invoice-notes.txt",
-      "供应商：星河科技\n日期：2026-05-22\n金额：12800\n用途：云服务采购",
-      "text/plain"
-    ),
-    analyzeUpload(
-      "sales-ranking.csv",
-      "公司,类别,金额\n比亚迪,新能源车,120\n吉利银河,新能源车,86",
-      "text/csv"
-    )
-  ]);
-
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lx85QgAAAABJRU5ErkJggg==",
+    "base64"
+  );
+  const image = await analyzeUpload("sample-red.png", png, "image/png");
   const config = await fetchJson("/api/config");
-  const taskPrompt = [
-    "请批量重命名并按类别分类我上传的文件，输出 dry-run 清单和可下载批处理包。",
+  const prompt = [
+    "请批量压缩并把我上传的图片转换成 jpg，输出图片处理报告和 ZIP 包。",
     "",
     "[上传文件摘要]",
-    files.map(uploadedFileBlock).join("\n")
+    uploadedFileBlock(image)
   ].join("\n");
 
   const created = await fetchJson("/api/tasks", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt: taskPrompt, model: config.model, fileIds: files.map((file) => file.id) })
+    body: JSON.stringify({ prompt, model: config.model, fileIds: [image.id] })
   });
   assert(created.taskId, "创建任务没有返回 taskId");
   console.log(`任务已创建：${created.taskId}`);
 
   const events = await waitForTask(created.taskId);
+  assert(
+    events.some((event) => event.type === "tool_call" && event.payload?.toolName === "batch_image_process"),
+    "任务没有调用 batch_image_process"
+  );
+
   const task = await fetchJson(`/api/tasks/${created.taskId}`);
   assert(task.status === "completed", `任务状态不是 completed：${task.status}`);
-  assert(
-    events.some((event) => event.type === "tool_call" && event.payload?.toolName === "batch_file_ops"),
-    "任务没有调用 batch_file_ops"
-  );
-  const fileReaderEvent = events.find(
-    (event) => event.type === "tool_result" && event.title === "file_reader 结果"
-  );
-  assert(fileReaderEvent?.payload?.files?.length === 2, "上传文件没有挂载到任务工作区");
-  assert(
-    fileReaderEvent.payload.files.every((file) => file.relativePath?.startsWith("tmp/uploads/")),
-    "上传文件缺少任务工作区相对路径"
-  );
 
-  const planJson = JSON.parse((await fetchBuffer(artifactByName(task, "batch-file-ops-plan.json").url)).toString("utf8"));
-  assert(planJson.operations?.length === 2, "批量操作清单数量不正确");
-  assert(
-    planJson.operations.every((operation) => operation.dryRun === true),
-    "批量操作清单必须默认 dry-run"
+  const report = JSON.parse(
+    (await fetchBuffer(artifactByName(task, "batch-image-process-report.json").url)).toString("utf8")
   );
-  assert(
-    planJson.operations.some((operation) => operation.target.includes("documents/")) &&
-      planJson.operations.some((operation) => operation.target.includes("spreadsheets/")),
-    "批量分类结果缺少 documents/spreadsheets 目标目录"
+  assert(report.operations?.length === 1, "图片处理报告数量不正确");
+  assert(report.operations[0].status === "processed", `图片未成功处理：${report.operations[0].error ?? "unknown"}`);
+
+  const zipEntries = readZipEntryNames(
+    await fetchBuffer(artifactByName(task, "batch-image-process-package.zip").url)
   );
+  assert(zipEntries.includes("image-process-report.json"), "图片处理 ZIP 缺少 JSON 报告");
+  assert(zipEntries.some((name) => name.startsWith("images/") && name.endsWith(".jpg")), "图片处理 ZIP 缺少 JPG 结果");
 
-  const csv = (await fetchBuffer(artifactByName(task, "batch-file-ops-plan.csv").url)).toString("utf8");
-  assert(csv.includes("operation,source,target,category,dryRun"), "CSV 清单表头不正确");
-
-  const shell = (await fetchBuffer(artifactByName(task, "apply-batch-file-ops.sh").url)).toString("utf8");
-  assert(shell.includes("DRY_RUN=${DRY_RUN:-1}"), "批处理脚本没有默认 dry-run");
-
-  const zipEntries = readZipEntries(await fetchBuffer(artifactByName(task, "batch-file-ops-package.zip").url)).map(
-    (entry) => entry.name
-  );
-  ["README.md", "batch-plan.json", "batch-plan.csv", "apply-batch-ops.sh"].forEach((name) => {
-    assert(zipEntries.includes(name), `批处理 ZIP 缺少 ${name}`);
-  });
-
-  console.log("批量文件 E2E 通过：上传解析、Agent 调用、dry-run JSON/CSV/脚本/ZIP 均已检查。");
+  console.log("图片处理 E2E 通过：上传解析、真实挂载、batch_image_process、报告与 ZIP 均已检查。");
 }
 
 main().catch((error) => {

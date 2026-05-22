@@ -718,7 +718,11 @@ export function AgentWorkspace() {
       const response = await fetch("/api/tasks", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: trimmed, model: config?.model })
+        body: JSON.stringify({
+          prompt: trimmed,
+          model: config?.model,
+          fileIds: uploadedFiles.map((file) => file.id)
+        })
       });
 
       if (!response.ok) {

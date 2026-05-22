@@ -147,8 +147,8 @@ function parsePlan(raw: string, maxSteps = 6) {
   return lines.length > 0 ? lines : DEFAULT_PLAN;
 }
 
-function ensureFileReadingStep(prompt: string, plan: string[]) {
-  if (!prompt.includes("[上传文件摘要]")) return plan;
+function ensureFileReadingStep(prompt: string, plan: string[], uploadedFileIds: string[] = []) {
+  if (!prompt.includes("[上传文件摘要]") && uploadedFileIds.length === 0) return plan;
   if (plan.some((step) => /上传文件|文件摘要|附件|读取上传|读取附件/i.test(step))) {
     return plan;
   }
@@ -172,6 +172,17 @@ function ensureBatchFileOpsStep(prompt: string, plan: string[]) {
   }
 
   return ["生成上传文件的批量重命名和分类 dry-run 清单", ...plan].slice(0, 6);
+}
+
+function ensureImageProcessStep(prompt: string, plan: string[]) {
+  if (!/图片|照片|image|photo|压缩|缩放|旋转|格式转换|转成|convert|resize|compress/i.test(prompt)) {
+    return plan;
+  }
+  if (plan.some((step) => /图片|照片|batch_image_process|压缩|缩放|旋转|格式转换|convert|resize|compress/i.test(step))) {
+    return plan;
+  }
+
+  return ["批量处理上传图片并生成压缩/转换结果包", ...plan].slice(0, 6);
 }
 
 function ensureMapStep(prompt: string, plan: string[]) {
@@ -200,6 +211,7 @@ async function generatePlan(
   model: string,
   messages: ChatMessage[],
   ownerId?: string,
+  uploadedFileIds: string[] = [],
   signal?: AbortSignal
 ) {
   const fallback = JSON.stringify(DEFAULT_PLAN);
@@ -222,7 +234,13 @@ async function generatePlan(
       prompt,
       ensureMcpStep(
         prompt,
-        ensureBatchFileOpsStep(prompt, ensureFileReadingStep(prompt, parsePlan(raw, config.maxSteps)))
+        ensureBatchFileOpsStep(
+          prompt,
+          ensureImageProcessStep(
+            prompt,
+            ensureFileReadingStep(prompt, parsePlan(raw, config.maxSteps), uploadedFileIds)
+          )
+        )
       )
     )
   );
@@ -427,6 +445,7 @@ export async function runAgentTask(taskId: string, options: { resumed?: boolean 
       planningRoute.model,
       planningMessages,
       task.ownerId,
+      task.uploadedFileIds ?? [],
       timeoutController.signal
     );
     if (shouldStopTask(taskId, startedAt, timeoutMs, 4)) return;
@@ -516,6 +535,7 @@ export async function runAgentTask(taskId: string, options: { resumed?: boolean 
         {
           taskId,
           ownerId: task.ownerId,
+          uploadedFileIds: task.uploadedFileIds ?? [],
           prompt: task.prompt,
           step,
           stepIndex: index,

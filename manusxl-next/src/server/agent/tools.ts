@@ -1,6 +1,9 @@
-import { appendFile, cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { appendFile, cp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
+import { promisify } from "node:util";
 import { makeZip } from "@/server/artifacts/generators";
+import { listUploadedFileRecords, type UploadedFileRecord } from "@/server/files/readers";
 import { runSandboxedCommand } from "@/server/sandbox/docker-sandbox";
 import {
   hasExecutableSkillForPrompt,
@@ -11,6 +14,7 @@ import { ensureTaskWorkspace } from "@/server/workspace/task-workspace";
 
 const DEFAULT_TOOL_TIMEOUT_MS = 10_000;
 const DEFAULT_TOOL_MAX_BUFFER_BYTES = 1024 * 1024;
+const execFileAsync = promisify(execFile);
 
 interface ChildProcessExecutionError extends Error {
   code?: number | string;
@@ -123,6 +127,7 @@ export type AgentToolName =
   | "file_reader"
   | "file_workspace"
   | "batch_file_ops"
+  | "batch_image_process"
   | "skill_runner"
   | "python_execute"
   | "shell_execute"
@@ -135,6 +140,7 @@ export type AgentToolName =
 export interface AgentToolInput {
   taskId: string;
   ownerId?: string;
+  uploadedFileIds?: string[];
   prompt: string;
   step: string;
   stepIndex: number;
@@ -203,6 +209,12 @@ export const TOOL_METADATA: AgentToolMetadata[] = [
     namespace: "file",
     description: "为批量重命名、分类、移动和图片处理生成安全 dry-run 操作清单。",
     fallbackTools: ["file_reader", "file_workspace", "data_analysis"]
+  },
+  {
+    name: "batch_image_process",
+    namespace: "file",
+    description: "对上传图片执行批量压缩、缩放、旋转和格式转换，并输出处理包。",
+    fallbackTools: ["batch_file_ops", "file_reader", "file_workspace"]
   },
   {
     name: "skill_runner",
@@ -276,6 +288,9 @@ export function selectToolsForPrompt(prompt: string, ownerId?: string): AgentToo
   if (/批量|重命名|分类|移动|查重|压缩|缩放|图片|image|ocr|rename|classify/.test(lower)) {
     selected.push("batch_file_ops", "file_reader", "file_workspace");
   }
+  if (/图片|image|照片|photo|压缩|缩放|旋转|格式转换|转成|convert|resize|compress/.test(lower)) {
+    selected.push("batch_image_process", "file_reader", "file_workspace");
+  }
   if (/skill|技能|工作流|自定义/.test(lower) || hasExecutableSkillForPrompt(prompt, ownerId)) {
     selected.push("skill_runner", "file_workspace");
   }
@@ -315,6 +330,9 @@ export function inferToolsForStep(step: string): AgentToolName[] {
   if (/网页|搜索|调研|竞品|市场|news|web|research/.test(lower)) candidates.push("web_research");
   if (/上传文件|文件摘要|附件|读取.*(文件|pdf|docx|xlsx|csv|excel|word)|解析.*(文件|pdf|docx|xlsx|csv|excel|word)/.test(lower)) {
     candidates.push("file_reader");
+  }
+  if (/图片|image|照片|photo|压缩|缩放|旋转|格式转换|转成|convert|resize|compress/.test(lower)) {
+    candidates.push("batch_image_process");
   }
   if (/批量|重命名|分类|移动|查重|图片|image|ocr|rename|classify/.test(lower)) {
     candidates.push("batch_file_ops");
@@ -576,6 +594,102 @@ function extractUploadedFileEntries(prompt: string) {
     .filter((file) => file.name !== "unnamed");
 }
 
+interface UploadedFileToolEntry {
+  id?: string;
+  name: string;
+  type: string;
+  size: string;
+  preview: string;
+  summary?: string;
+  metadata?: Record<string, string | number | boolean>;
+  workspacePath?: string;
+  relativePath?: string;
+}
+
+function safeUploadedFilename(record: UploadedFileRecord, index: number) {
+  const safeName = basename(record.name)
+    .replace(/[/:*?"<>|\\]/g, "_")
+    .replace(/\s+/g, "-")
+    .slice(0, 140);
+  return `${String(index + 1).padStart(3, "0")}-${safeName || "upload.bin"}`;
+}
+
+function uploadedRecordToEntry(
+  record: UploadedFileRecord,
+  materialized?: { workspacePath: string; relativePath: string }
+): UploadedFileToolEntry {
+  return {
+    id: record.id,
+    name: record.name,
+    type: record.extension || record.mimeType,
+    size: formatBytes(record.size),
+    preview: record.textPreview,
+    summary: record.summary,
+    metadata: record.metadata,
+    workspacePath: materialized?.workspacePath,
+    relativePath: materialized?.relativePath
+  };
+}
+
+async function materializeUploadedFiles(input: AgentToolInput) {
+  const records = listUploadedFileRecords(input.ownerId, input.uploadedFileIds ?? []);
+  if (records.length === 0) {
+    return {
+      files: [] as UploadedFileToolEntry[],
+      manifestPath: null as string | null,
+      uploadDir: null as string | null
+    };
+  }
+
+  const { tmp } = await ensureTaskWorkspace(input.taskId, input.ownerId);
+  const uploadDir = join(tmp, "uploads");
+  const files: UploadedFileToolEntry[] = [];
+  await mkdir(uploadDir, { recursive: true });
+
+  for (const [index, record] of records.entries()) {
+    const fileName = safeUploadedFilename(record, index);
+    const workspacePath = join(uploadDir, fileName);
+    const relativePath = `tmp/uploads/${fileName}`;
+    await cp(record.storedPath, workspacePath, { force: true });
+    files.push(uploadedRecordToEntry(record, { workspacePath, relativePath }));
+  }
+
+  const manifestPath = join(uploadDir, "uploads-manifest.json");
+  await writeFile(
+    manifestPath,
+    JSON.stringify(
+      {
+        taskId: input.taskId,
+        fileCount: files.length,
+        files: files.map((file) => ({
+          id: file.id,
+          name: file.name,
+          type: file.type,
+          size: file.size,
+          relativePath: file.relativePath,
+          summary: file.summary,
+          metadata: file.metadata
+        }))
+      },
+      null,
+      2
+    )
+  );
+
+  return { files, manifestPath, uploadDir };
+}
+
+async function getUploadedFileToolEntries(input: AgentToolInput) {
+  const materialized = await materializeUploadedFiles(input);
+  if (materialized.files.length > 0) return materialized;
+
+  return {
+    files: extractUploadedFileEntries(input.prompt) as UploadedFileToolEntry[],
+    manifestPath: null as string | null,
+    uploadDir: null as string | null
+  };
+}
+
 function classifyUploadedFile(type: string, name: string) {
   const value = `${type} ${name}`.toLowerCase();
   if (/png|jpg|jpeg|webp|gif|image|图片/.test(value)) return "images";
@@ -662,7 +776,8 @@ function batchShellScript(operations: Array<{ source: string; target: string }>)
 
 async function runFileReader(input: AgentToolInput): Promise<AgentToolResult> {
   const summary = extractUploadedFileSummary(input.prompt);
-  if (!summary) {
+  const materialized = await materializeUploadedFiles(input);
+  if (!summary && materialized.files.length === 0) {
     return {
       toolName: "file_reader",
       ok: true,
@@ -671,20 +786,27 @@ async function runFileReader(input: AgentToolInput): Promise<AgentToolResult> {
     };
   }
 
-  const fileCount = (summary.match(/^文件：/gm) ?? []).length;
+  const fileCount = materialized.files.length || (summary?.match(/^文件：/gm) ?? []).length || 1;
   return {
     toolName: "file_reader",
     ok: true,
-    observation: `已读取 ${fileCount || 1} 个上传文件的解析摘要，并将其作为本轮任务上下文。`,
+    observation:
+      materialized.files.length > 0
+        ? `已读取 ${fileCount} 个上传文件的解析摘要，并将真实文件挂载到任务工作区 tmp/uploads。`
+        : `已读取 ${fileCount} 个上传文件的解析摘要，并将其作为本轮任务上下文。`,
     payload: {
-      fileCount: fileCount || 1,
-      summary
+      fileCount,
+      summary,
+      files: materialized.files,
+      uploadDir: materialized.uploadDir,
+      manifestPath: materialized.manifestPath
     }
   };
 }
 
 async function runFileWorkspace(input: AgentToolInput): Promise<AgentToolResult> {
   const { root, tmp, artifacts, memoryFile } = await ensureTaskWorkspace(input.taskId, input.ownerId);
+  const materialized = await materializeUploadedFiles(input);
 
   const notesPath = join(tmp, "agent-notes.md");
   const manifestPath = join(artifacts, "manifest.md");
@@ -695,7 +817,17 @@ async function runFileWorkspace(input: AgentToolInput): Promise<AgentToolResult>
   );
   await writeFile(
     manifestPath,
-    [`# Artifact Manifest`, ``, `Task ID: ${input.taskId}`, `Created: ${new Date().toISOString()}`].join("\n")
+    [
+      `# Artifact Manifest`,
+      ``,
+      `Task ID: ${input.taskId}`,
+      `Created: ${new Date().toISOString()}`,
+      ``,
+      `## Uploaded Files`,
+      ...(materialized.files.length > 0
+        ? materialized.files.map((file) => `- ${file.name} -> ${file.relativePath}`)
+        : ["- No uploaded files attached to this task."])
+    ].join("\n")
   );
   await appendFile(
     memoryNotePath,
@@ -713,16 +845,22 @@ async function runFileWorkspace(input: AgentToolInput): Promise<AgentToolResult>
   return {
     toolName: "file_workspace",
     ok: true,
-    observation: "已创建真实任务工作区，并写入 tmp/agent-notes.md、artifacts/manifest.md 与 memory/agent-memory.md。",
+    observation:
+      materialized.files.length > 0
+        ? `已创建真实任务工作区，挂载 ${materialized.files.length} 个上传文件，并写入 tmp/agent-notes.md、artifacts/manifest.md 与 memory/agent-memory.md。`
+        : "已创建真实任务工作区，并写入 tmp/agent-notes.md、artifacts/manifest.md 与 memory/agent-memory.md。",
     payload: {
       workspaceRoot: root,
-      files: [notesPath, manifestPath, memoryNotePath]
+      uploadedFiles: materialized.files,
+      uploadManifestPath: materialized.manifestPath,
+      files: [notesPath, manifestPath, memoryNotePath, materialized.manifestPath].filter(Boolean)
     }
   };
 }
 
 async function runBatchFileOps(input: AgentToolInput): Promise<AgentToolResult> {
-  const files = extractUploadedFileEntries(input.prompt);
+  const uploaded = await getUploadedFileToolEntries(input);
+  const files = uploaded.files;
   const operations = files.map((file, index) => {
     const folder = classifyUploadedFile(file.type, file.name);
     return {
@@ -773,6 +911,8 @@ async function runBatchFileOps(input: AgentToolInput): Promise<AgentToolResult> 
       dryRun: true,
       outputPath,
       packageDir,
+      sourceFiles: files,
+      uploadManifestPath: uploaded.manifestPath,
       operations,
       generatedArtifacts: [
         {
@@ -798,6 +938,337 @@ async function runBatchFileOps(input: AgentToolInput): Promise<AgentToolResult> 
           type: "zip",
           mimeType: "application/zip",
           content: packageZip.toString("base64"),
+          contentEncoding: "base64"
+        }
+      ]
+    }
+  };
+}
+
+type ImageProcessStatus = "processed" | "skipped" | "failed";
+
+interface ImageProcessOperation {
+  source: string;
+  sourcePath?: string;
+  outputName: string;
+  outputPath?: string;
+  originalSizeBytes?: number;
+  outputSizeBytes?: number;
+  status: ImageProcessStatus;
+  error?: string;
+}
+
+function parseImageProcessingOptions(prompt: string) {
+  const lower = prompt.toLowerCase();
+  const targetKb = Number(
+    prompt.match(/(\d{2,5})\s*(?:kb|k\b|千字节)/i)?.[1] ??
+      (lower.includes("500kb") ? "500" : "")
+  );
+  const maxDimension = Number(
+    prompt.match(/(?:边长|最长边|宽度|高度|缩放到|resize).{0,12}?(\d{2,5})\s*(?:px|像素)?/i)?.[1] ??
+      prompt.match(/(\d{2,5})\s*(?:px|像素)/i)?.[1] ??
+      ""
+  );
+  const rotateDegrees = Number(
+    prompt.match(/(?:旋转|rotate).{0,8}?(-?\d{1,3})/i)?.[1] ?? ""
+  );
+  const requestedFormat =
+    lower.match(/\b(webp|png|jpe?g|gif|tiff?)\b/)?.[1] ??
+    prompt.match(/(?:转成|转换为|格式转换为)\s*(webp|png|jpe?g|gif|tiff?)/i)?.[1];
+  const normalizedFormat = requestedFormat
+    ? requestedFormat.toLowerCase().replace("jpg", "jpeg").replace("tif", "tiff")
+    : undefined;
+  const quality = Number(prompt.match(/(?:质量|quality).{0,8}?(\d{1,3})/i)?.[1] ?? "");
+
+  return {
+    targetBytes: Number.isFinite(targetKb) && targetKb > 0 ? Math.floor(targetKb * 1024) : undefined,
+    maxDimension: Number.isFinite(maxDimension) && maxDimension > 0 ? Math.floor(maxDimension) : undefined,
+    rotateDegrees: Number.isFinite(rotateDegrees) ? rotateDegrees : undefined,
+    format: normalizedFormat,
+    quality:
+      Number.isFinite(quality) && quality > 0
+        ? Math.min(100, Math.max(1, Math.floor(quality)))
+        : undefined
+  };
+}
+
+function isImageEntry(file: UploadedFileToolEntry) {
+  return /png|jpg|jpeg|webp|gif|tiff|image|图片/i.test(`${file.type} ${file.name}`);
+}
+
+function originalImageFormat(file: UploadedFileToolEntry) {
+  const extension = file.name.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase();
+  if (extension === "jpg") return "jpeg";
+  if (extension === "tif") return "tiff";
+  if (extension) return extension;
+  if (/jpeg|jpg/i.test(file.type)) return "jpeg";
+  if (/png/i.test(file.type)) return "png";
+  if (/gif/i.test(file.type)) return "gif";
+  return "jpeg";
+}
+
+function supportedSipsFormat(format: string) {
+  return ["jpeg", "png", "gif", "tiff"].includes(format);
+}
+
+function imageExtension(format: string) {
+  if (format === "jpeg") return "jpg";
+  if (format === "tiff") return "tiff";
+  return format;
+}
+
+function processedImageName(file: UploadedFileToolEntry, index: number, format: string) {
+  const stem =
+    basename(file.name)
+      .replace(/\.[a-z0-9]+$/i, "")
+      .replace(/[^\p{L}\p{N}]+/gu, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 52) || "image";
+  return `${String(index + 1).padStart(3, "0")}-${stem}.${imageExtension(format)}`;
+}
+
+function imageProcessCsv(operations: ImageProcessOperation[]) {
+  const headers = [
+    "source",
+    "outputName",
+    "status",
+    "originalSizeBytes",
+    "outputSizeBytes",
+    "sourcePath",
+    "outputPath",
+    "error"
+  ];
+  return [
+    headers.join(","),
+    ...operations.map((operation) =>
+      headers
+        .map((header) => csvEscape(String(operation[header as keyof ImageProcessOperation] ?? "")))
+        .join(",")
+    )
+  ].join("\n");
+}
+
+function imageQualityAttempts(options: ReturnType<typeof parseImageProcessingOptions>) {
+  if (!options.targetBytes) return [options.quality ?? 75];
+  return Array.from(new Set([options.quality ?? 82, 70, 58, 46, 34]));
+}
+
+function imageDimensionAttempts(options: ReturnType<typeof parseImageProcessingOptions>) {
+  if (options.maxDimension) {
+    return Array.from(
+      new Set([
+        options.maxDimension,
+        Math.floor(options.maxDimension * 0.85),
+        Math.floor(options.maxDimension * 0.7)
+      ].filter((value) => value > 0))
+    );
+  }
+  if (options.targetBytes) return [undefined, 1800, 1400, 1000, 760] as Array<number | undefined>;
+  return [undefined] as Array<number | undefined>;
+}
+
+async function sipsConvertImage(params: {
+  inputPath: string;
+  outputPath: string;
+  format: string;
+  quality: number;
+  maxDimension?: number;
+  rotateDegrees?: number;
+}) {
+  const args = ["-s", "format", params.format];
+  if (params.format === "jpeg") {
+    args.push("-s", "formatOptions", String(params.quality));
+  }
+  if (params.maxDimension) {
+    args.push("-Z", String(params.maxDimension));
+  }
+  if (params.rotateDegrees) {
+    args.push("-r", String(params.rotateDegrees));
+  }
+  args.push(params.inputPath, "--out", params.outputPath);
+
+  await execFileAsync("/usr/bin/sips", args, {
+    timeout: getToolExecutionLimits().timeoutMs,
+    maxBuffer: getToolExecutionLimits().maxBufferBytes
+  });
+}
+
+async function processImageWithSips(
+  file: UploadedFileToolEntry,
+  index: number,
+  outputDir: string,
+  options: ReturnType<typeof parseImageProcessingOptions>
+): Promise<ImageProcessOperation> {
+  const format = options.format ?? (options.targetBytes ? "jpeg" : originalImageFormat(file));
+  const outputName = processedImageName(file, index, format);
+  const outputPath = join(outputDir, outputName);
+
+  if (!file.workspacePath) {
+    return {
+      source: file.name,
+      outputName,
+      status: "skipped",
+      error: "缺少真实文件路径，只能生成处理计划。"
+    };
+  }
+  if (!supportedSipsFormat(format)) {
+    return {
+      source: file.name,
+      sourcePath: file.relativePath,
+      outputName,
+      status: "skipped",
+      error: `当前本地图片引擎暂不支持输出 ${format.toUpperCase()}，可先转换为 JPEG/PNG/GIF/TIFF。`
+    };
+  }
+
+  const originalSizeBytes = (await stat(file.workspacePath)).size;
+  let lastError = "";
+
+  for (const maxDimension of imageDimensionAttempts(options)) {
+    for (const quality of imageQualityAttempts(options)) {
+      try {
+        await sipsConvertImage({
+          inputPath: file.workspacePath,
+          outputPath,
+          format,
+          quality,
+          maxDimension,
+          rotateDegrees: options.rotateDegrees
+        });
+        const outputSizeBytes = (await stat(outputPath)).size;
+        if (!options.targetBytes || outputSizeBytes <= options.targetBytes) {
+          return {
+            source: file.name,
+            sourcePath: file.relativePath,
+            outputName,
+            outputPath,
+            originalSizeBytes,
+            outputSizeBytes,
+            status: "processed"
+          };
+        }
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error);
+      }
+    }
+  }
+
+  try {
+    const outputSizeBytes = (await stat(outputPath)).size;
+    return {
+      source: file.name,
+      sourcePath: file.relativePath,
+      outputName,
+      outputPath,
+      originalSizeBytes,
+      outputSizeBytes,
+      status: "processed",
+      error: options.targetBytes
+        ? `已处理，但未压缩到目标 ${formatBytes(options.targetBytes)} 以内。`
+        : undefined
+    };
+  } catch {
+    return {
+      source: file.name,
+      sourcePath: file.relativePath,
+      outputName,
+      originalSizeBytes,
+      status: "failed",
+      error: lastError || "图片处理失败。"
+    };
+  }
+}
+
+async function runBatchImageProcess(input: AgentToolInput): Promise<AgentToolResult> {
+  const uploaded = await getUploadedFileToolEntries(input);
+  const imageFiles = uploaded.files.filter(isImageEntry);
+
+  if (imageFiles.length === 0) {
+    return {
+      toolName: "batch_image_process",
+      ok: true,
+      observation: "未检测到可处理的上传图片，已跳过批量图片处理。",
+      payload: { files: [], operations: [] }
+    };
+  }
+
+  const options = parseImageProcessingOptions(input.prompt);
+  const { artifacts } = await ensureTaskWorkspace(input.taskId, input.ownerId);
+  const outputDir = join(artifacts, "processed-images");
+  await mkdir(outputDir, { recursive: true });
+
+  const operations: ImageProcessOperation[] = [];
+  for (const [index, file] of imageFiles.entries()) {
+    operations.push(await processImageWithSips(file, index, outputDir, options));
+  }
+
+  const processed = operations.filter((operation) => operation.status === "processed");
+  const report = JSON.stringify(
+    {
+      taskId: input.taskId,
+      generatedAt: new Date().toISOString(),
+      options: {
+        targetBytes: options.targetBytes,
+        maxDimension: options.maxDimension,
+        rotateDegrees: options.rotateDegrees,
+        format: options.format,
+        quality: options.quality,
+        engine: "macOS sips"
+      },
+      sourceFiles: imageFiles,
+      operations
+    },
+    null,
+    2
+  );
+  const csv = imageProcessCsv(operations);
+  const zipEntries = [
+    { name: "image-process-report.json", data: Buffer.from(report) },
+    { name: "image-process-report.csv", data: Buffer.from(csv) },
+    ...(
+      await Promise.all(
+        processed.map(async (operation) => ({
+          name: `images/${operation.outputName}`,
+          data: await readFile(operation.outputPath as string)
+        }))
+      )
+    )
+  ];
+  const zip = makeZip(zipEntries);
+
+  await writeFile(join(outputDir, "image-process-report.json"), report);
+  await writeFile(join(outputDir, "image-process-report.csv"), csv);
+  await writeFile(join(outputDir, "batch-image-process-package.zip"), zip);
+
+  return {
+    toolName: "batch_image_process",
+    ok: true,
+    observation:
+      processed.length > 0
+        ? `已处理 ${processed.length}/${imageFiles.length} 张上传图片，并生成处理报告和 ZIP 结果包。`
+        : `已生成 ${imageFiles.length} 张上传图片的处理计划，但当前环境没有完成实际转换。`,
+    payload: {
+      options,
+      sourceFiles: imageFiles,
+      operations,
+      generatedArtifacts: [
+        {
+          name: "batch-image-process-report.json",
+          type: "json",
+          mimeType: "application/json; charset=utf-8",
+          content: report
+        },
+        {
+          name: "batch-image-process-report.csv",
+          type: "csv",
+          mimeType: "text/csv; charset=utf-8",
+          content: csv
+        },
+        {
+          name: "batch-image-process-package.zip",
+          type: "zip",
+          mimeType: "application/zip",
+          content: zip.toString("base64"),
           contentEncoding: "base64"
         }
       ]
@@ -1653,6 +2124,8 @@ export async function executeAgentTool(
       return runFileWorkspace(input);
     case "batch_file_ops":
       return runBatchFileOps(input);
+    case "batch_image_process":
+      return runBatchImageProcess(input);
     case "skill_runner":
       return runSkillRunner(input);
     case "python_execute":

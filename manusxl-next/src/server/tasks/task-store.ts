@@ -362,13 +362,19 @@ export function getTask(taskId: string, ownerId?: string) {
   return task;
 }
 
-export function createTask(prompt: string, model: string, ownerId?: string) {
+export function createTask(
+  prompt: string,
+  model: string,
+  ownerId?: string,
+  uploadedFileIds: string[] = []
+) {
   const state = getState();
   const now = new Date().toISOString();
   const task: Task = {
     id: createId("task"),
     ownerId,
     prompt,
+    uploadedFileIds: uploadedFileIds.length > 0 ? uploadedFileIds : undefined,
     model,
     status: "queued",
     createdAt: now,

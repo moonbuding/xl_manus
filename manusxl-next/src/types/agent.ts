@@ -76,6 +76,7 @@ export interface Task {
   id: string;
   ownerId?: string;
   prompt: string;
+  uploadedFileIds?: string[];
   status: TaskStatus;
   model: string;
   createdAt: string;
@@ -89,6 +90,7 @@ export interface Task {
 export interface CreateTaskRequest {
   prompt: string;
   model?: string;
+  fileIds?: string[];
 }
 
 export interface CreateTaskResponse {

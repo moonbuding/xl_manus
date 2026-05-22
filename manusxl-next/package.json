@@ -10,6 +10,7 @@
     "e2e:demo": "node scripts/e2e-demo.mjs",
     "e2e:mcp": "node scripts/e2e-mcp.mjs",
     "e2e:batch": "node scripts/e2e-batch-files.mjs",
+    "e2e:image": "node scripts/e2e-image-process.mjs",
     "e2e:skill": "node scripts/e2e-skill-runner.mjs",
     "docker:check": "node scripts/check-docker-setup.mjs",
     "typecheck": "tsc --noEmit",

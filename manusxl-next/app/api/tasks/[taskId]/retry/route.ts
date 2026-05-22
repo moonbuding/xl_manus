@@ -17,7 +17,12 @@ export async function POST(
   const sourceTask = getTask(taskId, user.id);
   if (!sourceTask) return NextResponse.json({ error: "Task not found" }, { status: 404 });
 
-  const retryTask = createTask(sourceTask.prompt, sourceTask.model, user.id);
+  const retryTask = createTask(
+    sourceTask.prompt,
+    sourceTask.model,
+    user.id,
+    sourceTask.uploadedFileIds ?? []
+  );
   const queue = enqueueAgentTask(retryTask.id);
 
   return NextResponse.json({
