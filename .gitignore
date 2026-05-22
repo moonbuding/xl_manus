@@ -1,0 +1,27 @@
+.DS_Store
+*.swp
+*.swo
+
+# Local assistant / editor state
+.agents/
+.claude/
+.codex/
+
+# Environment secrets
+.env
+.env.local
+.env.*.local
+
+# Node / Next.js outputs
+node_modules/
+.next/
+out/
+dist/
+tsconfig.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ManusXL runtime data
+.manusxl-data/
+manusxl-next/.manusxl-data/

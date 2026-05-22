@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Manus 复刻 — 前端设计稿</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<style>
+  html, body, #root { margin: 0; height: 100%; }
+  body { font-family: Inter, "Noto Sans SC", -apple-system, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased; }
+</style>
+</head>
+<body>
+  <template id="__bundler_thumbnail">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400">
+      <rect width="400" height="400" fill="#f6f3ed"/>
+      <g transform="translate(120,120)">
+        <path d="M40 20h70l40 40v120H40z" fill="#5b6b5a" opacity="0.22"/>
+        <path d="M0 50h70l40 40v120H0z" fill="#1f1d1a"/>
+        <path d="M70 50v40h40" fill="none" stroke="#f6f3ed" stroke-width="6" stroke-linejoin="round"/>
+      </g>
+      <text x="200" y="320" text-anchor="middle" font-family="Inter, system-ui, sans-serif"
+        font-size="28" font-weight="600" letter-spacing="6" fill="#1f1d1a">FOLIO</text>
+    </svg>
+  </template>
+  <div id="root"></div>
+
+  <script type="text/babel" src="design-canvas.jsx"></script>
+  <script type="text/babel" src="tweaks-panel.jsx"></script>
+  <script type="text/babel" src="shell.jsx"></script>
+  <script type="text/babel" src="workspace.jsx"></script>
+  <script type="text/babel" src="meta.jsx"></script>
+  <script type="text/babel" src="app.jsx"></script>
+</body>
+</html>
