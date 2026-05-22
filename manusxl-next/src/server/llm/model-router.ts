@@ -8,19 +8,29 @@ export interface ModelRouteDecision {
   reason: string;
 }
 
+export interface ModelRoutePolicy {
+  baseModel: string;
+  planningModel?: string;
+  executionModel?: string;
+  finalModel?: string;
+}
+
 function isComplexPrompt(prompt: string) {
   return /深度|复杂|研究|调研|分析|报告|多步骤|dashboard|ppt|excel|代码|文件|pdf/i.test(prompt);
 }
 
-export function routeModel(stage: ModelRouteStage, prompt: string): ModelRouteDecision {
-  const config = getAppConfig();
-  const baseModel = config.model;
+export function routeModelWithPolicy(
+  stage: ModelRouteStage,
+  prompt: string,
+  policy: ModelRoutePolicy
+): ModelRouteDecision {
+  const baseModel = policy.baseModel;
   const stageModel =
     stage === "planning"
-      ? config.planningModel
+      ? policy.planningModel
       : stage === "final_answer"
-        ? config.finalModel
-        : config.executionModel;
+        ? policy.finalModel
+        : policy.executionModel;
 
   const model = stageModel || baseModel;
   const complexity = isComplexPrompt(prompt) ? "复杂任务" : "普通任务";
@@ -34,4 +44,14 @@ export function routeModel(stage: ModelRouteStage, prompt: string): ModelRouteDe
     model,
     reason
   };
+}
+
+export function routeModel(stage: ModelRouteStage, prompt: string): ModelRouteDecision {
+  const config = getAppConfig();
+  return routeModelWithPolicy(stage, prompt, {
+    baseModel: config.model,
+    planningModel: config.planningModel,
+    executionModel: config.executionModel,
+    finalModel: config.finalModel
+  });
 }

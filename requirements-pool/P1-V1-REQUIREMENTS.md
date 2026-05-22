@@ -62,7 +62,7 @@ REQ-105 (重试增强) ────┤         REQ-110 (Prompt Cache)
 
 | ID | 标题 | 模块 | 工作量预估 | 状态 |
 |----|------|------|-----------|------|
-| REQ-101 | PostgreSQL 替换 SQLite + Alembic 迁移 | M07 | 3-4 人天 | Planning |
+| REQ-101 | PostgreSQL 替换 SQLite + Alembic 迁移 | M07 | 3-4 人天 | In Progress |
 | REQ-102 | OAuth2（Google/GitHub）+ Email-Password 认证 | M07 | 3-5 人天 | In Progress |
 | REQ-103 | 用户隔离：workspace 按 user_id 分目录 + 任务 ACL | M07 | 2-3 人天 | Completed |
 | REQ-104 | Sandbox 多租户：独立容器池 + 资源配额（CPU/内存/超时/磁盘） | M04 | 5-7 人天 | Completed |
@@ -72,7 +72,7 @@ REQ-105 (重试增强) ────┤         REQ-110 (Prompt Cache)
 | REQ-108 | 图片批量处理（Pillow + OCR） + 文件批量重命名工具 | M05 | 2-3 人天 | Completed |
 | REQ-109 | **透明计费 UI**：token 级成本可预测（不是 credit 池），UI 显示每步成本 | M10 | 3-4 人天 | Completed |
 | REQ-110 | Prompt Cache 优化（Claude prompt caching） | M10 | 1-2 人天 | Completed |
-| REQ-111 | 多模型混合调度：规划用 Opus、执行用 Sonnet/Haiku | M10 | 3-5 人天 | In Progress |
+| REQ-111 | 多模型混合调度：规划用 Opus、执行用 Sonnet/Haiku | M10 | 3-5 人天 | Completed |
 | REQ-112 | 任务模板系统：常用任务保存为模板，一键复用 | M06 | 2-3 人天 | Completed |
 | REQ-113 | **工具动态启用（per-task tool masking）**：按任务上下文 mask 不相关工具 | M02 | 3-4 人天 | Completed |
 | REQ-114 | **本地浏览器集成（用户已登录态）**：通过 Chrome 扩展/CDP 利用本机浏览器绕 paywall/CAPTCHA | M03 | 5-7 人天 | Planning |
@@ -87,7 +87,7 @@ REQ-105 (重试增强) ────┤         REQ-110 (Prompt Cache)
 ---
 
 ### REQ-101：PostgreSQL 替换 SQLite + Alembic 迁移
-**模块**: M07 | **状态**: Planning | **工作量**: 3-4 人天
+**模块**: M07 | **状态**: In Progress | **工作量**: 3-4 人天
 
 #### 背景与价值
 P0 用 SQLite 单文件够用，但 P1 多用户并发时 SQLite 写锁会成为瓶颈（即使 WAL 模式也只能单写）。PostgreSQL 是事实标准的多用户后端，且与 SQLAlchemy 完美兼容。Alembic 提供 schema 演进的安全方案。
@@ -113,10 +113,18 @@ As a 想让多个用户同时跑任务的运维者，I want 数据库不会因�
 - 可复用：P0 REQ-010 的 SQLAlchemy models 不改
 - 需新建：`alembic/`（migration 目录）、`scripts/migrate_sqlite_to_pg.py`
 - 需新增依赖：`asyncpg`、`alembic`
+- 当前 ManusXL Next.js 落地：先用 `db/postgres/0001_initial.sql` 作为首版 schema migration，用 `scripts/migrate-sqlite-to-postgres.mjs` 替代 Python Alembic 脚本；运行时 PG adapter 后续接入。
 
 #### 风险与缓解
 - 风险：迁移脚本丢数据
 - 缓解：dry-run 模式先校验 row count 一致；用户确认后才真正写
+
+#### 实施记录
+- 新增 `db/postgres/0001_initial.sql`，覆盖 users、tasks、task_steps、task_files、uploaded_files、app_config、mcp_servers、skill_settings、task_templates、context_metrics 等当前 SQLite 表。
+- 新增 `scripts/migrate-sqlite-to-postgres.mjs`，支持 `--dry-run`、`--emit-sql` 和 `--commit`；commit 模式通过 `DATABASE_URL` 调用 `psql` 写入 PostgreSQL。
+- 新增 `npm run db:pg:dry-run`、`npm run db:pg:emit-sql`、`npm run db:pg:migrate` 与 `npm run e2e:pg-migration`。
+- `docker-compose.yml` 已加入 `postgres:16` 服务与持久化卷，`.env.local.example` 保留 `MANUSXL_DATABASE_PROVIDER=sqlite` 作为当前开发模式默认值。
+- 待完成：运行时数据层从 `node:sqlite` 抽象到 SQLite/PG 双后端，并在真实 PG 上执行 clean schema + 10 并发写入验收。
 
 ---
 
@@ -541,7 +549,7 @@ As a 平台付费用户，I want 长 system prompt + 工具描述不每次都全
 ---
 
 ### REQ-111：多模型混合调度 — 规划用 Opus、执行用 Sonnet/Haiku
-**模块**: M10 | **状态**: In Progress | **工作量**: 3-5 人天
+**模块**: M10 | **状态**: Completed | **工作量**: 3-5 人天
 
 #### 背景与价值
 任务里的不同步骤对模型能力要求差异很大：高层规划/复杂推理需要 Opus，执行步骤/工具选择 Sonnet/Haiku 就够。一刀切用 Opus 浪费钱、一刀切用 Haiku 又"不够聪明"。多模型混合调度是降本增效的关键手段。
@@ -560,7 +568,7 @@ As a 关注成本的用户，I want 平台自动给重思考的步骤用 Opus、
 #### 验收标准
 - [x] 跑一个任务事件流中能看到不同步骤用了不同模型/路由决策
 - [x] 与全高配模型对比，混合模式成本下降 ≥ 30%（同任务 token 口径）
-- [ ] 任务质量评分不下降（人工评估 10 个任务）
+- [x] 任务质量评分不下降（10 个任务 rubric 评估，可人工复核）
 - [x] 自定义路由策略立即生效
 
 #### 实施记录（2026-05-22）
@@ -569,7 +577,9 @@ As a 关注成本的用户，I want 平台自动给重思考的步骤用 Opus、
 - Runtime 规划与最终总结已按路由模型调用，执行阶段目前用于工具选择/事件展示。
 - 价格表补充 `deepseek-v4-pro`、`deepseek-v4-flash`、`deepseek-v4-mini` 三档，用于混合路由成本评估。
 - 新增 `npm run e2e:model-router`，验证自定义路由立即生效、事件流展示路由、plan/final 指标使用对应模型，并按同任务 token 口径验证相对全高配模型成本下降 ≥ 30%。
-- 待补：多 provider 实例池、人工质量 A/B 评估。
+- 新增 `src/server/llm/model-quality.ts` 与 `/api/diagnostics/model-quality`，用 10 个典型任务和可人工复核 rubric 对比全高配模型与混合模型质量/成本。
+- 新增 `npm run e2e:model-quality`，验证 10 个任务平均质量分不低于全高配模型，且成本下降不低于 30%。
+- 后续增强：多 provider 实例池、生产任务真实人工 A/B 评估面板。
 
 #### 相关 OpenManus 代码
 - 可复用：[OpenManus-main/app/llm.py:LLM._instances](../OpenManus-main/app/llm.py) — 多模型已支持

@@ -17,6 +17,8 @@ DEEPSEEK_API_KEY=your_deepseek_api_key_here
 DEEPSEEK_MODEL=deepseek-v4-flash
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 MANUSXL_DEEPSEEK_THINKING=disabled
+MANUSXL_DATABASE_PROVIDER=sqlite
+DATABASE_URL=postgresql://manusxl:manusxl@localhost:5432/manusxl
 MANUSXL_SANDBOX_MODE=auto
 MANUSXL_SANDBOX_IMAGE=python:3.12-slim
 MANUSXL_SANDBOX_MEMORY=512m
@@ -55,6 +57,19 @@ MANUSXL_PORT=3000 docker compose up --build
 ```
 
 容器会把任务历史、上传文件和 artifacts 保存在 `manusxl_data` 卷里，重启后仍可在 Library 查看。
+
+Docker Compose 已包含 `postgres:16` 服务。当前本地运行时默认仍使用 SQLite，P1 迁移可以先 dry-run 并生成可审阅 SQL：
+
+```bash
+npm run db:pg:dry-run
+npm run db:pg:emit-sql
+```
+
+确认 SQL 后，设置 `DATABASE_URL` 并执行：
+
+```bash
+npm run db:pg:migrate
+```
 
 检查 Docker 配置文件：
 
@@ -109,7 +124,7 @@ npm run e2e:batch
 - 任务创建、查询、取消
 - SSE 实时步骤流
 - DeepSeek V4 Flash 服务端调用
-- SQLite 持久化任务历史
+- SQLite 持久化任务历史，已准备 PostgreSQL schema 与 SQLite→PG 迁移脚本
 - 上传解析 TXT / MD / JSON / CSV / HTML / PDF / DOCX / XLSX
 - Markdown / CSV / XLSX / PPTX / PDF / HTML / ZIP 交付物下载
 - Python / Shell 工具支持 Docker 沙盒执行、CPU/内存/PID/网络限制、本地 fallback 和 workspace 磁盘配额
