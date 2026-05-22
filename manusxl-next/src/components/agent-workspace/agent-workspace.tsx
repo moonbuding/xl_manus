@@ -145,6 +145,7 @@ const statusText: Record<TaskStatus, string> = {
 };
 
 type NavigationView = "workspace" | "agent" | "library" | "settings";
+type AuthMode = "phone" | "email-login" | "email-register";
 
 interface SandboxStatus {
   mode: string;
@@ -397,6 +398,7 @@ export function AgentWorkspace() {
     verificationCode: ""
   });
   const [authNotice, setAuthNotice] = useState<string | null>(null);
+  const [authMode, setAuthMode] = useState<AuthMode>("phone");
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [isAuthSubmitting, setIsAuthSubmitting] = useState(false);
   const [activeTask, setActiveTask] = useState<Task | null>(null);
@@ -732,13 +734,33 @@ export function AgentWorkspace() {
     setAuthNotice(null);
 
     try {
-      const endpoint = authDraft.verificationCode.trim()
-        ? "/api/auth/phone/verify"
-        : "/api/auth/phone/request";
+      const endpoint =
+        authMode === "phone"
+          ? authDraft.verificationCode.trim()
+            ? "/api/auth/phone/verify"
+            : "/api/auth/phone/request"
+          : authMode === "email-register"
+            ? authDraft.verificationCode.trim()
+              ? "/api/auth/verify"
+              : "/api/auth/register"
+            : "/api/auth/login";
+      const body =
+        authMode === "phone"
+          ? authDraft
+          : authMode === "email-register" && authDraft.verificationCode.trim()
+            ? {
+                email: authDraft.email,
+                code: authDraft.verificationCode
+              }
+            : {
+                email: authDraft.email,
+                password: authDraft.password,
+                displayName: authDraft.displayName
+              };
       const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(authDraft)
+        body: JSON.stringify(body)
       });
       const data = await readJson<Partial<AuthResponse> & { error?: string; verificationCode?: string }>(
         response,
@@ -748,7 +770,7 @@ export function AgentWorkspace() {
         throw new Error(data.error ?? "认证失败");
       }
 
-      if (!authDraft.verificationCode.trim()) {
+      if (authMode === "phone" && !authDraft.verificationCode.trim()) {
         setAuthDraft((current) => ({
           ...current,
           verificationCode: data.verificationCode ?? ""
@@ -757,6 +779,18 @@ export function AgentWorkspace() {
           data.verificationCode
             ? `本地开发验证码：${data.verificationCode}`
             : "验证码已生成，请输入验证码。"
+        );
+        return;
+      }
+      if (authMode === "email-register" && !authDraft.verificationCode.trim()) {
+        setAuthDraft((current) => ({
+          ...current,
+          verificationCode: data.verificationCode ?? ""
+        }));
+        setAuthNotice(
+          data.verificationCode
+            ? `本地邮箱验证码：${data.verificationCode}`
+            : "验证邮件已生成，请输入验证码。"
         );
         return;
       }
@@ -1801,12 +1835,19 @@ export function AgentWorkspace() {
     return (
       <AuthScreen
         draft={authDraft}
+        mode={authMode}
         notice={authNotice}
         error={error}
         isSubmitting={isAuthSubmitting}
         onDraftChange={(patch) => {
-          if ("phone" in patch) setAuthNotice(null);
+          if ("phone" in patch || "email" in patch || "password" in patch) setAuthNotice(null);
           setAuthDraft((current) => ({ ...current, ...patch }));
+        }}
+        onModeChange={(mode) => {
+          setAuthMode(mode);
+          setAuthNotice(null);
+          setError(null);
+          setAuthDraft((current) => ({ ...current, verificationCode: "" }));
         }}
         onSubmit={submitAuth}
       />
@@ -2044,10 +2085,12 @@ export function AgentWorkspace() {
 
 function AuthScreen({
   draft,
+  mode,
   notice,
   error,
   isSubmitting,
   onDraftChange,
+  onModeChange,
   onSubmit
 }: {
   draft: {
@@ -2057,45 +2100,116 @@ function AuthScreen({
     displayName: string;
     verificationCode: string;
   };
+  mode: AuthMode;
   notice: string | null;
   error: string | null;
   isSubmitting: boolean;
   onDraftChange: (patch: Partial<typeof draft>) => void;
+  onModeChange: (mode: AuthMode) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
   const hasCode = !!draft.verificationCode.trim();
+  const isPhone = mode === "phone";
+  const isRegister = mode === "email-register";
 
   return (
     <div className="auth-shell">
       <form className="auth-panel" onSubmit={onSubmit}>
         <div>
           <div className="empty-kicker">Agent Workspace</div>
-          <h1>手机号验证登录</h1>
-          <p className="muted-note">开发阶段直接显示验证码；任务、事件和交付物会按手机号隔离保存。</p>
+          <h1>{isPhone ? "手机号验证登录" : isRegister ? "邮箱注册" : "邮箱登录"}</h1>
+          <p className="muted-note">
+            {isPhone
+              ? "开发阶段直接显示验证码；任务、事件和交付物会按手机号隔离保存。"
+              : isRegister
+                ? "邮箱注册会生成本地验证码，验证后即可进入工作台。"
+                : "使用已验证邮箱和密码登录，适合正式账号体系。"}
+          </p>
         </div>
-        <label className="settings-field">
-          <span>手机号</span>
-          <input
-            inputMode="tel"
-            value={draft.phone}
-            onChange={(event) => onDraftChange({ phone: event.target.value, verificationCode: "" })}
-            placeholder="请输入 11 位手机号"
-          />
-        </label>
-        <label className="settings-field">
-          <span>验证码</span>
-          <input
-            inputMode="numeric"
-            value={draft.verificationCode}
-            onChange={(event) => onDraftChange({ verificationCode: event.target.value })}
-            placeholder="点击获取后自动显示"
-          />
-        </label>
+        <div className="auth-tabs" role="tablist" aria-label="登录方式">
+          <button type="button" className={mode === "phone" ? "is-active" : ""} onClick={() => onModeChange("phone")}>
+            手机号
+          </button>
+          <button type="button" className={mode === "email-login" ? "is-active" : ""} onClick={() => onModeChange("email-login")}>
+            邮箱登录
+          </button>
+          <button type="button" className={mode === "email-register" ? "is-active" : ""} onClick={() => onModeChange("email-register")}>
+            邮箱注册
+          </button>
+        </div>
+        <div className="auth-oauth-row">
+          <a href="/api/auth/oauth/google/start">Google</a>
+          <a href="/api/auth/oauth/github/start">GitHub</a>
+        </div>
+        {isPhone ? (
+          <>
+            <label className="settings-field">
+              <span>手机号</span>
+              <input
+                inputMode="tel"
+                value={draft.phone}
+                onChange={(event) => onDraftChange({ phone: event.target.value, verificationCode: "" })}
+                placeholder="请输入 11 位手机号"
+              />
+            </label>
+            <label className="settings-field">
+              <span>验证码</span>
+              <input
+                inputMode="numeric"
+                value={draft.verificationCode}
+                onChange={(event) => onDraftChange({ verificationCode: event.target.value })}
+                placeholder="点击获取后自动显示"
+              />
+            </label>
+          </>
+        ) : (
+          <>
+            <label className="settings-field">
+              <span>邮箱</span>
+              <input
+                inputMode="email"
+                value={draft.email}
+                onChange={(event) => onDraftChange({ email: event.target.value, verificationCode: "" })}
+                placeholder="name@example.com"
+              />
+            </label>
+            <label className="settings-field">
+              <span>密码</span>
+              <input
+                type="password"
+                value={draft.password}
+                onChange={(event) => onDraftChange({ password: event.target.value })}
+                placeholder="至少 8 位"
+              />
+            </label>
+            {isRegister ? (
+              <>
+                <label className="settings-field">
+                  <span>显示名称</span>
+                  <input
+                    value={draft.displayName}
+                    onChange={(event) => onDraftChange({ displayName: event.target.value })}
+                    placeholder="可选"
+                  />
+                </label>
+                <label className="settings-field">
+                  <span>邮箱验证码</span>
+                  <input
+                    inputMode="numeric"
+                    value={draft.verificationCode}
+                    onChange={(event) => onDraftChange({ verificationCode: event.target.value })}
+                    placeholder="注册后自动显示"
+                  />
+                </label>
+              </>
+            ) : null}
+          </>
+        )}
         {notice ? <p className="muted-note auth-notice">{notice}</p> : null}
         {error ? <p className="muted-note error-note">{error}</p> : null}
         <button className="primary-button" disabled={isSubmitting}>
           {isSubmitting ? <Loader2 size={17} className="spin" /> : <Send size={17} />}
-          {hasCode ? "验证并登录" : "获取验证码"}
+          {isPhone ? (hasCode ? "验证并登录" : "获取验证码") : isRegister ? (hasCode ? "验证并登录" : "注册并获取验证码") : "邮箱登录"}
         </button>
       </form>
     </div>

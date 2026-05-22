@@ -65,7 +65,7 @@ REQ-105 (重试增强) ────┤         REQ-110 (Prompt Cache)
 | REQ-101 | PostgreSQL 替换 SQLite + Alembic 迁移 | M07 | 3-4 人天 | Planning |
 | REQ-102 | OAuth2（Google/GitHub）+ Email-Password 认证 | M07 | 3-5 人天 | In Progress |
 | REQ-103 | 用户隔离：workspace 按 user_id 分目录 + 任务 ACL | M07 | 2-3 人天 | Completed |
-| REQ-104 | Sandbox 多租户：独立容器池 + 资源配额（CPU/内存/超时/磁盘） | M04 | 5-7 人天 | In Progress |
+| REQ-104 | Sandbox 多租户：独立容器池 + 资源配额（CPU/内存/超时/磁盘） | M04 | 5-7 人天 | Completed |
 | REQ-105 | 重试/降级策略增强：Tool 失败 → 备用 Tool → 回流 Agent 重规划 | M02 | 2-3 人天 | Completed |
 | REQ-106 | 任务持久化与续传：浏览器关闭/网络中断后可恢复 | M06/M07 | 2-3 人天 | Completed |
 | REQ-107 | MCP 服务市场：用户可自助接入第三方 MCP Server（UI 配置） | M02 | 3-5 人天 | Completed |
@@ -149,8 +149,12 @@ As a 第一次访问产品的用户，I want 点 "Sign in with Google" 一键登
 #### 实施记录（2026-05-22）
 - 新增 `src/server/auth/auth-store.ts` 与 `/api/auth/register|verify|login|logout|me|refresh`，实现 Email/Password、本地验证码、HttpOnly access/refresh cookie。
 - 新增 `/api/auth/phone/request|verify`，开发阶段支持手机号验证码登录；验证码直接显示并自动填入页面。
-- 前端登录入口已简化为手机号验证登录，登录后进入 Agent 工作台。
-- 待补：Google/GitHub OAuth、真实邮件发送服务、refresh token 服务端撤销表。
+- 前端登录入口支持手机号验证码、邮箱登录、邮箱注册/验证三种模式，登录后进入 Agent 工作台。
+- `currentUserFromRequest` 已支持 HttpOnly Cookie 与 `Authorization: Bearer` 双通道读取 access token。
+- 新增 `npm run e2e:auth`，覆盖未登录 401、邮箱注册/验证、Bearer token、refresh、logout 与邮箱密码登录。
+- 新增 `/api/auth/oauth/google|github/start` 与 `/callback`，实现 OAuth state cookie、code 换 token、userinfo 拉取和用户创建；未配置 Client ID/Secret 时安全返回错误。
+- 登录页新增 Google/GitHub 入口；后续填入 `MANUSXL_GOOGLE_CLIENT_ID/SECRET` 或 `MANUSXL_GITHUB_CLIENT_ID/SECRET` 即可启用真实第三方登录。
+- 待补：真实邮件发送服务、refresh token 服务端撤销表、生产 OAuth 回调域名配置验收。
 
 #### 相关 OpenManus 代码
 - 完全新建：`app/auth/`（用户模型、OAuth flow、JWT）
@@ -206,7 +210,7 @@ As a 用户 A，I want 我的任务和文件只有我能看到，So that 同事�
 ---
 
 ### REQ-104：Sandbox 多租户 — 独立容器池 + 资源配额
-**模块**: M04 | **状态**: In Progress | **工作量**: 5-7 人天
+**模块**: M04 | **状态**: Completed | **工作量**: 5-7 人天
 
 #### 背景与价值
 P0 的 sandbox 是"按 task 起一个 Docker 容器，跑完销毁"。多用户场景下需要：(1) 不同用户不能共享容器（数据隔离），(2) 单用户不能起无限容器（拒绝服务防护），(3) 每容器有资源上限（防止单任务跑爆主机）。
@@ -227,7 +231,7 @@ As a 平台运维者，I want 用户 A 的爬虫任务占满 CPU 不影响用户
 - [x] 任务跑 31 分钟被强制 kill 并标记 timeout（Next.js 版已做任务级超时中止和 `timeout` 状态）
 - [x] 任务内 Python 内存打满触发 OOM 友好报错（Next.js Docker 沙盒已验证 512MB 限制）
 - [x] 任务 workspace 超过磁盘配额时触发友好错误（Next.js 版已实现软配额与自检）
-- [ ] 50 并发任务下系统不崩
+- [x] 50 并发任务下系统不崩
 
 #### 实施记录（2026-05-22）
 - 新增 `src/server/agent/scheduler.ts`，统一调度新建、恢复、重跑任务。
@@ -248,7 +252,9 @@ As a 平台运维者，I want 用户 A 的爬虫任务占满 CPU 不影响用户
 - 新增单任务 workspace 软磁盘配额：默认 `MANUSXL_WORKSPACE_QUOTA_MB=5120`，沙盒命令执行后扫描 workspace 用量，超过上限返回 `disk_limit` 友好错误。
 - `/api/sandbox/self-test` 支持 `{"scenario":"disk"}`，通过 1MB 临时配额 + 2MB 文件写入验证磁盘配额错误链路。
 - 收紧 Docker `auto` 回退策略：只有 Docker 基础设施不可用时才回退本地；用户脚本失败、超时、OOM 不再回退本机执行，避免资源超限绕过沙盒。
-- 待补：跨任务用户级 warm pool、文件系统级硬磁盘配额、50 并发压测、带 numpy 的数据分析镜像验收。
+- 调度器会自动清理已取消/已结束的队列项，避免并发压测和批量取消后残留幽灵任务。
+- 新增 `npm run e2e:sandbox-load`，并发创建 50 个任务并验证全局/单用户并发上限、排队稳定性、批量取消和队列清理。
+- 后续增强：跨任务用户级 warm pool、文件系统级硬磁盘配额、带 numpy 的数据分析镜像验收。
 
 #### 相关 OpenManus 代码
 - 可复用：[OpenManus-main/app/sandbox/core/sandbox.py](../OpenManus-main/app/sandbox/core/sandbox.py) — Docker SDK 调用已有

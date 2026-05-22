@@ -305,6 +305,73 @@ export function authenticateUser(email: string, password: string) {
   return publicUser(row);
 }
 
+export function upsertOAuthUser(input: {
+  provider: string;
+  providerAccountId: string;
+  email?: string | null;
+  displayName?: string | null;
+}) {
+  const email = input.email?.trim()
+    ? normalizeEmail(input.email)
+    : `${input.provider}-${input.providerAccountId}@oauth.manusxl.local`;
+  const existing = getUserRowByEmail(email);
+  const now = new Date().toISOString();
+
+  if (existing) {
+    const user = {
+      ...publicUser(existing),
+      displayName: input.displayName?.trim() || publicUser(existing).displayName,
+      emailVerified: true,
+      updatedAt: now
+    };
+    getDb()
+      .prepare(
+        `
+        UPDATE users
+        SET display_name = ?, email_verified = 1, updated_at = ?, data_json = ?
+        WHERE id = ?
+      `
+      )
+      .run(user.displayName, now, JSON.stringify(user), existing.id);
+    return user;
+  }
+
+  const user: AuthUser = {
+    id: createId("usr"),
+    email,
+    displayName: input.displayName?.trim() || email.split("@")[0],
+    emailVerified: true,
+    createdAt: now,
+    updatedAt: now
+  };
+
+  getDb()
+    .prepare(
+      `
+      INSERT INTO users
+        (id, email, display_name, password_hash, email_verified, verification_code, created_at, updated_at, data_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `
+    )
+    .run(
+      user.id,
+      user.email,
+      user.displayName,
+      hashPassword(randomBytes(18).toString("base64url")),
+      1,
+      null,
+      user.createdAt,
+      user.updatedAt,
+      JSON.stringify({
+        ...user,
+        authProvider: input.provider,
+        providerAccountId: input.providerAccountId
+      })
+    );
+
+  return user;
+}
+
 export function readUser(userId: string) {
   const row = getUserRowById(userId);
   return row ? publicUser(row) : undefined;
@@ -334,6 +401,12 @@ export function readAuthUserFromCookieHeader(cookieHeader: string | null) {
       })
   );
   const token = cookies[accessCookieName];
+  if (!token) return undefined;
+  const payload = verifyToken(token, "access");
+  return payload ? readUser(payload.sub) : undefined;
+}
+
+export function readAuthUserFromAccessToken(token: string | null | undefined) {
   if (!token) return undefined;
   const payload = verifyToken(token, "access");
   return payload ? readUser(payload.sub) : undefined;

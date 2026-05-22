@@ -64,6 +64,14 @@ function queuePosition(taskId: string) {
   return index >= 0 ? index + 1 : undefined;
 }
 
+function pruneQueue() {
+  const state = getSchedulerState();
+  state.queue = state.queue.filter((taskId) => {
+    const task = getTask(taskId);
+    return !!task && (task.status === "queued" || task.status === "running");
+  });
+}
+
 function startTask(taskId: string) {
   const task = getTask(taskId);
   if (!task) return;
@@ -82,6 +90,7 @@ function startTask(taskId: string) {
 
 function pumpQueue() {
   const state = getSchedulerState();
+  pruneQueue();
 
   while (state.queue.length > 0) {
     const nextIndex = state.queue.findIndex(canStartTask);
@@ -131,6 +140,7 @@ export function enqueueAgentTask(taskId: string, options: { resumed?: boolean } 
 
 export function getSchedulerSnapshot() {
   const state = getSchedulerState();
+  pruneQueue();
   return {
     limits: schedulerLimits(),
     runtime: {
