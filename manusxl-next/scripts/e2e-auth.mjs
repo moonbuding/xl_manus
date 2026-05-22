@@ -84,6 +84,10 @@ async function main() {
     displayName: "E2E Auth"
   }, client);
   assert(registered.body.verificationCode, "邮箱注册没有返回本地验证码");
+  assert(
+    ["development", "smtp"].includes(registered.body.emailDelivery?.mode),
+    "邮箱注册没有返回邮件投递模式"
+  );
 
   const verified = await postJson("/api/auth/verify", {
     email,
@@ -128,6 +132,7 @@ async function main() {
     checked: [
       "unauthorized",
       "email register",
+      "email delivery",
       "email verify",
       "bearer token",
       "refresh rotation",

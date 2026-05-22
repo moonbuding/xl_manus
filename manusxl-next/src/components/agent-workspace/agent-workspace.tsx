@@ -992,10 +992,13 @@ export function AgentWorkspace() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body)
       });
-      const data = await readJson<Partial<AuthResponse> & { error?: string; verificationCode?: string }>(
-        response,
-        {}
-      );
+      const data = await readJson<
+        Partial<AuthResponse> & {
+          error?: string;
+          verificationCode?: string;
+          emailDelivery?: { mode?: "development" | "smtp"; sent?: boolean; error?: string };
+        }
+      >(response, {});
       if (!response.ok) {
         throw new Error(data.error ?? "认证失败");
       }
@@ -1020,7 +1023,9 @@ export function AgentWorkspace() {
         setAuthNotice(
           data.verificationCode
             ? `本地邮箱验证码：${data.verificationCode}`
-            : "验证邮件已生成，请输入验证码。"
+            : data.emailDelivery?.sent
+              ? "验证邮件已发送，请输入邮箱中的验证码。"
+              : "验证邮件已生成，请输入验证码。"
         );
         return;
       }

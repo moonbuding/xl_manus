@@ -176,7 +176,9 @@ As a 第一次访问产品的用户，I want 点 "Sign in with Google" 一键登
 - 新增 `/api/auth/oauth/google|github/start` 与 `/callback`，实现 OAuth state cookie、code 换 token、userinfo 拉取和用户创建；未配置 Client ID/Secret 时安全返回错误。
 - 登录页新增 Google/GitHub 入口；后续填入 `MANUSXL_GOOGLE_CLIENT_ID/SECRET` 或 `MANUSXL_GITHUB_CLIENT_ID/SECRET` 即可启用真实第三方登录。
 - 新增 `auth_sessions` 会话表，refresh token 带 session id 并保存哈希；refresh 时轮换并撤销旧 token，logout 时撤销当前 refresh token，`npm run e2e:auth` 已覆盖旧 token/退出后 token 无法续期。
-- 待补：真实邮件发送服务、生产 OAuth 回调域名配置验收。
+- 新增 SMTP 邮件投递底座：`MANUSXL_SMTP_HOST/PORT/SECURE/USER/PASSWORD` + `MANUSXL_EMAIL_FROM` 配置后，邮箱注册会发送真实验证码邮件；本地开发保留 `MANUSXL_AUTH_SHOW_VERIFICATION_CODE=true` 直接显示验证码。
+- `npm run e2e:auth` 已覆盖 email delivery mode 返回、本地验证码显示、邮箱验证、Bearer token、refresh token 轮换和 logout 撤销。
+- 待补：使用真实 SMTP 凭据做外发邮件验收、生产 OAuth 回调域名配置验收。
 
 #### 相关 OpenManus 代码
 - 完全新建：`app/auth/`（用户模型、OAuth flow、JWT）

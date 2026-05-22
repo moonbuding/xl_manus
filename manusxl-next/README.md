@@ -17,6 +17,7 @@ DEEPSEEK_API_KEY=your_deepseek_api_key_here
 DEEPSEEK_MODEL=deepseek-v4-flash
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 MANUSXL_DEEPSEEK_THINKING=disabled
+MANUSXL_AUTH_SHOW_VERIFICATION_CODE=true
 MANUSXL_DATABASE_PROVIDER=sqlite
 DATABASE_URL=postgresql://manusxl:manusxl@localhost:5432/manusxl
 MANUSXL_SANDBOX_MODE=auto
@@ -29,6 +30,20 @@ MANUSXL_WORKSPACE_QUOTA_MB=5120
 ```
 
 没有配置 `DEEPSEEK_API_KEY` 时，系统会使用本地回退文案，仍可验证任务流、SSE 和交付物下载。DeepSeek V4 默认用 `MANUSXL_DEEPSEEK_THINKING=disabled`，让规划和最终回答稳定返回 `message.content`；需要研究 `reasoning_content` 时再改成 `enabled`。
+
+本地开发默认会在登录页直接显示手机号/邮箱验证码。要切到真实邮箱验证，可以配置 SMTP：
+
+```bash
+MANUSXL_AUTH_SHOW_VERIFICATION_CODE=false
+MANUSXL_EMAIL_FROM=no-reply@example.com
+MANUSXL_SMTP_HOST=smtp.example.com
+MANUSXL_SMTP_PORT=465
+MANUSXL_SMTP_SECURE=true
+MANUSXL_SMTP_USER=your_smtp_user
+MANUSXL_SMTP_PASSWORD=your_smtp_password
+```
+
+未配置 SMTP 时，邮箱注册仍走开发模式并返回本地验证码；配置 SMTP 后会发送验证邮件，生产环境建议关闭 `MANUSXL_AUTH_SHOW_VERIFICATION_CODE`。
 
 `MANUSXL_SANDBOX_MODE=auto` 会优先用 Docker 执行 Python/Shell 工具；如果 Docker 基础设施不可用，会回退到本地执行并在工具 payload 中记录原因。用户脚本失败、超时、OOM 或磁盘配额超限不会回退本机。要强制只用 Docker，可设为 `docker`；要禁用沙盒，可设为 `local`。`MANUSXL_SANDBOX_POOL=1` 会在同一个任务内复用容器，任务结束后自动清理。`MANUSXL_WORKSPACE_QUOTA_MB` 用于限制单任务 workspace 的软磁盘配额。首次启用 Docker 沙盒前建议先拉取镜像：
 
