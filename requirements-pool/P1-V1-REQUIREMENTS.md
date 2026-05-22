@@ -132,8 +132,9 @@ As a 想让多个用户同时跑任务的运维者，I want 数据库不会因�
 - 新增认证用户 runtime adapter：users 按 provider 切换，覆盖手机号验证码、邮箱注册登录、JWT 用户读取和 OAuth upsert；不可用时安全回退 SQLite。
 - 新增任务模板 runtime adapter：task_templates 按 provider 切换，覆盖公共模板种子、私有模板保存/读取/删除、tag 过滤和 owner 隔离；不可用时安全回退 SQLite。
 - 新增 Skill 设置 runtime adapter：skill_settings 按 provider 切换，覆盖内置/本地 Skill 启用状态、用户隔离和未知工具阻断后的开关读取；不可用时安全回退 SQLite。
+- 新增 MCP Server runtime adapter：mcp_servers 按 provider 切换，覆盖 server 新增/刷新/启停/删除、工具级禁用和 Agent `mcp_call` 读取路径；不可用时安全回退 SQLite。
 - Dockerfile 已内置 `postgresql-client` 并复制 `db/postgres` schema，支持容器内初始化 PG 任务表。
-- 待完成：MCP Server 配置表从 `node:sqlite` 抽象到 SQLite/PG 双后端，并在真实 PG 上执行 clean schema + 10 并发写入验收。
+- 待完成：在真实 PG 上执行 clean schema + 10 并发写入验收，并根据结果决定是否把 REQ-101 状态切为 Completed。
 
 ---
 

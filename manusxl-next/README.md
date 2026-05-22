@@ -71,7 +71,7 @@ npm run db:pg:emit-sql
 npm run db:pg:migrate
 ```
 
-任务运行时已支持第一阶段 PostgreSQL adapter：当 `MANUSXL_DATABASE_PROVIDER=postgres`、`DATABASE_URL` 和 `psql` CLI 都可用时，任务、步骤流、交付物元数据、上传文件索引、系统配置、认证用户、任务模板、Skill 启用状态和 Context 指标会写入 PostgreSQL；MCP Server 配置仍按 P1 计划继续迁移。Docker 镜像已内置 `postgresql-client`，用于生产容器内执行 schema 初始化和任务写入。
+任务运行时已支持第一阶段 PostgreSQL adapter：当 `MANUSXL_DATABASE_PROVIDER=postgres`、`DATABASE_URL` 和 `psql` CLI 都可用时，任务、步骤流、交付物元数据、上传文件索引、系统配置、认证用户、MCP Server 配置、任务模板、Skill 启用状态和 Context 指标会写入 PostgreSQL。Docker 镜像已内置 `postgresql-client`，用于生产容器内执行 schema 初始化和任务写入。
 
 检查 Docker 配置文件：
 
