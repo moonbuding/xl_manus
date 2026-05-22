@@ -127,8 +127,9 @@ As a 想让多个用户同时跑任务的运维者，I want 数据库不会因�
 - 新增 `/api/database/status` 与 Settings / 数据库面板，展示当前 provider、SQLite 待迁移行数、PostgreSQL CLI/schema 检查结果和迁移命令；新增 `npm run e2e:database-status`。
 - 新增任务存储第一阶段 runtime adapter：当 `MANUSXL_DATABASE_PROVIDER=postgres`、`DATABASE_URL` 与 `psql` 可用时，tasks、task_steps、task_files 会通过 PostgreSQL schema 写入；不可用时安全回退 SQLite。
 - 新增 Context 指标 runtime adapter：同样按 provider 切换 context_metrics，覆盖 Prompt Cache、Context 面板和 Billing 汇总读取路径；不可用时安全回退 SQLite。
+- 新增上传文件索引 runtime adapter：uploaded_files 按 provider 切换，覆盖文件上传解析、任务绑定上传文件、批量文件处理和图片处理读取路径；不可用时安全回退 SQLite。
 - Dockerfile 已内置 `postgresql-client` 并复制 `db/postgres` schema，支持容器内初始化 PG 任务表。
-- 待完成：认证、配置、上传文件索引、MCP/Skill/模板、Context 指标等剩余表从 `node:sqlite` 抽象到 SQLite/PG 双后端，并在真实 PG 上执行 clean schema + 10 并发写入验收。
+- 待完成：认证、配置、MCP/Skill/模板等剩余表从 `node:sqlite` 抽象到 SQLite/PG 双后端，并在真实 PG 上执行 clean schema + 10 并发写入验收。
 
 ---
 
