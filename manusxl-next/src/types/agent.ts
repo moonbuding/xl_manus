@@ -254,6 +254,25 @@ export interface LocalBrowserStatus {
   error?: string;
 }
 
+export interface LocalBrowserTab {
+  id: string;
+  title: string;
+  url: string;
+  type: string;
+  webSocketDebuggerUrl?: string;
+}
+
+export interface LocalBrowserSnapshot {
+  endpoint: string;
+  tabId?: string;
+  title?: string;
+  url?: string;
+  text?: string;
+  allowed: boolean;
+  ok: boolean;
+  error?: string;
+}
+
 export interface TaskTemplate {
   id: string;
   ownerId?: string;

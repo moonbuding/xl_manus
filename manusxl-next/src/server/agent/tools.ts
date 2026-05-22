@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { makeZip } from "@/server/artifacts/generators";
 import { listUploadedFileRecords, type UploadedFileRecord } from "@/server/files/readers";
 import { getOcrStatus } from "@/server/ocr/status";
+import { snapshotLocalBrowserTab } from "@/server/local-browser/cdp";
 import { runSandboxedCommand } from "@/server/sandbox/docker-sandbox";
 import {
   hasExecutableSkillForPrompt,
@@ -125,6 +126,7 @@ export type AgentToolName =
   | "task_planner"
   | "web_research"
   | "web_fetch"
+  | "local_browser"
   | "file_reader"
   | "file_workspace"
   | "batch_file_ops"
@@ -201,6 +203,12 @@ export const TOOL_METADATA: AgentToolMetadata[] = [
     namespace: "web",
     description: "读取用户提供的 URL 页面内容。",
     fallbackTools: ["web_research", "data_analysis"]
+  },
+  {
+    name: "local_browser",
+    namespace: "web",
+    description: "读取用户本地 Chrome 当前标签页的已登录页面快照，受域名 allowlist 限制。",
+    fallbackTools: ["web_fetch", "web_research", "data_analysis"]
   },
   {
     name: "file_reader",
@@ -302,6 +310,9 @@ export function selectToolsForPrompt(prompt: string, ownerId?: string): AgentToo
   if (/http|网页|搜索|调研|竞品|市场|news|web|research|browser/.test(lower)) {
     selected.push("web_research", "web_fetch");
   }
+  if (/本地浏览器|已登录态|登录态|paywall|captcha|cdp|chrome/.test(lower)) {
+    selected.push("local_browser");
+  }
   if (/mcp|github|slack|notion|filesystem|外部工具|第三方工具/.test(lower)) {
     selected.push("mcp_call");
   }
@@ -354,6 +365,7 @@ export function inferToolsForStep(step: string): AgentToolName[] {
   }
   if (/https?:\/\//i.test(step)) candidates.push("web_fetch");
   if (/网页|搜索|调研|竞品|市场|news|web|research/.test(lower)) candidates.push("web_research");
+  if (/本地浏览器|已登录态|登录态|paywall|captcha|cdp|chrome/.test(lower)) candidates.push("local_browser");
   if (/上传文件|文件摘要|附件|读取.*(文件|pdf|docx|xlsx|csv|excel|word)|解析.*(文件|pdf|docx|xlsx|csv|excel|word)/.test(lower)) {
     candidates.push("file_reader");
   }
@@ -624,6 +636,28 @@ async function runWebFetch(input: AgentToolInput): Promise<AgentToolResult> {
       payload: { url, error: error instanceof Error ? error.message : String(error) }
     };
   }
+}
+
+async function runLocalBrowser(input: AgentToolInput): Promise<AgentToolResult> {
+  const snapshot = await snapshotLocalBrowserTab({ maxChars: 5000 });
+  if (!snapshot.ok) {
+    return {
+      toolName: "local_browser",
+      ok: false,
+      observation: `本地浏览器读取未完成：${snapshot.error ?? "未连接 Chrome CDP"}。`,
+      payload: snapshot as unknown as Record<string, unknown>
+    };
+  }
+
+  return {
+    toolName: "local_browser",
+    ok: true,
+    observation: `已读取本地浏览器当前标签页：${snapshot.title ?? snapshot.url ?? "未命名页面"}，获得约 ${snapshot.text?.length ?? 0} 个字符。`,
+    payload: {
+      ...snapshot,
+      promptHint: input.prompt.slice(0, 160)
+    } as unknown as Record<string, unknown>
+  };
 }
 
 function extractUploadedFileSummary(prompt: string) {
@@ -2557,6 +2591,8 @@ export async function executeAgentTool(
       return runWebResearch(input);
     case "web_fetch":
       return runWebFetch(input);
+    case "local_browser":
+      return runLocalBrowser(input);
     case "file_reader":
       return runFileReader(input);
     case "file_workspace":

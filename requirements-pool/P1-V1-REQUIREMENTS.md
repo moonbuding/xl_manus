@@ -715,10 +715,12 @@ As a 已经登录了 The Information / Bloomberg / 知网的用户，I want Agen
 
 #### 实施记录（2026-05-22）
 - 新增 `/api/local-browser/status`，登录后可检测本地 Chrome DevTools Protocol endpoint，默认 `http://127.0.0.1:9222`。
+- 新增 `/api/local-browser/tabs` 与 `/api/local-browser/snapshot`，可列出本地 Chrome 页面标签，并通过 CDP `Runtime.evaluate` 读取 allowlist 域名页面文本快照。
 - CDP endpoint 已做 localhost/127.0.0.1 限制，避免把检测接口变成任意内网探测入口。
-- Settings 新增"本地浏览器"面板，可配置 CDP 地址并显示 Chrome/CDP 连接状态。
-- 新增 `npm run e2e:local-browser`，覆盖未登录保护、非 localhost 地址拦截和 CDP 状态返回。
-- 待补：Chrome 扩展/本地 helper 配对、域名 allowlist、Agent browser tool 通过 CDP 获取 DOM/截图和执行点击输入。
+- Settings 新增"本地浏览器"面板，可配置 CDP 地址并显示 Chrome/CDP 连接状态和可读取标签页数量。
+- Agent 工具链新增 `local_browser`，命中本地浏览器/已登录态/paywall/CDP/Chrome 类任务时会尝试读取本地页面快照；默认必须配置 `MANUSXL_LOCAL_BROWSER_DOMAIN_ALLOWLIST` 才允许读取正文。
+- 新增 `npm run e2e:local-browser`，覆盖未登录保护、非 localhost 地址拦截、CDP 状态、标签页列表和 snapshot 返回。
+- 待补：Chrome 扩展/本地 helper 配对、Settings 域名 allowlist 管理、CDP 截图和点击输入动作。
 
 #### 相关 OpenManus 代码
 - 可复用：[OpenManus-main/app/tool/browser_use_tool.py](../OpenManus-main/app/tool/browser_use_tool.py) — `wss_url`/`cdp_url` 已支持远程浏览器

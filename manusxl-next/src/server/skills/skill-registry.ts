@@ -19,6 +19,7 @@ const allowedSkillTools = new Set([
   "task_planner",
   "web_research",
   "web_fetch",
+  "local_browser",
   "file_reader",
   "file_workspace",
   "batch_file_ops",

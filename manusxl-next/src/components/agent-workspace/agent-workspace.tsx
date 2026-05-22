@@ -48,6 +48,7 @@ import type {
   ContextMetricsSummary,
   CreateTaskResponse,
   DatabaseStatus,
+  LocalBrowserTab,
   LocalBrowserStatus,
   McpCatalogItem,
   McpServer,
@@ -414,6 +415,7 @@ export function AgentWorkspace() {
   const [sandboxSelfTest, setSandboxSelfTest] = useState<SandboxSelfTestResult | null>(null);
   const [databaseStatus, setDatabaseStatus] = useState<DatabaseStatus | null>(null);
   const [localBrowserStatus, setLocalBrowserStatus] = useState<LocalBrowserStatus | null>(null);
+  const [localBrowserTabs, setLocalBrowserTabs] = useState<LocalBrowserTab[]>([]);
   const [ocrStatus, setOcrStatus] = useState<OcrStatus | null>(null);
   const [templateRun, setTemplateRun] = useState<{
     template: TaskTemplate;
@@ -561,18 +563,20 @@ export function AgentWorkspace() {
   const refreshLocalBrowserStatus = useCallback(async (endpoint?: string) => {
     setIsCheckingLocalBrowser(true);
     try {
-      const response = await fetch("/api/local-browser/status", {
+      const response = await fetch("/api/local-browser/tabs", {
         method: endpoint ? "POST" : "GET",
         headers: endpoint ? { "Content-Type": "application/json" } : undefined,
         body: endpoint ? JSON.stringify({ endpoint }) : undefined,
         cache: "no-store"
       });
       if (!response.ok) return;
-      const data = await readJson<LocalBrowserStatus>(response);
-      setLocalBrowserStatus(data);
-      setLocalBrowserEndpoint(data.endpoint);
+      const data = await readJson<{ status: LocalBrowserStatus; tabs: LocalBrowserTab[] }>(response);
+      setLocalBrowserStatus(data.status);
+      setLocalBrowserTabs(data.tabs);
+      setLocalBrowserEndpoint(data.status.endpoint);
     } catch {
       setLocalBrowserStatus(null);
+      setLocalBrowserTabs([]);
     } finally {
       setIsCheckingLocalBrowser(false);
     }
@@ -1835,6 +1839,15 @@ export function AgentWorkspace() {
               <span className="metric-meta">{localBrowserStatus?.endpoint ?? localBrowserEndpoint}</span>
             </div>
             <strong>{localBrowserStatus?.webSocketDebuggerUrl ? "ws" : "http"}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">标签页</span>
+              <span className="metric-meta">
+                {localBrowserTabs[0]?.title || localBrowserTabs[0]?.url || "暂无可读取标签页"}
+              </span>
+            </div>
+            <strong>{localBrowserTabs.length}</strong>
           </div>
         </div>
         <label className="settings-field">

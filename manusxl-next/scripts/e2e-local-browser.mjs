@@ -79,11 +79,27 @@ async function main() {
   assert(typeof status.body.connected === "boolean", "本地浏览器状态缺少 connected 字段");
   assert(status.body.endpoint, "本地浏览器状态缺少 endpoint");
 
+  const tabs = await client.fetchJson("/api/local-browser/tabs");
+  assert(Array.isArray(tabs.body.tabs), "本地浏览器 tabs 接口没有返回数组");
+  assert(typeof tabs.body.status?.connected === "boolean", "本地浏览器 tabs 接口缺少状态");
+
+  const snapshot = await client.fetchJson(
+    "/api/local-browser/snapshot",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ endpoint: status.body.endpoint })
+    },
+    true
+  );
+  assert([200, 409].includes(snapshot.response.status), "本地浏览器 snapshot 接口状态不合法");
+  assert(typeof snapshot.body.ok === "boolean", "本地浏览器 snapshot 接口缺少 ok 字段");
+
   console.log(JSON.stringify({
     ok: true,
     endpoint: status.body.endpoint,
     connected: status.body.connected,
-    checked: ["auth guard", "localhost guard", "cdp status"]
+    checked: ["auth guard", "localhost guard", "cdp status", "tabs", "snapshot"]
   }, null, 2));
 }
 

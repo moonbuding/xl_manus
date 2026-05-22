@@ -126,7 +126,7 @@ npm run e2e:database-status
 npm run e2e:local-browser
 ```
 
-该脚本会验证本地浏览器状态接口的登录保护、localhost 安全限制和 CDP 状态返回。
+该脚本会验证本地浏览器状态接口的登录保护、localhost 安全限制、CDP 状态、标签页列表和 snapshot 返回。读取页面正文默认需要配置 `MANUSXL_LOCAL_BROWSER_DOMAIN_ALLOWLIST`。
 
 批量文件处理验收：
 
