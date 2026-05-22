@@ -1,9 +1,9 @@
 import { randomBytes } from "node:crypto";
 import { NextResponse } from "next/server";
+import { getAuthCookieNames, upsertOAuthUser } from "@/server/auth/auth-store";
+import { getEmailDeliveryStatus } from "@/server/auth/email";
 import { redirectWithSession } from "@/server/auth/http";
-import { upsertOAuthUser } from "@/server/auth/auth-store";
-
-export type OAuthProvider = "google" | "github";
+import type { AuthStatus, OAuthProvider } from "@/types/agent";
 
 interface OAuthProfile {
   providerAccountId: string;
@@ -52,6 +52,18 @@ function callbackUrl(request: Request, provider: OAuthProvider) {
 
 function stateCookieName(provider: OAuthProvider) {
   return `manusxl_oauth_state_${provider}`;
+}
+
+function envNamesForProvider(provider: OAuthProvider) {
+  return provider === "google"
+    ? {
+        clientId: ["MANUSXL_GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_ID"],
+        clientSecret: ["MANUSXL_GOOGLE_CLIENT_SECRET", "GOOGLE_CLIENT_SECRET"]
+      }
+    : {
+        clientId: ["MANUSXL_GITHUB_CLIENT_ID", "GITHUB_CLIENT_ID"],
+        clientSecret: ["MANUSXL_GITHUB_CLIENT_SECRET", "GITHUB_CLIENT_SECRET"]
+      };
 }
 
 function parseCookies(request: Request) {
@@ -199,4 +211,32 @@ export async function finishOAuth(providerParam: string, request: Request) {
       { status: 400 }
     );
   }
+}
+
+export function getAuthStatus(request: Request): AuthStatus {
+  const baseUrl = appBaseUrl(request);
+  const cookieNames = getAuthCookieNames();
+  return {
+    baseUrl,
+    email: getEmailDeliveryStatus(),
+    oauth: (["google", "github"] as OAuthProvider[]).map((provider) => {
+      const config = providerConfig(provider);
+      const envNames = envNamesForProvider(provider);
+      return {
+        provider,
+        configured: Boolean(config.clientId && config.clientSecret),
+        callbackUrl: callbackUrl(request, provider),
+        authorizeUrl: config.authorizeUrl,
+        scope: config.scope,
+        missing: [
+          ...(config.clientId ? [] : envNames.clientId),
+          ...(config.clientSecret ? [] : envNames.clientSecret)
+        ]
+      };
+    }),
+    session: {
+      ...cookieNames,
+      cookieSecure: process.env.NODE_ENV === "production"
+    }
+  };
 }

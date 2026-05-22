@@ -59,6 +59,38 @@ export interface AuthResponse {
   refreshToken?: string;
 }
 
+export type OAuthProvider = "google" | "github";
+
+export interface AuthProviderStatus {
+  provider: OAuthProvider;
+  configured: boolean;
+  callbackUrl: string;
+  authorizeUrl: string;
+  scope: string;
+  missing: string[];
+}
+
+export interface AuthStatus {
+  baseUrl: string;
+  email: {
+    mode: "development" | "smtp";
+    configured: boolean;
+    host?: string;
+    port?: number;
+    secure?: boolean;
+    from?: string;
+    verificationCodeExposed: boolean;
+  };
+  oauth: AuthProviderStatus[];
+  session: {
+    accessCookieName: string;
+    refreshCookieName: string;
+    accessMaxAgeSeconds: number;
+    refreshMaxAgeSeconds: number;
+    cookieSecure: boolean;
+  };
+}
+
 export interface ToolCallPayload {
   toolName: string;
   arguments: Record<string, unknown>;

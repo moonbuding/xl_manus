@@ -32,6 +32,7 @@
     "e2e:sandbox-load": "node scripts/e2e-sandbox-load.mjs",
     "e2e:pg-migration": "node scripts/e2e-postgres-migration.mjs",
     "e2e:pg-concurrency": "node scripts/e2e-postgres-concurrency.mjs",
+    "e2e:pg-docker": "node scripts/e2e-postgres-docker.mjs",
     "e2e:database-status": "node scripts/e2e-database-status.mjs",
     "e2e:local-browser": "node scripts/e2e-local-browser.mjs",
     "e2e:skill": "node scripts/e2e-skill-runner.mjs",

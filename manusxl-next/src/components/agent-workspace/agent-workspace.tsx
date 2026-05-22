@@ -44,6 +44,7 @@ import type {
   AnalyzeFileResponse,
   Artifact,
   AuthResponse,
+  AuthStatus,
   AuthUser,
   BillingSummary,
   ConfigResponse,
@@ -422,6 +423,7 @@ export function AgentWorkspace() {
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
   const [mcpCatalog, setMcpCatalog] = useState<McpCatalogItem[]>([]);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
   const [authDraft, setAuthDraft] = useState({
     phone: "",
     email: "",
@@ -557,6 +559,16 @@ export function AgentWorkspace() {
       return null;
     } finally {
       setIsAuthLoading(false);
+    }
+  }, []);
+
+  const refreshAuthStatus = useCallback(async () => {
+    try {
+      const response = await fetch("/api/auth/status", { cache: "no-store" });
+      if (!response.ok) return;
+      setAuthStatus(await readJson<AuthStatus>(response));
+    } catch {
+      setAuthStatus(null);
     }
   }, []);
 
@@ -886,6 +898,7 @@ export function AgentWorkspace() {
         if (!user) return;
         await resumePendingTasks();
         await refreshTasks();
+        void refreshAuthStatus();
         void refreshTemplates();
         void refreshSkills();
         void refreshMcpServers();
@@ -928,6 +941,7 @@ export function AgentWorkspace() {
     };
   }, [
     closeStream,
+    refreshAuthStatus,
     refreshAuthUser,
     refreshBilling,
     refreshDatabaseStatus,
@@ -1768,6 +1782,14 @@ export function AgentWorkspace() {
 
           <section className="section-panel">
             <div className="panel-title">
+              <CheckCircle2 size={14} />
+              认证
+            </div>
+            {renderAuthPanel()}
+          </section>
+
+          <section className="section-panel">
+            <div className="panel-title">
               <Database size={14} />
               数据库
             </div>
@@ -1861,6 +1883,83 @@ export function AgentWorkspace() {
           <div className="panel-title">最近任务</div>
           {renderTaskLibrary(10)}
         </section>
+      </div>
+    );
+  }
+
+  function renderAuthPanel() {
+    const configuredOauth = authStatus?.oauth.filter((provider) => provider.configured).length ?? 0;
+    const emailMeta = authStatus
+      ? authStatus.email.mode === "smtp"
+        ? `${authStatus.email.host ?? "smtp"}:${authStatus.email.port ?? "-"} · ${authStatus.email.from ?? "from unset"}`
+        : "development code display"
+      : "检查中";
+    const accessDays = authStatus ? Math.round(authStatus.session.accessMaxAgeSeconds / 86400) : 0;
+    const refreshDays = authStatus ? Math.round(authStatus.session.refreshMaxAgeSeconds / 86400) : 0;
+
+    return (
+      <div className="sandbox-panel">
+        <div className="metric-list compact">
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">邮箱验证</span>
+              <span className="metric-meta">{emailMeta}</span>
+            </div>
+            <strong>{authStatus?.email.configured ? "smtp" : "local"}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">验证码</span>
+              <span className="metric-meta">
+                {authStatus?.email.verificationCodeExposed
+                  ? "开发模式会在页面直接显示验证码"
+                  : "生产模式不暴露验证码"}
+              </span>
+            </div>
+            <strong>{authStatus?.email.verificationCodeExposed ? "visible" : "hidden"}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">OAuth</span>
+              <span className="metric-meta">{authStatus?.baseUrl ?? "检查中"}</span>
+            </div>
+            <strong>{configuredOauth}/2</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">Session</span>
+              <span className="metric-meta">
+                access {accessDays || "-"}d · refresh {refreshDays || "-"}d
+              </span>
+            </div>
+            <strong>{authStatus?.session.cookieSecure ? "secure" : "dev"}</strong>
+          </div>
+        </div>
+        {authStatus?.oauth.length ? (
+          <div className="browser-operation-list">
+            {authStatus.oauth.map((provider) => (
+              <div className="browser-operation-item" key={provider.provider}>
+                <div>
+                  <span>{provider.provider}</span>
+                  <small>
+                    {provider.configured
+                      ? provider.callbackUrl
+                      : `缺少 ${provider.missing.slice(0, 2).join(" / ")}`}
+                  </small>
+                </div>
+                <strong className={`operation-status ${provider.configured ? "is-completed" : "is-blocked"}`}>
+                  {provider.configured ? "ready" : "unset"}
+                </strong>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        <div className="panel-actions">
+          <button type="button" className="secondary-button" onClick={() => void refreshAuthStatus()}>
+            <RefreshCw size={15} />
+            刷新认证
+          </button>
+        </div>
       </div>
     );
   }

@@ -69,6 +69,8 @@ async function main() {
 
   const anonymousTasks = await fetch(url("/api/tasks"));
   assert(anonymousTasks.status === 401, "未登录访问 /api/tasks 应返回 401");
+  const anonymousAuthStatus = await fetch(url("/api/auth/status"));
+  assert(anonymousAuthStatus.status === 401, "未登录访问 /api/auth/status 应返回 401");
   const oauthNotConfigured = await fetch(url("/api/auth/oauth/google/start"), { redirect: "manual" });
   assert(
     oauthNotConfigured.status === 400 || oauthNotConfigured.status === 307 || oauthNotConfigured.status === 302,
@@ -96,6 +98,16 @@ async function main() {
   assert(verified.body.user?.email === email, "邮箱验证没有登录正确用户");
   assert(verified.body.accessToken, "邮箱验证没有返回 access token");
   assert(verified.body.refreshToken, "邮箱验证没有返回 refresh token");
+
+  const authStatus = await client.fetchJson("/api/auth/status");
+  assert(["development", "smtp"].includes(authStatus.body.email?.mode), "认证状态缺少邮箱投递模式");
+  assert(Array.isArray(authStatus.body.oauth), "认证状态缺少 OAuth providers");
+  assert(authStatus.body.oauth.length >= 2, "认证状态 OAuth providers 数量不足");
+  assert(
+    authStatus.body.oauth.every((provider) => provider.callbackUrl?.includes(`/api/auth/oauth/${provider.provider}/callback`)),
+    "认证状态 OAuth callback URL 不正确"
+  );
+  assert(authStatus.body.session?.accessMaxAgeSeconds > 0, "认证状态缺少 session access TTL");
 
   const bearerTasks = await fetch(url("/api/tasks"), {
     headers: { Authorization: `Bearer ${verified.body.accessToken}` }
@@ -134,6 +146,7 @@ async function main() {
       "email register",
       "email delivery",
       "email verify",
+      "auth status",
       "bearer token",
       "refresh rotation",
       "logout revocation",

@@ -178,35 +178,42 @@ async function main() {
   requireDatabaseUrl();
 
   const startedAt = Date.now();
-  runSql(bootstrapSql(), { client, timeoutMs: 60_000 });
-  runSql(seedSql(), { client });
+  let count = 0;
+  try {
+    runSql(bootstrapSql(), { client, timeoutMs: 60_000 });
+    runSql(seedSql(), { client });
 
-  await Promise.all(
-    Array.from({ length: writerCount }, (_, index) => runSqlAsync(writerSql(index), client))
-  );
+    await Promise.all(
+      Array.from({ length: writerCount }, (_, index) => runSqlAsync(writerSql(index), client))
+    );
 
-  const countOutput = runSql(
-    `
-      SET search_path TO ${quoteIdentifier(schemaName)};
-      SELECT count(*) FROM task_steps WHERE task_id = 'task_pg_concurrency';
-    `,
-    { client }
-  );
-  const count = Number(countOutput.split("\n").find((line) => /^\d+$/.test(line.trim()))?.trim());
-  assert.equal(count, writerCount * eventsPerWriter);
+    const countOutput = runSql(
+      `
+        SET search_path TO ${quoteIdentifier(schemaName)};
+        SELECT count(*) FROM task_steps WHERE task_id = 'task_pg_concurrency';
+      `,
+      { client }
+    );
+    count = Number(countOutput.split("\n").find((line) => /^\d+$/.test(line.trim()))?.trim());
+    assert.equal(count, writerCount * eventsPerWriter);
 
-  runSql(`DROP SCHEMA IF EXISTS ${quoteIdentifier(schemaName)} CASCADE;`, { client });
-
-  console.log(JSON.stringify({
-    ok: true,
-    psqlSource: client.source,
-    psqlVersion: client.version,
-    schema: schemaName,
-    writers: writerCount,
-    eventsPerWriter,
-    insertedTaskSteps: count,
-    elapsedMs: Date.now() - startedAt
-  }, null, 2));
+    console.log(JSON.stringify({
+      ok: true,
+      psqlSource: client.source,
+      psqlVersion: client.version,
+      schema: schemaName,
+      writers: writerCount,
+      eventsPerWriter,
+      insertedTaskSteps: count,
+      elapsedMs: Date.now() - startedAt
+    }, null, 2));
+  } finally {
+    try {
+      runSql(`DROP SCHEMA IF EXISTS ${quoteIdentifier(schemaName)} CASCADE;`, { client });
+    } catch (error) {
+      console.warn(`清理 PostgreSQL E2E 临时 schema 失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
 }
 
 main().catch((error) => {

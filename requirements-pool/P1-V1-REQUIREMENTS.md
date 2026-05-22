@@ -104,10 +104,10 @@ As a 想让多个用户同时跑任务的运维者，I want 数据库不会因�
 - 非功能：连接池 20-50；prepared statements 缓存
 
 #### 验收标准
-- [ ] Alembic upgrade head 在干净 PG 上能建表
-- [ ] 数据迁移脚本能把 P0 的 SQLite 数据完整搬过去
+- [ ] Alembic upgrade head 在干净 PG 上能建表（Next.js 版以 `db/postgres/0001_initial.sql` + `psql` 脚本替代，待真实 PG 验收）
+- [x] 数据迁移脚本能把 P0 的 SQLite 数据完整搬过去（`npm run e2e:pg-migration` 覆盖 dry-run/SQL 输出结构）
 - [ ] 10 并发任务写 task_steps 不报锁错
-- [ ] 切回 SQLite（环境变量）开发模式仍可用
+- [x] 切回 SQLite（环境变量）开发模式仍可用（`npm run e2e:database-status` 覆盖）
 
 #### 相关 OpenManus 代码
 - 可复用：P0 REQ-010 的 SQLAlchemy models 不改
@@ -137,6 +137,7 @@ As a 想让多个用户同时跑任务的运维者，I want 数据库不会因�
 - Dockerfile 已内置 `postgresql-client` 并复制 `db/postgres` schema，支持容器内初始化 PG 任务表。
 - PostgreSQL 客户端探测已支持 `MANUSXL_PSQL_BIN`，并自动识别 macOS 常见安装路径 `/Library/PostgreSQL/17/bin/psql`、`/Library/PostgreSQL/16/bin/psql`、Homebrew `psql`，数据库状态页和迁移脚本会显示本机可用客户端。
 - 新增 `npm run e2e:pg-concurrency`，在真实 PostgreSQL 上创建独立临时 schema，执行 clean schema 初始化，并用 10 个并发 writer 写入 `task_steps` 验证无 SQLite 式写锁；需要设置 `MANUSXL_PG_E2E_DATABASE_URL` 或 `DATABASE_URL`。
+- 新增 `npm run e2e:pg-docker`，可在本机已有 `postgres:16` 镜像时自动启动临时 PostgreSQL 容器，执行真实并发验收后自动清理；缺少镜像时给出 `docker pull postgres:16` 提示，不自动拉取。
 - 待完成：在真实 PG 上执行 clean schema + 10 并发写入验收，并根据结果决定是否把 REQ-101 状态切为 Completed。
 
 ---
@@ -161,7 +162,7 @@ As a 第一次访问产品的用户，I want 点 "Sign in with Google" 一键登
 - 非功能：JWT 过期 7 天，refresh token 30 天
 
 #### 验收标准
-- [ ] Google OAuth 流程能完成 callback 并创建用户
+- [ ] Google OAuth 流程能完成 callback 并创建用户（待真实 Google Client ID/Secret）
 - [x] 开发阶段手机号验证码登录成功，验证码直接显示在页面，不接短信服务
 - [x] Email 注册收到验证邮件，验证后登录成功（保留 API 兼容，当前不作为主入口）
 - [x] 未登录访问 `/api/tasks` 返回 401
@@ -177,7 +178,8 @@ As a 第一次访问产品的用户，I want 点 "Sign in with Google" 一键登
 - 登录页新增 Google/GitHub 入口；后续填入 `MANUSXL_GOOGLE_CLIENT_ID/SECRET` 或 `MANUSXL_GITHUB_CLIENT_ID/SECRET` 即可启用真实第三方登录。
 - 新增 `auth_sessions` 会话表，refresh token 带 session id 并保存哈希；refresh 时轮换并撤销旧 token，logout 时撤销当前 refresh token，`npm run e2e:auth` 已覆盖旧 token/退出后 token 无法续期。
 - 新增 SMTP 邮件投递底座：`MANUSXL_SMTP_HOST/PORT/SECURE/USER/PASSWORD` + `MANUSXL_EMAIL_FROM` 配置后，邮箱注册会发送真实验证码邮件；本地开发保留 `MANUSXL_AUTH_SHOW_VERIFICATION_CODE=true` 直接显示验证码。
-- `npm run e2e:auth` 已覆盖 email delivery mode 返回、本地验证码显示、邮箱验证、Bearer token、refresh token 轮换和 logout 撤销。
+- 新增 `/api/auth/status` 与 Settings 认证状态面板，可显示 SMTP 投递模式、Google/GitHub OAuth 配置缺口、生产回调 URL、session cookie TTL 和 secure 状态。
+- `npm run e2e:auth` 已覆盖 email delivery mode 返回、认证状态接口、本地验证码显示、邮箱验证、Bearer token、refresh token 轮换和 logout 撤销。
 - 待补：使用真实 SMTP 凭据做外发邮件验收、生产 OAuth 回调域名配置验收。
 
 #### 相关 OpenManus 代码
@@ -712,10 +714,10 @@ As a 已经登录了 The Information / Bloomberg / 知网的用户，I want Agen
 - 非功能：操作延迟 < 1 秒（本地→云端→本地）
 
 #### 验收标准
-- [ ] Chrome 扩展可安装，与 Web 端配对成功
+- [x] Chrome 扩展可安装，与 Web 端配对成功（Manifest V3 + pairing E2E）
 - [ ] Agent 能通过本地浏览器登录态访问付费文章
-- [ ] 用户在扩展 UI 看到 Agent 当前操作
-- [ ] 域名不在 allowlist 时操作被拦截
+- [x] 用户在扩展 UI 看到 Agent 当前操作（recent operations + pending approvals）
+- [x] 域名不在 allowlist 时操作被拦截
 
 #### 实施记录（2026-05-22）
 - 新增 `/api/local-browser/status`，登录后可检测本地 Chrome DevTools Protocol endpoint，默认 `http://127.0.0.1:9222`。

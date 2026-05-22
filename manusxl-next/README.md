@@ -135,6 +135,19 @@ npm run e2e:database-status
 
 该脚本会验证数据库状态接口的登录保护、SQLite 行数统计、PostgreSQL CLI/schema 检查字段和迁移命令提示。
 
+真实 PostgreSQL 并发写入验收：
+
+```bash
+docker pull postgres:16
+npm run e2e:pg-docker
+```
+
+`e2e:pg-docker` 会启动临时 `postgres:16` 容器，在独立 schema 中初始化表结构，并调用 `npm run e2e:pg-concurrency` 执行 10 个并发 writer 写入 `task_steps`，结束后自动清理容器。若你已有外部 PostgreSQL，也可以直接运行：
+
+```bash
+MANUSXL_PG_E2E_DATABASE_URL=postgresql://manusxl:manusxl@localhost:5432/manusxl npm run e2e:pg-concurrency
+```
+
 本地浏览器 CDP 接入验收：
 
 ```bash
