@@ -39,6 +39,14 @@ function renderOperations(operations) {
   });
 }
 
+function renderSafety(safety) {
+  const paused = Boolean(safety?.paused);
+  $("pausedText").textContent = paused ? "paused" : "active";
+  $("togglePauseButton").textContent = paused ? "恢复操作" : "暂停操作";
+  $("togglePauseButton").dataset.paused = String(paused);
+  renderOperations(safety?.recentOperations || []);
+}
+
 async function refreshStatus() {
   const stored = await readStorage();
   const serverUrl = cleanServerUrl(stored.serverUrl);
@@ -46,6 +54,8 @@ async function refreshStatus() {
   if (!stored.pairToken) {
     $("statusText").textContent = "未配对";
     $("pausedText").textContent = "unknown";
+    $("togglePauseButton").textContent = "暂停操作";
+    $("togglePauseButton").dataset.paused = "false";
     renderOperations([]);
     return;
   }
@@ -59,12 +69,13 @@ async function refreshStatus() {
   if (!data.paired) {
     $("statusText").textContent = data.error || "配对失效";
     $("pausedText").textContent = "unknown";
+    $("togglePauseButton").textContent = "暂停操作";
+    $("togglePauseButton").dataset.paused = "false";
     renderOperations([]);
     return;
   }
   $("statusText").textContent = `已配对：${data.device?.name || "Chrome Extension"}`;
-  $("pausedText").textContent = data.safety?.paused ? "paused" : "active";
-  renderOperations(data.safety?.recentOperations || []);
+  renderSafety(data.safety);
 }
 
 async function pairExtension() {
@@ -91,9 +102,40 @@ async function pairExtension() {
   await refreshStatus();
 }
 
+async function togglePause() {
+  const stored = await readStorage();
+  const serverUrl = cleanServerUrl(stored.serverUrl);
+  if (!stored.pairToken) {
+    $("statusText").textContent = "请先配对扩展";
+    return;
+  }
+  const nextPaused = $("togglePauseButton").dataset.paused !== "true";
+  const response = await fetch(`${serverUrl}/api/local-browser/extension/safety`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      token: stored.pairToken,
+      paused: nextPaused
+    })
+  });
+  const data = await response.json();
+  if (!data.paired) {
+    $("statusText").textContent = data.error || "操作失败";
+    return;
+  }
+  $("statusText").textContent = `已配对：${data.device?.name || "Chrome Extension"}`;
+  renderSafety(data.safety);
+}
+
 $("pairButton").addEventListener("click", () => {
   pairExtension().catch((error) => {
     $("statusText").textContent = error?.message || "配对失败";
+  });
+});
+
+$("togglePauseButton").addEventListener("click", () => {
+  togglePause().catch((error) => {
+    $("statusText").textContent = error?.message || "操作失败";
   });
 });
 

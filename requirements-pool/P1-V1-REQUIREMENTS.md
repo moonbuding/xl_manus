@@ -725,8 +725,9 @@ As a 已经登录了 The Information / Bloomberg / 知网的用户，I want Agen
 - 新增 `/api/local-browser/safety` 与本地操作审计记录，Settings 可查看最近 snapshot/screenshot/action 操作，并可一键暂停/恢复后续本地浏览器操作。
 - 新增 `browser_extension/` Manifest V3 开发扩展，可在 Chrome 开发者模式加载；Web 端可生成 5 分钟一次性配对码，扩展输入配对码后获得本地令牌并显示暂停状态与最近操作。
 - 新增 `/api/local-browser/pairing`、`/api/local-browser/pairing/verify`、`/api/local-browser/extension/status`，覆盖 Web 端生成配对码、扩展无 Cookie 验证配对、扩展轮询操作状态。
-- 新增 `npm run e2e:local-browser`，覆盖未登录保护、非 localhost 地址拦截、CDP 状态、标签页列表、extension pairing、allowlist 保存、pause guard、snapshot、screenshot 和 action guard。
-- 待补：扩展侧操作确认弹窗/一键中止、真实付费站点/验证码场景验收。
+- 新增 `/api/local-browser/extension/safety`，配对扩展可在 popup 中一键暂停/恢复本地浏览器操作。
+- 新增 `npm run e2e:local-browser`，覆盖未登录保护、非 localhost 地址拦截、CDP 状态、标签页列表、extension pairing、extension pause、allowlist 保存、pause guard、snapshot、screenshot 和 action guard。
+- 待补：扩展侧逐操作确认弹窗、真实付费站点/验证码场景验收。
 
 #### 相关 OpenManus 代码
 - 可复用：[OpenManus-main/app/tool/browser_use_tool.py](../OpenManus-main/app/tool/browser_use_tool.py) — `wss_url`/`cdp_url` 已支持远程浏览器

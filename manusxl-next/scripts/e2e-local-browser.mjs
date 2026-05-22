@@ -110,6 +110,28 @@ async function main() {
   const extensionStatusBody = await extensionStatus.json();
   assert(extensionStatus.ok, "本地浏览器扩展状态接口失败");
   assert(extensionStatusBody.paired === true, "本地浏览器扩展状态未识别配对 token");
+  const extensionPaused = await fetch(url("/api/local-browser/extension/safety"), {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      token: verifiedPairingBody.token,
+      paused: true
+    })
+  });
+  const extensionPausedBody = await extensionPaused.json();
+  assert(extensionPaused.ok, "扩展侧暂停接口失败");
+  assert(extensionPausedBody.safety?.paused === true, "扩展侧暂停未生效");
+  const extensionResumed = await fetch(url("/api/local-browser/extension/safety"), {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      token: verifiedPairingBody.token,
+      paused: false
+    })
+  });
+  const extensionResumedBody = await extensionResumed.json();
+  assert(extensionResumed.ok, "扩展侧恢复接口失败");
+  assert(extensionResumedBody.safety?.paused === false, "扩展侧恢复未生效");
 
   const savedConfig = await client.fetchJson("/api/config", {
     method: "PATCH",
@@ -228,6 +250,7 @@ async function main() {
       "cdp status",
       "tabs",
       "extension pairing",
+      "extension pause",
       "allowlist config",
       "pause guard",
       "snapshot",

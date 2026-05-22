@@ -99,6 +99,12 @@ button.secondary {
   gap: 8px;
 }
 
+.actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}
+
 .operation {
   border-top: 1px solid #edf2ed;
   padding-top: 7px;
