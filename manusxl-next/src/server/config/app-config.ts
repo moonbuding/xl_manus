@@ -1,8 +1,15 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { dataPath } from "@/server/data-root";
+import {
+  canUsePostgresRuntime,
+  checkPsqlCli,
+  postgresDatabaseUrl,
+  requestedDatabaseProvider
+} from "@/server/db/provider";
 import { getManusDb } from "@/server/sqlite";
 
 export interface StoredAppConfig {
@@ -21,6 +28,17 @@ export interface StoredAppConfig {
 const secretFile = dataPath("config-secret");
 const encryptedPrefix = "enc:v1:";
 
+interface ConfigPersistenceAdapter {
+  provider: "sqlite" | "postgres";
+  ensureSchema: () => void;
+  get: (key: string) => string | undefined;
+  set: (key: string, value: string) => void;
+}
+
+const globalForConfig = globalThis as unknown as {
+  manusxlConfigStore?: ConfigPersistenceAdapter;
+};
+
 function openConfigDb() {
   const db = getManusDb();
   db.exec(`
@@ -33,14 +51,14 @@ function openConfigDb() {
   return db;
 }
 
-function getConfigValue(db: DatabaseSync, key: string) {
+function getConfigValueSqlite(db: DatabaseSync, key: string) {
   const row = db.prepare("SELECT value FROM app_config WHERE key = ?").get(key) as
     | { value: string }
     | undefined;
   return row?.value;
 }
 
-function setConfigValue(db: DatabaseSync, key: string, value: string) {
+function setConfigValueSqlite(db: DatabaseSync, key: string, value: string) {
   db.prepare(`
     INSERT INTO app_config (key, value, updated_at)
     VALUES (?, ?, ?)
@@ -48,6 +66,113 @@ function setConfigValue(db: DatabaseSync, key: string, value: string) {
       value = excluded.value,
       updated_at = excluded.updated_at
   `).run(key, value, new Date().toISOString());
+}
+
+function createSqliteConfigStore(): ConfigPersistenceAdapter {
+  const db = openConfigDb();
+  return {
+    provider: "sqlite",
+    ensureSchema: () => {
+      openConfigDb();
+    },
+    get: (key) => getConfigValueSqlite(db, key),
+    set: (key, value) => setConfigValueSqlite(db, key, value)
+  };
+}
+
+function postgresSchemaPath() {
+  return `${process.cwd()}/db/postgres/0001_initial.sql`;
+}
+
+function quotePostgresString(value: string) {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+function postgresValue(value: string | undefined | null) {
+  return value === undefined || value === null ? "NULL" : quotePostgresString(value);
+}
+
+function runPsql(args: string[]) {
+  const databaseUrl = postgresDatabaseUrl();
+  if (!databaseUrl) throw new Error("DATABASE_URL 未配置，无法使用 PostgreSQL 配置存储");
+
+  const result = spawnSync("psql", [databaseUrl, "-v", "ON_ERROR_STOP=1", "-X", "-q", ...args], {
+    encoding: "utf8",
+    maxBuffer: 4 * 1024 * 1024,
+    stdio: ["pipe", "pipe", "pipe"]
+  });
+  if (result.status !== 0) {
+    throw new Error((result.stderr || result.stdout || "psql 执行失败").trim());
+  }
+  return result.stdout;
+}
+
+function ensurePostgresSchema() {
+  const schemaPath = postgresSchemaPath();
+  if (!existsSync(schemaPath)) {
+    throw new Error(`找不到 PostgreSQL schema：${schemaPath}`);
+  }
+  runPsql(["-f", schemaPath]);
+}
+
+function createPostgresConfigStore(): ConfigPersistenceAdapter {
+  ensurePostgresSchema();
+  return {
+    provider: "postgres",
+    ensureSchema: ensurePostgresSchema,
+    get: (key) => {
+      const output = runPsql([
+        "-At",
+        "-c",
+        `
+          SELECT value
+          FROM app_config
+          WHERE key = ${postgresValue(key)}
+          LIMIT 1;
+        `
+      ]);
+      return output.trim() || undefined;
+    },
+    set: (key, value) => {
+      runPsql([
+        "-c",
+        `
+          INSERT INTO app_config (key, value, updated_at)
+          VALUES (${postgresValue(key)}, ${postgresValue(value)}, ${postgresValue(new Date().toISOString())})
+          ON CONFLICT (key) DO UPDATE SET
+            value = EXCLUDED.value,
+            updated_at = EXCLUDED.updated_at;
+        `
+      ]);
+    }
+  };
+}
+
+function createConfigStore(): ConfigPersistenceAdapter {
+  const requestedProvider = requestedDatabaseProvider();
+  if (requestedProvider === "postgres") {
+    const psql = checkPsqlCli();
+    if (!canUsePostgresRuntime(psql)) {
+      console.warn(
+        "MANUSXL_DATABASE_PROVIDER=postgres 已设置，但 DATABASE_URL 或 psql CLI 不可用，配置存储回退 SQLite。"
+      );
+      return createSqliteConfigStore();
+    }
+    try {
+      return createPostgresConfigStore();
+    } catch (error) {
+      console.warn(
+        `PostgreSQL 配置存储初始化失败，已回退 SQLite：${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+  return createSqliteConfigStore();
+}
+
+function getConfigStore() {
+  globalForConfig.manusxlConfigStore ??= createConfigStore();
+  globalForConfig.manusxlConfigStore.ensureSchema();
+  return globalForConfig.manusxlConfigStore;
 }
 
 function getEncryptionKey() {
@@ -90,21 +215,21 @@ function decryptSecret(value: string | undefined) {
 }
 
 export function getStoredAppConfig(): StoredAppConfig {
-  const db = openConfigDb();
-  const temperature = Number(getConfigValue(db, "runtime.temperature"));
-  const maxSteps = Number(getConfigValue(db, "runtime.maxSteps"));
-  const taskBudgetUsd = Number(getConfigValue(db, "runtime.taskBudgetUsd"));
-  const promptCacheEnabled = getConfigValue(db, "runtime.promptCacheEnabled");
+  const store = getConfigStore();
+  const temperature = Number(store.get("runtime.temperature"));
+  const maxSteps = Number(store.get("runtime.maxSteps"));
+  const taskBudgetUsd = Number(store.get("runtime.taskBudgetUsd"));
+  const promptCacheEnabled = store.get("runtime.promptCacheEnabled");
   return {
-    apiKey: decryptSecret(getConfigValue(db, "deepseek.apiKey")),
-    model: getConfigValue(db, "deepseek.model"),
-    baseUrl: getConfigValue(db, "deepseek.baseUrl"),
+    apiKey: decryptSecret(store.get("deepseek.apiKey")),
+    model: store.get("deepseek.model"),
+    baseUrl: store.get("deepseek.baseUrl"),
     temperature: Number.isFinite(temperature) ? temperature : undefined,
     maxSteps: Number.isFinite(maxSteps) ? maxSteps : undefined,
     taskBudgetUsd: Number.isFinite(taskBudgetUsd) ? taskBudgetUsd : undefined,
-    planningModel: getConfigValue(db, "modelRouter.planningModel"),
-    executionModel: getConfigValue(db, "modelRouter.executionModel"),
-    finalModel: getConfigValue(db, "modelRouter.finalModel"),
+    planningModel: store.get("modelRouter.planningModel"),
+    executionModel: store.get("modelRouter.executionModel"),
+    finalModel: store.get("modelRouter.finalModel"),
     promptCacheEnabled:
       promptCacheEnabled === undefined ? undefined : promptCacheEnabled === "true"
   };
@@ -131,39 +256,39 @@ export function getAppConfig() {
 }
 
 export function updateAppConfig(config: StoredAppConfig) {
-  const db = openConfigDb();
+  const store = getConfigStore();
   if (config.apiKey !== undefined) {
     const trimmed = config.apiKey.trim();
     if (trimmed) {
-      setConfigValue(db, "deepseek.apiKey", encryptSecret(trimmed));
+      store.set("deepseek.apiKey", encryptSecret(trimmed));
     }
   }
   if (config.model !== undefined) {
-    setConfigValue(db, "deepseek.model", config.model.trim());
+    store.set("deepseek.model", config.model.trim());
   }
   if (config.baseUrl !== undefined) {
-    setConfigValue(db, "deepseek.baseUrl", config.baseUrl.trim());
+    store.set("deepseek.baseUrl", config.baseUrl.trim());
   }
   if (config.temperature !== undefined && Number.isFinite(config.temperature)) {
-    setConfigValue(db, "runtime.temperature", String(Math.min(1, Math.max(0, config.temperature))));
+    store.set("runtime.temperature", String(Math.min(1, Math.max(0, config.temperature))));
   }
   if (config.maxSteps !== undefined && Number.isFinite(config.maxSteps)) {
-    setConfigValue(db, "runtime.maxSteps", String(Math.min(12, Math.max(3, Math.round(config.maxSteps)))));
+    store.set("runtime.maxSteps", String(Math.min(12, Math.max(3, Math.round(config.maxSteps)))));
   }
   if (config.taskBudgetUsd !== undefined && Number.isFinite(config.taskBudgetUsd)) {
-    setConfigValue(db, "runtime.taskBudgetUsd", String(Math.max(0, config.taskBudgetUsd)));
+    store.set("runtime.taskBudgetUsd", String(Math.max(0, config.taskBudgetUsd)));
   }
   if (config.planningModel !== undefined) {
-    setConfigValue(db, "modelRouter.planningModel", config.planningModel.trim());
+    store.set("modelRouter.planningModel", config.planningModel.trim());
   }
   if (config.executionModel !== undefined) {
-    setConfigValue(db, "modelRouter.executionModel", config.executionModel.trim());
+    store.set("modelRouter.executionModel", config.executionModel.trim());
   }
   if (config.finalModel !== undefined) {
-    setConfigValue(db, "modelRouter.finalModel", config.finalModel.trim());
+    store.set("modelRouter.finalModel", config.finalModel.trim());
   }
   if (config.promptCacheEnabled !== undefined) {
-    setConfigValue(db, "runtime.promptCacheEnabled", String(config.promptCacheEnabled));
+    store.set("runtime.promptCacheEnabled", String(config.promptCacheEnabled));
   }
   return getAppConfig();
 }
