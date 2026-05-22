@@ -103,7 +103,7 @@ export function getUploadedFileRecord(fileId: string, ownerId?: string) {
 export function listUploadedFileRecords(ownerId: string | undefined, fileIds: string[]) {
   const uniqueIds = Array.from(
     new Set(fileIds.map((fileId) => fileId.trim()).filter(Boolean))
-  ).slice(0, 50);
+  ).slice(0, 500);
 
   return uniqueIds
     .map((fileId) => getUploadedFileRecord(fileId, ownerId))

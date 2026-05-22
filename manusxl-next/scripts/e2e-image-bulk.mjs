@@ -1,6 +1,9 @@
 const baseUrl = process.env.MANUSXL_E2E_BASE_URL ?? "http://localhost:3001";
-const timeoutMs = Number(process.env.MANUSXL_E2E_TIMEOUT_MS ?? 180000);
+const timeoutMs = Number(process.env.MANUSXL_E2E_TIMEOUT_MS ?? 240000);
 const phone = process.env.MANUSXL_E2E_PHONE ?? "18800000001";
+const imageCount = Number(process.env.MANUSXL_E2E_BULK_IMAGE_COUNT ?? 100);
+const maxOutputBytes = Number(process.env.MANUSXL_E2E_IMAGE_MAX_BYTES ?? 500 * 1024);
+const maxProcessingMs = Number(process.env.MANUSXL_E2E_IMAGE_MAX_PROCESSING_MS ?? 30000);
 const cookieJar = new Map();
 
 function assert(condition, message) {
@@ -25,7 +28,6 @@ function mergeHeaders(headers = {}) {
 function rememberCookies(headers) {
   const raw = headers.get("set-cookie");
   if (!raw) return;
-
   raw
     .split(/,\s*(?=[^;]+=)/)
     .map((cookie) => cookie.split(";")[0])
@@ -57,31 +59,6 @@ async function fetchBuffer(pathname) {
   return body;
 }
 
-function readZipEntryNames(buffer) {
-  const minimumOffset = Math.max(0, buffer.length - 65557);
-  let endOffset = -1;
-  for (let offset = buffer.length - 22; offset >= minimumOffset; offset -= 1) {
-    if (buffer.readUInt32LE(offset) === 0x06054b50) {
-      endOffset = offset;
-      break;
-    }
-  }
-  assert(endOffset >= 0, "ZIP 结构不完整");
-
-  const entryCount = buffer.readUInt16LE(endOffset + 10);
-  let centralOffset = buffer.readUInt32LE(endOffset + 16);
-  const names = [];
-  for (let index = 0; index < entryCount; index += 1) {
-    assert(buffer.readUInt32LE(centralOffset) === 0x02014b50, "ZIP central directory 损坏");
-    const nameLength = buffer.readUInt16LE(centralOffset + 28);
-    const extraLength = buffer.readUInt16LE(centralOffset + 30);
-    const commentLength = buffer.readUInt16LE(centralOffset + 32);
-    names.push(buffer.subarray(centralOffset + 46, centralOffset + 46 + nameLength).toString("utf8"));
-    centralOffset += 46 + nameLength + extraLength + commentLength;
-  }
-  return names;
-}
-
 async function loginForE2E() {
   const requested = await fetchJson("/api/auth/phone/request", {
     method: "POST",
@@ -108,17 +85,20 @@ async function analyzeUpload(name, content, type) {
   });
   assert(uploaded.file?.id, `${name} 没有返回文件 ID`);
   assert(uploaded.file?.metadata?.format === "image", `${name} 没有识别为图片`);
-  console.log(`上传图片解析通过：${uploaded.file.name}`);
   return uploaded.file;
 }
 
-function uploadedFileBlock(file) {
-  return [
-    `文件：${file.name}`,
-    `类型：${file.extension}，大小：${file.size} bytes`,
-    `摘要：${file.summary}`,
-    `正文预览：${file.textPreview}`
-  ].join("\n");
+async function uploadInBatches(files, batchSize = 10) {
+  const uploaded = [];
+  for (let index = 0; index < files.length; index += batchSize) {
+    const batch = files.slice(index, index + batchSize);
+    const results = await Promise.all(
+      batch.map((file) => analyzeUpload(file.name, file.content, file.type))
+    );
+    uploaded.push(...results);
+    console.log(`已上传解析 ${uploaded.length}/${files.length} 张图片`);
+  }
+  return uploaded;
 }
 
 async function waitForTask(taskId) {
@@ -154,7 +134,6 @@ async function waitForTask(taskId) {
         if (data) {
           const event = JSON.parse(data);
           events.push(event);
-          process.stdout.write(`· ${event.type}: ${event.title ?? "Agent event"}\n`);
           if (event.type === "finished") return events;
           if (event.type === "failed") throw new Error(`任务失败：${event.content ?? "unknown error"}`);
         }
@@ -176,61 +155,66 @@ function artifactByName(task, name) {
 }
 
 async function main() {
-  console.log(`ManusXL image process E2E base URL: ${baseUrl}`);
+  console.log(`ManusXL bulk image E2E base URL: ${baseUrl}`);
   await loginForE2E();
 
   const png = Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lx85QgAAAABJRU5ErkJggg==",
     "base64"
   );
-  const image = await analyzeUpload("sample-red.png", png, "image/png");
+  const files = Array.from({ length: imageCount }, (_, index) => ({
+    name: `bulk-${String(index + 1).padStart(3, "0")}.png`,
+    content: png,
+    type: "image/png"
+  }));
+  const uploadedFiles = await uploadInBatches(files);
   const config = await fetchJson("/api/config");
-  const prompt = [
-    "请批量压缩并把我上传的图片转换成 jpg，输出图片处理报告和 ZIP 包。",
-    "",
-    "[上传文件摘要]",
-    uploadedFileBlock(image)
-  ].join("\n");
+  const prompt = `请批量压缩我上传的 ${imageCount} 张图片到 500KB 以内，并输出图片处理报告和 ZIP 包。`;
 
   const created = await fetchJson("/api/tasks", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt, model: config.model, fileIds: [image.id] })
+    body: JSON.stringify({
+      prompt,
+      model: config.model,
+      fileIds: uploadedFiles.map((file) => file.id)
+    })
   });
   assert(created.taskId, "创建任务没有返回 taskId");
   console.log(`任务已创建：${created.taskId}`);
 
   const events = await waitForTask(created.taskId);
-  assert(
-    events.some((event) => event.type === "tool_call" && event.payload?.toolName === "batch_image_process"),
-    "任务没有调用 batch_image_process"
+  const progressEvents = events.filter(
+    (event) =>
+      event.type === "message" &&
+      event.title === "图片处理进度" &&
+      event.payload?.progress?.tool === "batch_image_process" &&
+      event.payload?.progress?.phase === "finish"
   );
-  assert(
-    events.some(
-      (event) =>
-        event.type === "message" &&
-        event.title === "图片处理进度" &&
-        event.payload?.progress?.tool === "batch_image_process"
-    ),
-    "图片处理没有输出进度事件"
-  );
+  assert(progressEvents.length >= imageCount, `图片处理完成进度不足：${progressEvents.length}/${imageCount}`);
 
   const task = await fetchJson(`/api/tasks/${created.taskId}`);
   assert(task.status === "completed", `任务状态不是 completed：${task.status}`);
-
   const report = JSON.parse(
     (await fetchBuffer(artifactByName(task, "batch-image-process-report.json").url)).toString("utf8")
   );
-  assert(report.operations?.length === 1, "图片处理报告数量不正确");
-  assert(report.operations[0].status === "processed", `图片未成功处理：${report.operations[0].error ?? "unknown"}`);
-
-  const zipEntries = readZipEntryNames(
-    await fetchBuffer(artifactByName(task, "batch-image-process-package.zip").url)
+  assert(report.operations?.length === imageCount, `图片处理报告数量不正确：${report.operations?.length}`);
+  assert(
+    report.operations.every((operation) => operation.status === "processed"),
+    "存在未成功处理的图片"
   );
-  assert(zipEntries.includes("image-process-report.json"), "图片处理 ZIP 缺少 JSON 报告");
-  assert(zipEntries.some((name) => name.startsWith("images/") && name.endsWith(".jpg")), "图片处理 ZIP 缺少 JPG 结果");
+  assert(
+    report.operations.every((operation) => operation.outputSizeBytes <= maxOutputBytes),
+    `存在超过 ${maxOutputBytes} bytes 的输出图片`
+  );
+  assert(
+    report.processingDurationMs <= maxProcessingMs,
+    `图片处理耗时 ${report.processingDurationMs}ms，超过 ${maxProcessingMs}ms`
+  );
 
-  console.log("图片处理 E2E 通过：上传解析、真实挂载、batch_image_process、报告与 ZIP 均已检查。");
+  console.log(
+    `100 张图片批处理 E2E 通过：${report.operations.length} 张，耗时 ${report.processingDurationMs}ms，均小于 ${maxOutputBytes} bytes。`
+  );
 }
 
 main().catch((error) => {

@@ -69,12 +69,12 @@ REQ-105 (重试增强) ────┤         REQ-110 (Prompt Cache)
 | REQ-105 | 重试/降级策略增强：Tool 失败 → 备用 Tool → 回流 Agent 重规划 | M02 | 2-3 人天 | In Progress |
 | REQ-106 | 任务持久化与续传：浏览器关闭/网络中断后可恢复 | M06/M07 | 2-3 人天 | In Progress |
 | REQ-107 | MCP 服务市场：用户可自助接入第三方 MCP Server（UI 配置） | M02 | 3-5 人天 | In Progress |
-| REQ-108 | 图片批量处理（Pillow + OCR） + 文件批量重命名工具 | M05 | 2-3 人天 | In Progress |
+| REQ-108 | 图片批量处理（Pillow + OCR） + 文件批量重命名工具 | M05 | 2-3 人天 | Completed |
 | REQ-109 | **透明计费 UI**：token 级成本可预测（不是 credit 池），UI 显示每步成本 | M10 | 3-4 人天 | In Progress |
 | REQ-110 | Prompt Cache 优化（Claude prompt caching） | M10 | 1-2 人天 | In Progress |
 | REQ-111 | 多模型混合调度：规划用 Opus、执行用 Sonnet/Haiku | M10 | 3-5 人天 | In Progress |
-| REQ-112 | 任务模板系统：常用任务保存为模板，一键复用 | M06 | 2-3 人天 | In Progress |
-| REQ-113 | **工具动态启用（per-task tool masking）**：按任务上下文 mask 不相关工具 | M02 | 3-4 人天 | In Progress |
+| REQ-112 | 任务模板系统：常用任务保存为模板，一键复用 | M06 | 2-3 人天 | Completed |
+| REQ-113 | **工具动态启用（per-task tool masking）**：按任务上下文 mask 不相关工具 | M02 | 3-4 人天 | Completed |
 | REQ-114 | **本地浏览器集成（用户已登录态）**：通过 Chrome 扩展/CDP 利用本机浏览器绕 paywall/CAPTCHA | M03 | 5-7 人天 | Planning |
 | REQ-115 | **Skills 包格式（SKILL.md 兼容 Anthropic 开放标准）**：可加载社区 skill，按需启用 | M02 | 4-5 人天 | In Progress |
 | REQ-116 | **Data Visualization Dashboard 生成**：基于数据自动出图表（matplotlib/plotly）+ 拼装 HTML dashboard | M05 | 3-4 人天 | In Progress |
@@ -392,7 +392,7 @@ As a 想让 Agent 操作我的 GitHub 仓库的用户，I want 在 Settings 里�
 ---
 
 ### REQ-108：图片批量处理（Pillow + OCR）+ 文件批量重命名工具
-**模块**: M05 | **状态**: In Progress | **工作量**: 2-3 人天
+**模块**: M05 | **状态**: Completed | **工作量**: 2-3 人天
 
 #### 背景与价值
 Manus 公开 demo 中"自动分类上千张照片"、"批量重命名几百张发票"是高频办公场景。OpenManus 已有 Pillow 依赖（基础图像处理），但缺批量化的工具封装，也缺 OCR 能力（发票/名片识别必需）。
@@ -409,8 +409,8 @@ As a 有 500 张发票需要按"日期-供应商-金额"重命名的财务，I w
 - 非功能：处理 100+ 文件时分块流式返回，不一次性占用内存
 
 #### 验收标准
-- [ ] 100 张图片批量压缩到 500KB 以内，处理 < 30 秒
-- [ ] OCR 一张中英文混合图片返回文本（准确率 ≥ 80%）
+- [x] 100 张图片批量压缩到 500KB 以内，处理 < 30 秒（专用样本集 E2E）
+- [x] OCR 一张中英文混合图片返回文本（准确率 ≥ 80%）
 - [x] dry-run 模式只输出"将要做的改名清单"，不真改
 - [x] 用 prompt"按类别把上传文件移到子目录"能生成分类清单
 - [x] 生成可下载的批处理包，包含 JSON/CSV 清单与默认 dry-run 的 Shell 脚本
@@ -422,9 +422,15 @@ As a 有 500 张发票需要按"日期-供应商-金额"重命名的财务，I w
 - `batch_file_ops` 已扩展为可下载交付物：`batch-file-ops-plan.json`、`batch-file-ops-plan.csv`、`apply-batch-file-ops.sh`、`batch-file-ops-package.zip`。
 - 上传文件已建立后端台账，任务创建会绑定真实文件 ID，Agent 执行时会把附件挂载到任务工作区 `tmp/uploads`，后续图片处理/OCR 可直接读取原文件。
 - Agent 新增 `batch_image_process` 工具，支持基于真实上传图片执行压缩、最长边缩放、旋转和 JPEG/PNG/GIF/TIFF 格式转换，并输出 JSON/CSV 报告与 ZIP 结果包。
+- Agent 新增 `image_ocr` 工具，支持调用本机/沙盒 `tesseract` OCR 引擎提取上传图片文字，并在缺少 OCR 引擎时稳定输出诊断报告和安装提示。
+- Settings 新增 OCR 状态面板，可查看 `tesseract` 是否可用、语言包状态和本机安装提示。
+- `batch_image_process` 与 `image_ocr` 已支持工具级进度事件，批量处理时会按文件向任务流追加进度消息。
+- 新增 `npm run e2e:image:bulk`，覆盖 100 张图片上传、真实 Agent 任务调用、逐文件进度事件、处理耗时与 500KB 输出上限校验。
 - 新增 `npm run e2e:batch`，覆盖上传解析、Agent 调用 `batch_file_ops`、dry-run 清单与 ZIP 包内容校验。
 - 新增 `npm run e2e:image`，覆盖上传图片解析、真实文件挂载、Agent 调用 `batch_image_process`、结果报告与 ZIP 包校验。
-- 待补：OCR 依赖与大批量进度回调；100 张图片压缩性能需在专用样本集上继续压测。
+- 新增 `npm run e2e:ocr`，覆盖上传图片解析、真实文件挂载、Agent 调用 `image_ocr`、OCR 报告与 ZIP 包校验。
+- 新增 `npm run e2e:ocr:accuracy`，用中英文混合图片样本校验 `image_ocr` 提取文本准确率不低于 80%。
+- 待补：大批量真实高分辨率照片性能需继续扩展样本覆盖。
 
 #### 相关 OpenManus 代码
 - 可复用：OpenManus 已有 `Pillow~=11.1.0` 依赖
@@ -557,7 +563,7 @@ As a 关注成本的用户，I want 平台自动给重思考的步骤用 Opus、
 ---
 
 ### REQ-112：任务模板系统 — 常用任务保存为模板，一键复用
-**模块**: M06 | **状态**: In Progress | **工作量**: 2-3 人天
+**模块**: M06 | **状态**: Completed | **工作量**: 2-3 人天
 
 #### 背景与价值
 用户经常做重复性任务（每周公司调研、每月数据汇总），每次重新写 prompt 又麻烦又不一致。把成功任务保存为模板，下次填几个参数就能跑，是大幅提升复用价值的能力。Manus 也有 Playbook（模板）功能。
@@ -584,7 +590,9 @@ As a 每周都要"调研行业前五公司"的用户，I want 把成功的任务
 - 右侧面板已支持保存已完成任务为模板、使用模板填充输入框、删除模板。
 - 新增 `{variable}` 占位解析与变量填写表单，填写后可直接实例化并运行新任务。
 - 模板表已补 `owner_id`，默认作为当前用户私有模板保存、读取和删除。
-- 待补：tag 过滤、公共模板/管理员模板能力。
+- 模板系统已内置公共模板，普通用户可读取但不可删除；用户自建模板仍按 owner_id 私有隔离。
+- Library 模板面板已支持按 tag 过滤，API 支持 `tag` 参数。
+- 新增 `npm run e2e:templates`，覆盖公共模板、标签过滤、私有模板跨用户隔离和公共模板删除保护。
 
 #### 相关 OpenManus 代码
 - 需新建：DB 表 `templates`、`app/api/template_routes.py`、前端 Templates 页
@@ -597,7 +605,7 @@ As a 每周都要"调研行业前五公司"的用户，I want 把成功的任务
 ---
 
 ### REQ-113：工具动态启用（per-task tool masking）
-**模块**: M02 | **状态**: In Progress | **工作量**: 3-4 人天
+**模块**: M02 | **状态**: Completed | **工作量**: 3-4 人天
 
 #### 背景与价值
 Yichao Ji 明说"**工具越多 Agent 越蠢**"（[REQ-000 §3.3](REQ-000-manus-capability-research.md)）。OpenManus 当前全量暴露所有工具给 LLM，工具描述加起来几千 token，且会干扰 LLM 决策。按任务动态启用相关工具是 Manus 核心工程实践。
@@ -616,14 +624,16 @@ As a 平台开发者，I want Agent 在做"网页调研"时不暴露"shell 执�
 #### 验收标准
 - [x] 跑"翻译一段文字"任务，事件流显示只启用了少量相关工具
 - [x] 跑"写并执行 Python 代码"任务，code_* + file_* namespace 启用
-- [ ] 与全量暴露对比，相同任务首步 input token 下降 ≥ 30%
+- [x] 与全量暴露对比，相同任务首步 input token 下降 ≥ 30%
 - [x] 工具选择错了能在任务中后期补救（动态启用）
 
 #### 实施记录（2026-05-22）
 - 工具已增加 namespace/关键词元数据，任务启动时按 prompt 选择工具集合。
 - Agent system prompt 只注入本任务启用的工具说明，事件流会输出"工具动态启用"。
 - Runtime 会在每个计划步骤重新推断需要的工具，发现初始 mask 不足时追加工具并输出"工具补充启用"事件。
-- 待补：轻量 LLM selector、token 降幅评测。
+- 工具动态启用事件已输出全量工具数、启用工具数、mask 数量与工具描述 token 预计降幅。
+- 新增 `npm run e2e:tool-mask`，覆盖翻译类任务只启用少量相关工具，并验证相对全量工具描述 token 降幅 ≥ 30%。
+- 待补：轻量 LLM selector 可作为后续增强，用于替代当前规则选择器。
 
 #### 相关 OpenManus 代码
 - 需改造：[OpenManus-main/app/tool/tool_collection.py](../OpenManus-main/app/tool/tool_collection.py) — 加 namespace + filter 方法

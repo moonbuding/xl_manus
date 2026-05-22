@@ -10,7 +10,13 @@ export function GET(request: Request) {
   const user = currentUserFromRequest(request);
   if (!user) return unauthorized();
   const url = new URL(request.url);
-  return NextResponse.json({ templates: listTemplates(url.searchParams.get("q") ?? undefined, user.id) });
+  return NextResponse.json({
+    templates: listTemplates(
+      url.searchParams.get("q") ?? undefined,
+      user.id,
+      url.searchParams.get("tag") ?? undefined
+    )
+  });
 }
 
 export async function POST(request: Request) {

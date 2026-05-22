@@ -16,6 +16,8 @@ const allowedSkillTools = new Set([
   "file_reader",
   "file_workspace",
   "batch_file_ops",
+  "batch_image_process",
+  "image_ocr",
   "skill_runner",
   "python_execute",
   "shell_execute",
@@ -64,6 +66,15 @@ const builtinSkills: AgentSkill[] = [
     description: "为图片、文档和表格生成批量重命名、分类、移动 dry-run 清单。",
     triggers: ["批量", "重命名", "分类", "图片", "文件整理"],
     toolsRequired: ["batch_file_ops", "file_workspace"],
+    source: "builtin",
+    enabled: true
+  },
+  {
+    id: "builtin-image-tools",
+    name: "image-tools",
+    description: "处理上传图片的压缩、缩放、格式转换和 OCR 文字识别。",
+    triggers: ["图片", "照片", "压缩", "缩放", "OCR", "文字识别", "发票", "名片"],
+    toolsRequired: ["batch_image_process", "image_ocr", "file_reader"],
     source: "builtin",
     enabled: true
   },

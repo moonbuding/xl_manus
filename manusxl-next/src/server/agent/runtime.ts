@@ -12,6 +12,7 @@ import {
 } from "@/server/agent/context";
 import {
   executeAgentToolWithFallback,
+  estimateToolMaskingSavings,
   inferToolsForStep,
   pickTool,
   selectToolsForPrompt,
@@ -156,6 +157,12 @@ function ensureFileReadingStep(prompt: string, plan: string[], uploadedFileIds: 
   return ["读取上传文件摘要并提取可用信息", ...plan].slice(0, 6);
 }
 
+function taskIntentText(prompt: string) {
+  const marker = "[上传文件摘要]";
+  const markerIndex = prompt.indexOf(marker);
+  return markerIndex >= 0 ? prompt.slice(0, markerIndex) : prompt;
+}
+
 function ensureMcpStep(prompt: string, plan: string[]) {
   if (!/mcp|外部工具|第三方工具|github|slack|notion|filesystem/i.test(prompt)) return plan;
   if (plan.some((step) => /mcp|外部工具|第三方工具|github|slack|notion|filesystem/i.test(step))) {
@@ -175,7 +182,7 @@ function ensureBatchFileOpsStep(prompt: string, plan: string[]) {
 }
 
 function ensureImageProcessStep(prompt: string, plan: string[]) {
-  if (!/图片|照片|image|photo|压缩|缩放|旋转|格式转换|转成|convert|resize|compress/i.test(prompt)) {
+  if (!/(图片|照片|image|photo).*(压缩|缩放|旋转|格式转换|转成|convert|resize|compress)|(压缩|缩放|旋转|格式转换|转成|convert|resize|compress).*(图片|照片|image|photo)/i.test(prompt)) {
     return plan;
   }
   if (plan.some((step) => /图片|照片|batch_image_process|压缩|缩放|旋转|格式转换|convert|resize|compress/i.test(step))) {
@@ -183,6 +190,17 @@ function ensureImageProcessStep(prompt: string, plan: string[]) {
   }
 
   return ["批量处理上传图片并生成压缩/转换结果包", ...plan].slice(0, 6);
+}
+
+function ensureImageOcrStep(prompt: string, plan: string[]) {
+  if (!/ocr|文字识别|识别.*(图片|照片|发票|名片|扫描|文字)|提取.*(图片|照片).*文字|发票|名片/i.test(prompt)) {
+    return plan;
+  }
+  if (plan.some((step) => /ocr|image_ocr|文字识别|识别.*文字|提取.*文字|发票|名片/i.test(step))) {
+    return plan;
+  }
+
+  return ["OCR 识别上传图片文字并生成提取报告", ...plan].slice(0, 6);
 }
 
 function ensureMapStep(prompt: string, plan: string[]) {
@@ -226,19 +244,23 @@ async function generatePlan(
     signal,
     messages
   });
+  const intent = taskIntentText(prompt);
 
   return ensureSkillRunnerStep(
-    prompt,
+    intent,
     ownerId,
     ensureMapStep(
-      prompt,
+      intent,
       ensureMcpStep(
-        prompt,
+        intent,
         ensureBatchFileOpsStep(
-          prompt,
-          ensureImageProcessStep(
-            prompt,
-            ensureFileReadingStep(prompt, parsePlan(raw, config.maxSteps), uploadedFileIds)
+          intent,
+          ensureImageOcrStep(
+            intent,
+            ensureImageProcessStep(
+              intent,
+              ensureFileReadingStep(prompt, parsePlan(raw, config.maxSteps), uploadedFileIds)
+            )
           )
         )
       )
@@ -381,6 +403,7 @@ export async function runAgentTask(taskId: string, options: { resumed?: boolean 
     updateTaskStatus(taskId, "running");
     const memoryPath = await ensureTaskMemory(taskId, task.prompt, task.ownerId);
     let enabledTools = selectToolsForPrompt(task.prompt, task.ownerId);
+    const initialToolMasking = estimateToolMaskingSavings(enabledTools);
     const planningRoute = routeModel("planning", task.prompt);
     const executionRoute = routeModel("execution", task.prompt);
     const finalRoute = routeModel("final_answer", task.prompt);
@@ -394,8 +417,11 @@ export async function runAgentTask(taskId: string, options: { resumed?: boolean 
       type: "message",
       stepIndex: 1,
       title: "工具动态启用",
-      content: `本任务启用 ${enabledTools.length} 个工具：${enabledTools.join("、")}`,
-      payload: { enabledTools }
+      content: [
+        `本任务启用 ${enabledTools.length} 个工具：${enabledTools.join("、")}`,
+        `相对全量 ${initialToolMasking.allToolCount} 个工具，已 mask ${initialToolMasking.maskedToolCount} 个；工具描述 token 预计下降 ${Math.round(initialToolMasking.tokenReductionPercent * 100)}%。`
+      ].join("\n"),
+      payload: { enabledTools, toolMasking: initialToolMasking }
     });
     addTaskEvent(taskId, {
       type: "message",
@@ -539,7 +565,18 @@ export async function runAgentTask(taskId: string, options: { resumed?: boolean 
           prompt: task.prompt,
           step,
           stepIndex: index,
-          plan
+          plan,
+          emitProgress: (progress) =>
+            addTaskEvent(taskId, {
+              type: "message",
+              stepIndex,
+              title: progress.title,
+              content: progress.content,
+              payload: {
+                toolName,
+                progress: progress.payload
+              }
+            })
         },
         enabledTools
       );

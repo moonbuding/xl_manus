@@ -1,6 +1,9 @@
+import sharp from "sharp";
+
 const baseUrl = process.env.MANUSXL_E2E_BASE_URL ?? "http://localhost:3001";
 const timeoutMs = Number(process.env.MANUSXL_E2E_TIMEOUT_MS ?? 180000);
 const phone = process.env.MANUSXL_E2E_PHONE ?? "18800000001";
+const minAccuracy = Number(process.env.MANUSXL_E2E_OCR_MIN_ACCURACY ?? 0.8);
 const cookieJar = new Map();
 
 function assert(condition, message) {
@@ -25,7 +28,6 @@ function mergeHeaders(headers = {}) {
 function rememberCookies(headers) {
   const raw = headers.get("set-cookie");
   if (!raw) return;
-
   raw
     .split(/,\s*(?=[^;]+=)/)
     .map((cookie) => cookie.split(";")[0])
@@ -57,31 +59,6 @@ async function fetchBuffer(pathname) {
   return body;
 }
 
-function readZipEntryNames(buffer) {
-  const minimumOffset = Math.max(0, buffer.length - 65557);
-  let endOffset = -1;
-  for (let offset = buffer.length - 22; offset >= minimumOffset; offset -= 1) {
-    if (buffer.readUInt32LE(offset) === 0x06054b50) {
-      endOffset = offset;
-      break;
-    }
-  }
-  assert(endOffset >= 0, "ZIP 结构不完整");
-
-  const entryCount = buffer.readUInt16LE(endOffset + 10);
-  let centralOffset = buffer.readUInt32LE(endOffset + 16);
-  const names = [];
-  for (let index = 0; index < entryCount; index += 1) {
-    assert(buffer.readUInt32LE(centralOffset) === 0x02014b50, "ZIP central directory 损坏");
-    const nameLength = buffer.readUInt16LE(centralOffset + 28);
-    const extraLength = buffer.readUInt16LE(centralOffset + 30);
-    const commentLength = buffer.readUInt16LE(centralOffset + 32);
-    names.push(buffer.subarray(centralOffset + 46, centralOffset + 46 + nameLength).toString("utf8"));
-    centralOffset += 46 + nameLength + extraLength + commentLength;
-  }
-  return names;
-}
-
 async function loginForE2E() {
   const requested = await fetchJson("/api/auth/phone/request", {
     method: "POST",
@@ -97,6 +74,19 @@ async function loginForE2E() {
   });
   assert(verified.user?.id, "手机号登录没有返回用户信息");
   console.log(`已登录 E2E 用户：${verified.user.phone ?? phone}`);
+}
+
+async function renderMixedLanguageImage() {
+  const fontStack = "Songti SC, Heiti SC, serif";
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520">
+      <rect width="100%" height="100%" fill="white"/>
+      <text x="60" y="120" font-family="${fontStack}" font-size="72" fill="black">INVOICE 2026</text>
+      <text x="60" y="250" font-family="${fontStack}" font-size="72" fill="black">发票 金额 12800</text>
+      <text x="60" y="380" font-family="${fontStack}" font-size="72" fill="black">供应商 星河科技</text>
+    </svg>
+  `;
+  return sharp(Buffer.from(svg)).png().toBuffer();
 }
 
 async function analyzeUpload(name, content, type) {
@@ -175,18 +165,38 @@ function artifactByName(task, name) {
   return artifact;
 }
 
+function normalizeForTokenMatch(value) {
+  return value.toLowerCase().replace(/\s+/g, "");
+}
+
+function calculateAccuracy(text, expectedTokens) {
+  const normalizedText = normalizeForTokenMatch(text);
+  const hits = expectedTokens.filter((token) =>
+    normalizedText.includes(normalizeForTokenMatch(token))
+  );
+  return {
+    hits,
+    accuracy: hits.length / expectedTokens.length
+  };
+}
+
 async function main() {
-  console.log(`ManusXL image process E2E base URL: ${baseUrl}`);
+  console.log(`ManusXL OCR accuracy E2E base URL: ${baseUrl}`);
   await loginForE2E();
 
-  const png = Buffer.from(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lx85QgAAAABJRU5ErkJggg==",
-    "base64"
+  const ocrStatus = await fetchJson("/api/ocr/status");
+  assert(ocrStatus.available, `OCR 引擎不可用：${ocrStatus.reason ?? "unknown"}`);
+  assert(ocrStatus.languages?.includes("eng"), "缺少 eng OCR 语言包");
+  assert(ocrStatus.languages?.includes("chi_sim"), "缺少 chi_sim OCR 语言包");
+
+  const image = await analyzeUpload(
+    "ocr-mixed-language.png",
+    await renderMixedLanguageImage(),
+    "image/png"
   );
-  const image = await analyzeUpload("sample-red.png", png, "image/png");
   const config = await fetchJson("/api/config");
   const prompt = [
-    "请批量压缩并把我上传的图片转换成 jpg，输出图片处理报告和 ZIP 包。",
+    "请 OCR 识别我上传图片里的中英文文字，并输出 OCR 报告和 ZIP 包。",
     "",
     "[上传文件摘要]",
     uploadedFileBlock(image)
@@ -202,35 +212,28 @@ async function main() {
 
   const events = await waitForTask(created.taskId);
   assert(
-    events.some((event) => event.type === "tool_call" && event.payload?.toolName === "batch_image_process"),
-    "任务没有调用 batch_image_process"
-  );
-  assert(
-    events.some(
-      (event) =>
-        event.type === "message" &&
-        event.title === "图片处理进度" &&
-        event.payload?.progress?.tool === "batch_image_process"
-    ),
-    "图片处理没有输出进度事件"
+    events.some((event) => event.type === "tool_call" && event.payload?.toolName === "image_ocr"),
+    "任务没有调用 image_ocr"
   );
 
   const task = await fetchJson(`/api/tasks/${created.taskId}`);
   assert(task.status === "completed", `任务状态不是 completed：${task.status}`);
-
   const report = JSON.parse(
-    (await fetchBuffer(artifactByName(task, "batch-image-process-report.json").url)).toString("utf8")
+    (await fetchBuffer(artifactByName(task, "image-ocr-report.json").url)).toString("utf8")
   );
-  assert(report.operations?.length === 1, "图片处理报告数量不正确");
-  assert(report.operations[0].status === "processed", `图片未成功处理：${report.operations[0].error ?? "unknown"}`);
+  const operation = report.operations?.[0];
+  assert(operation?.status === "extracted", `OCR 未成功提取文本：${operation?.status}`);
 
-  const zipEntries = readZipEntryNames(
-    await fetchBuffer(artifactByName(task, "batch-image-process-package.zip").url)
+  const expectedTokens = ["INVOICE", "2026", "发票", "金额", "12800", "供应商", "星河科技"];
+  const { hits, accuracy } = calculateAccuracy(operation.textPreview ?? "", expectedTokens);
+  assert(
+    accuracy >= minAccuracy,
+    `OCR 准确率 ${(accuracy * 100).toFixed(1)}%，低于 ${(minAccuracy * 100).toFixed(0)}%。命中：${hits.join(", ")}；识别文本：${operation.textPreview}`
   );
-  assert(zipEntries.includes("image-process-report.json"), "图片处理 ZIP 缺少 JSON 报告");
-  assert(zipEntries.some((name) => name.startsWith("images/") && name.endsWith(".jpg")), "图片处理 ZIP 缺少 JPG 结果");
 
-  console.log("图片处理 E2E 通过：上传解析、真实挂载、batch_image_process、报告与 ZIP 均已检查。");
+  console.log(
+    `OCR 中英文准确率 E2E 通过：命中 ${hits.length}/${expectedTokens.length}，准确率 ${(accuracy * 100).toFixed(1)}%。`
+  );
 }
 
 main().catch((error) => {

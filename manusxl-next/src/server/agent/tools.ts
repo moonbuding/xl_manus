@@ -4,6 +4,7 @@ import { basename, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { makeZip } from "@/server/artifacts/generators";
 import { listUploadedFileRecords, type UploadedFileRecord } from "@/server/files/readers";
+import { getOcrStatus } from "@/server/ocr/status";
 import { runSandboxedCommand } from "@/server/sandbox/docker-sandbox";
 import {
   hasExecutableSkillForPrompt,
@@ -128,6 +129,7 @@ export type AgentToolName =
   | "file_workspace"
   | "batch_file_ops"
   | "batch_image_process"
+  | "image_ocr"
   | "skill_runner"
   | "python_execute"
   | "shell_execute"
@@ -145,6 +147,13 @@ export interface AgentToolInput {
   step: string;
   stepIndex: number;
   plan: string[];
+  emitProgress?: (progress: AgentToolProgress) => void | Promise<void>;
+}
+
+export interface AgentToolProgress {
+  title: string;
+  content: string;
+  payload?: Record<string, unknown>;
 }
 
 export interface SearchResult {
@@ -217,6 +226,12 @@ export const TOOL_METADATA: AgentToolMetadata[] = [
     fallbackTools: ["batch_file_ops", "file_reader", "file_workspace"]
   },
   {
+    name: "image_ocr",
+    namespace: "file",
+    description: "对上传图片执行 OCR 文字识别，并输出 JSON/CSV/Markdown 报告。",
+    fallbackTools: ["file_reader", "batch_image_process", "artifact_writer"]
+  },
+  {
     name: "skill_runner",
     namespace: "core",
     description: "在任务沙盒中执行用户上传 Skill 包内的 Python 脚本。",
@@ -272,8 +287,15 @@ function uniqueTools(tools: AgentToolName[]) {
   return Array.from(new Set(tools));
 }
 
+function taskIntentText(prompt: string) {
+  const marker = "[上传文件摘要]";
+  const markerIndex = prompt.indexOf(marker);
+  return markerIndex >= 0 ? prompt.slice(0, markerIndex) : prompt;
+}
+
 export function selectToolsForPrompt(prompt: string, ownerId?: string): AgentToolName[] {
-  const lower = prompt.toLowerCase();
+  const intent = taskIntentText(prompt);
+  const lower = intent.toLowerCase();
   const selected: AgentToolName[] = ["task_planner", "data_analysis", "artifact_writer"];
 
   if (/http|网页|搜索|调研|竞品|市场|news|web|research|browser/.test(lower)) {
@@ -282,14 +304,17 @@ export function selectToolsForPrompt(prompt: string, ownerId?: string): AgentToo
   if (/mcp|github|slack|notion|filesystem|外部工具|第三方工具/.test(lower)) {
     selected.push("mcp_call");
   }
-  if (/\[上传文件摘要\]|上传|文件|pdf|docx|xlsx|csv|excel|word|图片|image|ocr/.test(lower)) {
+  if (prompt.includes("[上传文件摘要]") || /上传|文件|pdf|docx|xlsx|csv|excel|word|图片|image|ocr/.test(lower)) {
     selected.push("file_reader", "file_workspace");
   }
   if (/批量|重命名|分类|移动|查重|压缩|缩放|图片|image|ocr|rename|classify/.test(lower)) {
     selected.push("batch_file_ops", "file_reader", "file_workspace");
   }
-  if (/图片|image|照片|photo|压缩|缩放|旋转|格式转换|转成|convert|resize|compress/.test(lower)) {
+  if (/(图片|image|照片|photo).*(压缩|缩放|旋转|格式转换|转成|convert|resize|compress)|(压缩|缩放|旋转|格式转换|转成|convert|resize|compress).*(图片|image|照片|photo)/.test(lower)) {
     selected.push("batch_image_process", "file_reader", "file_workspace");
+  }
+  if (/ocr|文字识别|识别.*(图片|照片|发票|名片|扫描|文字)|提取.*(图片|照片).*文字|发票|名片/i.test(intent)) {
+    selected.push("image_ocr", "file_reader", "file_workspace");
   }
   if (/skill|技能|工作流|自定义/.test(lower) || hasExecutableSkillForPrompt(prompt, ownerId)) {
     selected.push("skill_runner", "file_workspace");
@@ -331,7 +356,10 @@ export function inferToolsForStep(step: string): AgentToolName[] {
   if (/上传文件|文件摘要|附件|读取.*(文件|pdf|docx|xlsx|csv|excel|word)|解析.*(文件|pdf|docx|xlsx|csv|excel|word)/.test(lower)) {
     candidates.push("file_reader");
   }
-  if (/图片|image|照片|photo|压缩|缩放|旋转|格式转换|转成|convert|resize|compress/.test(lower)) {
+  if (/ocr|文字识别|识别.*(图片|照片|发票|名片|扫描|文字)|提取.*(图片|照片).*文字|发票|名片/.test(lower)) {
+    candidates.push("image_ocr");
+  }
+  if (/(图片|image|照片|photo).*(压缩|缩放|旋转|格式转换|转成|convert|resize|compress)|(压缩|缩放|旋转|格式转换|转成|convert|resize|compress).*(图片|image|照片|photo)/.test(lower)) {
     candidates.push("batch_image_process");
   }
   if (/批量|重命名|分类|移动|查重|图片|image|ocr|rename|classify/.test(lower)) {
@@ -361,6 +389,32 @@ export function inferToolsForStep(step: string): AgentToolName[] {
 export function describeTools(tools: AgentToolName[]) {
   const enabled = new Set(tools);
   return TOOL_METADATA.filter((tool) => enabled.has(tool.name));
+}
+
+function estimateToolDescriptionTokens(tools: AgentToolMetadata[]) {
+  const text = tools
+    .map((tool) => `${tool.name} [${tool.namespace}]: ${tool.description}`)
+    .join("\n");
+  return Math.max(1, Math.ceil(text.length / 3));
+}
+
+export function estimateToolMaskingSavings(tools: AgentToolName[]) {
+  const enabledTools = describeTools(tools);
+  const fullToolTokensEstimate = estimateToolDescriptionTokens(TOOL_METADATA);
+  const enabledToolTokensEstimate = estimateToolDescriptionTokens(enabledTools);
+  const savedToolTokensEstimate = Math.max(0, fullToolTokensEstimate - enabledToolTokensEstimate);
+  const tokenReductionPercent =
+    fullToolTokensEstimate > 0 ? savedToolTokensEstimate / fullToolTokensEstimate : 0;
+
+  return {
+    allToolCount: TOOL_METADATA.length,
+    enabledToolCount: enabledTools.length,
+    maskedToolCount: Math.max(0, TOOL_METADATA.length - enabledTools.length),
+    fullToolTokensEstimate,
+    enabledToolTokensEstimate,
+    savedToolTokensEstimate,
+    tokenReductionPercent: Number(tokenReductionPercent.toFixed(4))
+  };
 }
 
 function stripHtml(value: string) {
@@ -1048,6 +1102,10 @@ function imageProcessCsv(operations: ImageProcessOperation[]) {
   ].join("\n");
 }
 
+async function emitToolProgress(input: AgentToolInput, progress: AgentToolProgress) {
+  await input.emitProgress?.(progress);
+}
+
 function imageQualityAttempts(options: ReturnType<typeof parseImageProcessingOptions>) {
   if (!options.targetBytes) return [options.quality ?? 75];
   return Array.from(new Set([options.quality ?? 82, 70, 58, 46, 34]));
@@ -1197,16 +1255,45 @@ async function runBatchImageProcess(input: AgentToolInput): Promise<AgentToolRes
   const outputDir = join(artifacts, "processed-images");
   await mkdir(outputDir, { recursive: true });
 
+  const startedAt = Date.now();
   const operations: ImageProcessOperation[] = [];
   for (const [index, file] of imageFiles.entries()) {
-    operations.push(await processImageWithSips(file, index, outputDir, options));
+    await emitToolProgress(input, {
+      title: "图片处理进度",
+      content: `正在处理第 ${index + 1}/${imageFiles.length} 张图片：${file.name}`,
+      payload: {
+        tool: "batch_image_process",
+        current: index + 1,
+        total: imageFiles.length,
+        fileName: file.name,
+        phase: "start"
+      }
+    });
+    const operation = await processImageWithSips(file, index, outputDir, options);
+    operations.push(operation);
+    await emitToolProgress(input, {
+      title: "图片处理进度",
+      content: `已处理第 ${index + 1}/${imageFiles.length} 张图片：${file.name}（${operation.status}）`,
+      payload: {
+        tool: "batch_image_process",
+        current: index + 1,
+        total: imageFiles.length,
+        fileName: file.name,
+        status: operation.status,
+        outputName: operation.outputName,
+        outputSizeBytes: operation.outputSizeBytes,
+        phase: "finish"
+      }
+    });
   }
+  const processingDurationMs = Date.now() - startedAt;
 
   const processed = operations.filter((operation) => operation.status === "processed");
   const report = JSON.stringify(
     {
       taskId: input.taskId,
       generatedAt: new Date().toISOString(),
+      processingDurationMs,
       options: {
         targetBytes: options.targetBytes,
         maxDimension: options.maxDimension,
@@ -1249,6 +1336,7 @@ async function runBatchImageProcess(input: AgentToolInput): Promise<AgentToolRes
         : `已生成 ${imageFiles.length} 张上传图片的处理计划，但当前环境没有完成实际转换。`,
     payload: {
       options,
+      processingDurationMs,
       sourceFiles: imageFiles,
       operations,
       generatedArtifacts: [
@@ -1266,6 +1354,340 @@ async function runBatchImageProcess(input: AgentToolInput): Promise<AgentToolRes
         },
         {
           name: "batch-image-process-package.zip",
+          type: "zip",
+          mimeType: "application/zip",
+          content: zip.toString("base64"),
+          contentEncoding: "base64"
+        }
+      ]
+    }
+  };
+}
+
+type OcrOperationStatus = "extracted" | "engine_missing" | "skipped" | "failed";
+
+interface OcrOperation {
+  source: string;
+  sourcePath?: string;
+  status: OcrOperationStatus;
+  language?: string;
+  textLength: number;
+  textPreview: string;
+  outputPath?: string;
+  error?: string;
+}
+
+function parseOcrLanguage(prompt: string) {
+  const lower = prompt.toLowerCase();
+  if (lower.match(/chi_sim|中英文|中文|汉字|发票|名片|简体/)) return "chi_sim+eng";
+  if (/[\u4e00-\u9fa5]/.test(prompt)) return "chi_sim+eng";
+  if (lower.match(/\beng\b|英文|english/)) return "eng";
+  return "eng";
+}
+
+function normalizeOcrText(value: string) {
+  return value
+    .replace(/\r/g, "\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
+    .slice(0, 12000);
+}
+
+function safeOcrTextName(file: UploadedFileToolEntry, index: number) {
+  const stem =
+    basename(file.name)
+      .replace(/\.[a-z0-9]+$/i, "")
+      .replace(/[^\p{L}\p{N}]+/gu, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 52) || "image";
+  return `${String(index + 1).padStart(3, "0")}-${stem}.txt`;
+}
+
+async function tesseractOcr(filePath: string, language: string) {
+  const limits = getToolExecutionLimits();
+  const run = async (lang: string) =>
+    (await execFileAsync("tesseract", [filePath, "stdout", "-l", lang], {
+      timeout: Math.max(limits.timeoutMs, 15_000),
+      maxBuffer: limits.maxBufferBytes
+    })) as { stdout: string; stderr: string };
+
+  try {
+    const { stdout } = await run(language);
+    return { text: normalizeOcrText(stdout), language };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (language !== "eng" && /failed loading language|could not initialize tesseract|error opening data file/i.test(message)) {
+      const { stdout } = await run("eng");
+      return { text: normalizeOcrText(stdout), language: "eng" };
+    }
+    throw error;
+  }
+}
+
+function imageOcrCsv(operations: OcrOperation[]) {
+  const headers = ["source", "status", "language", "textLength", "sourcePath", "outputPath", "textPreview", "error"];
+  return [
+    headers.join(","),
+    ...operations.map((operation) =>
+      headers
+        .map((header) => csvEscape(String(operation[header as keyof OcrOperation] ?? "")))
+        .join(",")
+    )
+  ].join("\n");
+}
+
+function imageOcrMarkdown(params: {
+  prompt: string;
+  language: string;
+  engineAvailable: boolean;
+  engineVersion?: string;
+  operations: OcrOperation[];
+}) {
+  return [
+    "# Image OCR Report",
+    "",
+    `Task: ${params.prompt}`,
+    `Language: ${params.language}`,
+    `Engine: ${params.engineAvailable ? params.engineVersion ?? "tesseract" : "not installed"}`,
+    "",
+    "| File | Status | Text length | Preview |",
+    "|------|--------|-------------|---------|",
+    ...params.operations.map((operation) =>
+      [
+        operation.source,
+        operation.status,
+        String(operation.textLength),
+        (operation.textPreview || operation.error || "").replace(/\n/g, " ").slice(0, 120)
+      ]
+        .map((value) => value.replace(/\|/g, "\\|"))
+        .join(" | ")
+    ),
+    "",
+    params.engineAvailable
+      ? "OCR engine executed for available image files."
+      : "OCR engine is not installed. Install `tesseract` and the needed language packs, then rerun the task."
+  ].join("\n");
+}
+
+async function runImageOcr(input: AgentToolInput): Promise<AgentToolResult> {
+  const uploaded = await getUploadedFileToolEntries(input);
+  const imageFiles = uploaded.files.filter(isImageEntry);
+
+  if (imageFiles.length === 0) {
+    return {
+      toolName: "image_ocr",
+      ok: true,
+      observation: "未检测到可 OCR 的上传图片，已跳过图片文字识别。",
+      payload: { files: [], operations: [] }
+    };
+  }
+
+  const language = parseOcrLanguage(input.prompt);
+  const engine = await getOcrStatus();
+  const { artifacts } = await ensureTaskWorkspace(input.taskId, input.ownerId);
+  const outputDir = join(artifacts, "image-ocr");
+  const textDir = join(outputDir, "text");
+  await mkdir(textDir, { recursive: true });
+
+  const operations: OcrOperation[] = [];
+  for (const [index, file] of imageFiles.entries()) {
+    const outputName = safeOcrTextName(file, index);
+    const outputPath = join(textDir, outputName);
+    await emitToolProgress(input, {
+      title: "OCR 进度",
+      content: `正在识别第 ${index + 1}/${imageFiles.length} 张图片：${file.name}`,
+      payload: {
+        tool: "image_ocr",
+        current: index + 1,
+        total: imageFiles.length,
+        fileName: file.name,
+        phase: "start"
+      }
+    });
+
+    if (!file.workspacePath) {
+      const operation: OcrOperation = {
+        source: file.name,
+        sourcePath: file.relativePath,
+        status: "skipped",
+        textLength: 0,
+        textPreview: "",
+        error: "缺少真实文件路径，只能生成 OCR 计划。"
+      };
+      operations.push(operation);
+      await emitToolProgress(input, {
+        title: "OCR 进度",
+        content: `已跳过第 ${index + 1}/${imageFiles.length} 张图片：${file.name}`,
+        payload: {
+          tool: "image_ocr",
+          current: index + 1,
+          total: imageFiles.length,
+          fileName: file.name,
+          status: operation.status,
+          phase: "finish"
+        }
+      });
+      continue;
+    }
+
+    if (!engine.available) {
+      const operation: OcrOperation = {
+        source: file.name,
+        sourcePath: file.relativePath,
+        status: "engine_missing",
+        language,
+        textLength: 0,
+        textPreview: "",
+        error: "当前环境未安装 tesseract OCR 引擎。"
+      };
+      operations.push(operation);
+      await emitToolProgress(input, {
+        title: "OCR 进度",
+        content: `OCR 引擎缺失，第 ${index + 1}/${imageFiles.length} 张图片已记录诊断：${file.name}`,
+        payload: {
+          tool: "image_ocr",
+          current: index + 1,
+          total: imageFiles.length,
+          fileName: file.name,
+          status: operation.status,
+          phase: "finish"
+        }
+      });
+      continue;
+    }
+
+    try {
+      const result = await tesseractOcr(file.workspacePath, language);
+      await writeFile(outputPath, result.text || "");
+      const operation: OcrOperation = {
+        source: file.name,
+        sourcePath: file.relativePath,
+        status: "extracted",
+        language: result.language,
+        textLength: result.text.length,
+        textPreview: result.text.slice(0, 300),
+        outputPath
+      };
+      operations.push(operation);
+      await emitToolProgress(input, {
+        title: "OCR 进度",
+        content: `已识别第 ${index + 1}/${imageFiles.length} 张图片：${file.name}，提取 ${operation.textLength} 个字符`,
+        payload: {
+          tool: "image_ocr",
+          current: index + 1,
+          total: imageFiles.length,
+          fileName: file.name,
+          status: operation.status,
+          textLength: operation.textLength,
+          phase: "finish"
+        }
+      });
+    } catch (error) {
+      const operation: OcrOperation = {
+        source: file.name,
+        sourcePath: file.relativePath,
+        status: "failed",
+        language,
+        textLength: 0,
+        textPreview: "",
+        error: error instanceof Error ? error.message : String(error)
+      };
+      operations.push(operation);
+      await emitToolProgress(input, {
+        title: "OCR 进度",
+        content: `第 ${index + 1}/${imageFiles.length} 张图片 OCR 失败：${file.name}`,
+        payload: {
+          tool: "image_ocr",
+          current: index + 1,
+          total: imageFiles.length,
+          fileName: file.name,
+          status: operation.status,
+          phase: "finish"
+        }
+      });
+    }
+  }
+
+  const extracted = operations.filter((operation) => operation.status === "extracted");
+  const report = JSON.stringify(
+    {
+      taskId: input.taskId,
+      generatedAt: new Date().toISOString(),
+      language,
+      engine: {
+        name: "tesseract",
+        available: engine.available,
+        version: engine.available ? engine.version : undefined,
+        reason: engine.available ? undefined : engine.reason
+      },
+      sourceFiles: imageFiles,
+      operations,
+      installHint: engine.available
+        ? undefined
+        : engine.installHint
+    },
+    null,
+    2
+  );
+  const csv = imageOcrCsv(operations);
+  const markdown = imageOcrMarkdown({
+    prompt: input.prompt,
+    language,
+    engineAvailable: engine.available,
+    engineVersion: engine.available ? engine.version : undefined,
+    operations
+  });
+  const textEntries = await Promise.all(
+    extracted.map(async (operation, index) => ({
+      name: `text/${safeOcrTextName({ name: operation.source, type: "txt", size: "", preview: "" }, index)}`,
+      data: await readFile(operation.outputPath as string)
+    }))
+  );
+  const zip = makeZip([
+    { name: "image-ocr-report.json", data: Buffer.from(report) },
+    { name: "image-ocr-report.csv", data: Buffer.from(csv) },
+    { name: "image-ocr-report.md", data: Buffer.from(markdown) },
+    ...textEntries
+  ]);
+
+  await writeFile(join(outputDir, "image-ocr-report.json"), report);
+  await writeFile(join(outputDir, "image-ocr-report.csv"), csv);
+  await writeFile(join(outputDir, "image-ocr-report.md"), markdown);
+  await writeFile(join(outputDir, "image-ocr-package.zip"), zip);
+
+  return {
+    toolName: "image_ocr",
+    ok: true,
+    observation: engine.available
+      ? `已对 ${imageFiles.length} 张上传图片执行 OCR，成功提取 ${extracted.length} 个文本结果，并生成 OCR 报告包。`
+      : `已生成 ${imageFiles.length} 张上传图片的 OCR 任务报告；当前环境未安装 tesseract，暂未执行真实文字识别。`,
+    payload: {
+      language,
+      engine,
+      sourceFiles: imageFiles,
+      operations,
+      generatedArtifacts: [
+        {
+          name: "image-ocr-report.json",
+          type: "json",
+          mimeType: "application/json; charset=utf-8",
+          content: report
+        },
+        {
+          name: "image-ocr-report.csv",
+          type: "csv",
+          mimeType: "text/csv; charset=utf-8",
+          content: csv
+        },
+        {
+          name: "image-ocr-report.md",
+          type: "md",
+          mimeType: "text/markdown; charset=utf-8",
+          content: markdown
+        },
+        {
+          name: "image-ocr-package.zip",
           type: "zip",
           mimeType: "application/zip",
           content: zip.toString("base64"),
@@ -2126,6 +2548,8 @@ export async function executeAgentTool(
       return runBatchFileOps(input);
     case "batch_image_process":
       return runBatchImageProcess(input);
+    case "image_ocr":
+      return runImageOcr(input);
     case "skill_runner":
       return runSkillRunner(input);
     case "python_execute":

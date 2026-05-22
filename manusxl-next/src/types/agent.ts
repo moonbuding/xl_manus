@@ -205,6 +205,7 @@ export interface ConfigResponse {
 export interface TaskTemplate {
   id: string;
   ownerId?: string;
+  isPublic?: boolean;
   name: string;
   description: string;
   promptTemplate: string;
@@ -220,6 +221,7 @@ export interface CreateTemplateRequest {
   promptTemplate: string;
   defaultModel?: string;
   tags?: string[];
+  isPublic?: boolean;
 }
 
 export interface AgentSkill {

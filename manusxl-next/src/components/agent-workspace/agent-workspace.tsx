@@ -93,6 +93,16 @@ const defaultSkills: AgentSkill[] = [
     validationStatus: "allowed"
   },
   {
+    id: "builtin-image-tools",
+    name: "image-tools",
+    description: "处理上传图片的压缩、缩放、格式转换和 OCR 文字识别。",
+    triggers: ["图片", "照片", "压缩", "缩放", "OCR", "文字识别", "发票", "名片"],
+    toolsRequired: ["batch_image_process", "image_ocr", "file_reader"],
+    source: "builtin",
+    enabled: true,
+    validationStatus: "allowed"
+  },
+  {
     id: "builtin-maps",
     name: "maps",
     description: "生成地点顺序、路线段、OpenStreetMap 链接和可下载地图式 HTML/JSON 交付物。",
@@ -157,6 +167,17 @@ interface SandboxSelfTestResult {
       fallbackUsed?: boolean;
     };
   };
+}
+
+interface OcrStatus {
+  engine: "tesseract";
+  available: boolean;
+  version?: string;
+  languages: string[];
+  missingLanguages: string[];
+  recommendedLanguages: string[];
+  installHint: string;
+  reason?: string;
 }
 
 function formatTime(value: string) {
@@ -359,6 +380,7 @@ export function AgentWorkspace() {
   const [billingSummary, setBillingSummary] = useState<BillingSummary | null>(null);
   const [sandboxStatus, setSandboxStatus] = useState<SandboxStatus | null>(null);
   const [sandboxSelfTest, setSandboxSelfTest] = useState<SandboxSelfTestResult | null>(null);
+  const [ocrStatus, setOcrStatus] = useState<OcrStatus | null>(null);
   const [templateRun, setTemplateRun] = useState<{
     template: TaskTemplate;
     variables: string[];
@@ -368,6 +390,7 @@ export function AgentWorkspace() {
   const [isUploadingFile, setIsUploadingFile] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [taskQuery, setTaskQuery] = useState("");
+  const [templateTagFilter, setTemplateTagFilter] = useState("all");
   const [settingsDraft, setSettingsDraft] = useState({
     apiKey: "",
     model: "deepseek-v4-flash",
@@ -420,6 +443,16 @@ export function AgentWorkspace() {
     );
   }, [taskQuery, tasks]);
 
+  const templateTags = useMemo(
+    () => Array.from(new Set(templates.flatMap((template) => template.tags))).sort(),
+    [templates]
+  );
+
+  const visibleTemplates = useMemo(() => {
+    if (templateTagFilter === "all") return templates;
+    return templates.filter((template) => template.tags.includes(templateTagFilter));
+  }, [templateTagFilter, templates]);
+
   const closeStream = useCallback(() => {
     eventSourceRef.current?.close();
     eventSourceRef.current = null;
@@ -471,6 +504,16 @@ export function AgentWorkspace() {
       setSandboxStatus(await readJson<SandboxStatus>(response));
     } catch {
       setSandboxStatus(null);
+    }
+  }, []);
+
+  const refreshOcrStatus = useCallback(async () => {
+    try {
+      const response = await fetch("/api/ocr/status", { cache: "no-store" });
+      if (!response.ok) return;
+      setOcrStatus(await readJson<OcrStatus>(response));
+    } catch {
+      setOcrStatus(null);
     }
   }, []);
 
@@ -588,6 +631,7 @@ export function AgentWorkspace() {
         void refreshMcpServers();
         void refreshBilling();
         void refreshSandboxStatus();
+        void refreshOcrStatus();
       });
       void fetch("/api/config", { cache: "no-store" })
         .then((response) => (response.ok ? readJson<ConfigResponse>(response) : null))
@@ -621,6 +665,7 @@ export function AgentWorkspace() {
     refreshAuthUser,
     refreshBilling,
     refreshMcpServers,
+    refreshOcrStatus,
     refreshSandboxStatus,
     resumePendingTasks,
     refreshSkills,
@@ -1142,7 +1187,10 @@ export function AgentWorkspace() {
     return (
       <>
         <TemplateList
-          templates={templates}
+          templates={visibleTemplates}
+          allTags={templateTags}
+          activeTag={templateTagFilter}
+          onTagChange={setTemplateTagFilter}
           canSave={activeTask?.status === "completed"}
           onSave={() => void saveActiveTaskAsTemplate()}
           onUse={useTemplate}
@@ -1379,6 +1427,14 @@ export function AgentWorkspace() {
 
           <section className="section-panel">
             <div className="panel-title">
+              <FileText size={14} />
+              OCR
+            </div>
+            {renderOcrPanel()}
+          </section>
+
+          <section className="section-panel">
+            <div className="panel-title">
               <Brain size={14} />
               Skills
             </div>
@@ -1511,6 +1567,60 @@ export function AgentWorkspace() {
               : sandboxSelfTest.resourceError?.message ?? sandboxSelfTest.error ?? "沙盒自检失败。"}
           </p>
         ) : null}
+      </div>
+    );
+  }
+
+  function renderOcrPanel() {
+    const statusLabel = ocrStatus ? (ocrStatus.available ? "ready" : "missing") : "loading";
+    const languageLabel = ocrStatus
+      ? ocrStatus.languages.length > 0
+        ? ocrStatus.languages.slice(0, 6).join(" / ")
+        : "no language data"
+      : "检查中";
+    const missingLabel =
+      ocrStatus && ocrStatus.missingLanguages.length > 0
+        ? `缺少 ${ocrStatus.missingLanguages.join(" / ")}`
+        : "推荐语言已就绪";
+
+    return (
+      <div className="sandbox-panel">
+        <div className="metric-list compact">
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">引擎</span>
+              <span className="metric-meta">{ocrStatus?.version ?? ocrStatus?.reason ?? "检查中"}</span>
+            </div>
+            <strong>{statusLabel}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">语言包</span>
+              <span className="metric-meta">{languageLabel}</span>
+            </div>
+            <strong>{ocrStatus?.missingLanguages.length ? "todo" : "ok"}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">建议</span>
+              <span className="metric-meta">
+                {ocrStatus?.available ? missingLabel : (ocrStatus?.installHint ?? "检查中")}
+              </span>
+            </div>
+            <strong>{ocrStatus?.available ? "识别" : "报告"}</strong>
+          </div>
+        </div>
+        <div className="panel-actions">
+          <button type="button" className="secondary-button" onClick={() => void refreshOcrStatus()}>
+            <RefreshCw size={15} />
+            刷新 OCR
+          </button>
+        </div>
+        <p className={`muted-note ${ocrStatus && !ocrStatus.available ? "error-note" : ""}`}>
+          {ocrStatus?.available
+            ? "上传图片任务会尝试真实 OCR，并把识别文本写入报告包。"
+            : "未安装 OCR 引擎时，任务会生成诊断报告和安装提示，不会中断主流程。"}
+        </p>
       </div>
     );
   }
@@ -2040,12 +2150,18 @@ function ArtifactList({ artifacts }: { artifacts: Artifact[] }) {
 
 function TemplateList({
   templates,
+  allTags,
+  activeTag,
+  onTagChange,
   canSave,
   onSave,
   onUse,
   onDelete
 }: {
   templates: TaskTemplate[];
+  allTags: string[];
+  activeTag: string;
+  onTagChange: (tag: string) => void;
   canSave: boolean;
   onSave: () => void;
   onUse: (template: TaskTemplate) => void;
@@ -2057,6 +2173,25 @@ function TemplateList({
         <BookmarkPlus size={15} />
         保存当前任务
       </button>
+      {allTags.length > 0 && (
+        <div className="template-tags" aria-label="模板标签筛选">
+          <button
+            className={activeTag === "all" ? "template-tag active" : "template-tag"}
+            onClick={() => onTagChange("all")}
+          >
+            全部
+          </button>
+          {allTags.slice(0, 10).map((tag) => (
+            <button
+              key={tag}
+              className={activeTag === tag ? "template-tag active" : "template-tag"}
+              onClick={() => onTagChange(tag)}
+            >
+              {tag}
+            </button>
+          ))}
+        </div>
+      )}
       {templates.length === 0 ? (
         <p className="muted-note">还没有模板。</p>
       ) : (
@@ -2066,16 +2201,25 @@ function TemplateList({
               <button className="template-main" onClick={() => onUse(template)}>
                 <span className="template-name">{template.name}</span>
                 <span className="template-meta">
-                  {template.tags.length > 0 ? template.tags.join(" · ") : "prompt template"}
+                  {[
+                    template.isPublic ? "公共" : "个人",
+                    template.tags.length > 0 ? template.tags.join(" · ") : "prompt template"
+                  ].join(" · ")}
                 </span>
               </button>
-              <button
-                className="icon-button"
-                aria-label={`删除模板 ${template.name}`}
-                onClick={() => onDelete(template.id)}
-              >
-                <Trash2 size={14} />
-              </button>
+              {template.isPublic ? (
+                <span className="template-lock" aria-label="公共模板不可删除">
+                  公
+                </span>
+              ) : (
+                <button
+                  className="icon-button"
+                  aria-label={`删除模板 ${template.name}`}
+                  onClick={() => onDelete(template.id)}
+                >
+                  <Trash2 size={14} />
+                </button>
+              )}
             </div>
           ))}
         </div>
