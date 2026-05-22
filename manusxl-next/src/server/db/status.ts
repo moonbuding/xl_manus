@@ -1,7 +1,13 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
 import { dataPath } from "@/server/data-root";
+import {
+  canUsePostgresRuntime,
+  checkPsqlCli,
+  postgresDatabaseUrl,
+  requestedDatabaseProvider
+} from "@/server/db/provider";
+import { getManusDb } from "@/server/sqlite";
 import type { DatabaseStatus, DatabaseTableCount } from "@/types/agent";
 
 const sqlitePath = dataPath("manusxl.sqlite");
@@ -18,10 +24,6 @@ const expectedTables = [
   "context_metrics"
 ];
 
-function normalizeProvider(value: string | undefined): "sqlite" | "postgres" {
-  return value?.trim().toLowerCase() === "postgres" ? "postgres" : "sqlite";
-}
-
 function quoteIdentifier(value: string) {
   return `"${value.replaceAll('"', '""')}"`;
 }
@@ -37,7 +39,7 @@ function maskDatabaseUrl(value: string | undefined) {
   }
 }
 
-function tableExists(db: DatabaseSync, table: string) {
+function tableExists(db: ReturnType<typeof getManusDb>, table: string) {
   const row = db
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
     .get(table);
@@ -49,30 +51,14 @@ function sqliteTableCounts(): DatabaseTableCount[] {
     return expectedTables.map((table) => ({ table, rows: 0 }));
   }
 
-  const db = new DatabaseSync(sqlitePath, { readOnly: true });
-  try {
-    return expectedTables.map((table) => {
-      if (!tableExists(db, table)) return { table, rows: 0 };
-      const row = db.prepare(`SELECT COUNT(*) AS count FROM ${quoteIdentifier(table)}`).get() as {
-        count: number;
-      };
-      return { table, rows: row.count };
-    });
-  } finally {
-    db.close();
-  }
-}
-
-function checkPsqlCli() {
-  const result = spawnSync("psql", ["--version"], {
-    encoding: "utf8",
-    timeout: 3000,
-    stdio: "pipe"
+  const db = getManusDb();
+  return expectedTables.map((table) => {
+    if (!tableExists(db, table)) return { table, rows: 0 };
+    const row = db.prepare(`SELECT COUNT(*) AS count FROM ${quoteIdentifier(table)}`).get() as {
+      count: number;
+    };
+    return { table, rows: row.count };
   });
-  if (result.status !== 0) {
-    return { available: false, version: undefined };
-  }
-  return { available: true, version: result.stdout.trim() };
 }
 
 function checkPostgresSchema(databaseUrl: string | undefined) {
@@ -113,10 +99,11 @@ function checkPostgresSchema(databaseUrl: string | undefined) {
 }
 
 export function getDatabaseStatus(options: { checkPostgres?: boolean } = {}): DatabaseStatus {
-  const requestedProvider = normalizeProvider(process.env.MANUSXL_DATABASE_PROVIDER);
-  const databaseUrl = process.env.DATABASE_URL;
+  const requestedProvider = requestedDatabaseProvider();
+  const databaseUrl = postgresDatabaseUrl();
   const sqliteTables = sqliteTableCounts();
   const psql = checkPsqlCli();
+  const activeProvider = canUsePostgresRuntime(psql) ? "postgres" : "sqlite";
   const postgresCheck =
     options.checkPostgres && psql.available
       ? checkPostgresSchema(databaseUrl)
@@ -128,11 +115,13 @@ export function getDatabaseStatus(options: { checkPostgres?: boolean } = {}): Da
 
   return {
     requestedProvider,
-    activeProvider: "sqlite",
-    runtimePostgresReady: false,
+    activeProvider,
+    runtimePostgresReady: activeProvider === "postgres",
     note:
-      requestedProvider === "postgres"
-        ? "PostgreSQL schema 和迁移脚本已就绪，运行时数据层仍在使用 SQLite，待完成 PG adapter 接入。"
+      activeProvider === "postgres"
+        ? "任务、步骤和交付物元数据会写入 PostgreSQL；其余配置类表会继续分阶段迁移。"
+        : requestedProvider === "postgres"
+          ? "已请求 PostgreSQL，但缺少 DATABASE_URL 或 psql CLI，当前回退 SQLite。"
         : "当前开发模式使用 SQLite；PostgreSQL 迁移可先 dry-run 或生成 SQL。",
     sqlite: {
       path: sqlitePath,

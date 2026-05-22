@@ -125,7 +125,9 @@ As a 想让多个用户同时跑任务的运维者，I want 数据库不会因�
 - 新增 `npm run db:pg:dry-run`、`npm run db:pg:emit-sql`、`npm run db:pg:migrate` 与 `npm run e2e:pg-migration`。
 - `docker-compose.yml` 已加入 `postgres:16` 服务与持久化卷，`.env.local.example` 保留 `MANUSXL_DATABASE_PROVIDER=sqlite` 作为当前开发模式默认值。
 - 新增 `/api/database/status` 与 Settings / 数据库面板，展示当前 provider、SQLite 待迁移行数、PostgreSQL CLI/schema 检查结果和迁移命令；新增 `npm run e2e:database-status`。
-- 待完成：运行时数据层从 `node:sqlite` 抽象到 SQLite/PG 双后端，并在真实 PG 上执行 clean schema + 10 并发写入验收。
+- 新增任务存储第一阶段 runtime adapter：当 `MANUSXL_DATABASE_PROVIDER=postgres`、`DATABASE_URL` 与 `psql` 可用时，tasks、task_steps、task_files 会通过 PostgreSQL schema 写入；不可用时安全回退 SQLite。
+- Dockerfile 已内置 `postgresql-client` 并复制 `db/postgres` schema，支持容器内初始化 PG 任务表。
+- 待完成：认证、配置、上传文件索引、MCP/Skill/模板、Context 指标等剩余表从 `node:sqlite` 抽象到 SQLite/PG 双后端，并在真实 PG 上执行 clean schema + 10 并发写入验收。
 
 ---
 
