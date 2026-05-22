@@ -135,6 +135,8 @@ As a 想让多个用户同时跑任务的运维者，I want 数据库不会因�
 - 新增 Skill 设置 runtime adapter：skill_settings 按 provider 切换，覆盖内置/本地 Skill 启用状态、用户隔离和未知工具阻断后的开关读取；不可用时安全回退 SQLite。
 - 新增 MCP Server runtime adapter：mcp_servers 按 provider 切换，覆盖 server 新增/刷新/启停/删除、工具级禁用和 Agent `mcp_call` 读取路径；不可用时安全回退 SQLite。
 - Dockerfile 已内置 `postgresql-client` 并复制 `db/postgres` schema，支持容器内初始化 PG 任务表。
+- PostgreSQL 客户端探测已支持 `MANUSXL_PSQL_BIN`，并自动识别 macOS 常见安装路径 `/Library/PostgreSQL/17/bin/psql`、`/Library/PostgreSQL/16/bin/psql`、Homebrew `psql`，数据库状态页和迁移脚本会显示本机可用客户端。
+- 新增 `npm run e2e:pg-concurrency`，在真实 PostgreSQL 上创建独立临时 schema，执行 clean schema 初始化，并用 10 个并发 writer 写入 `task_steps` 验证无 SQLite 式写锁；需要设置 `MANUSXL_PG_E2E_DATABASE_URL` 或 `DATABASE_URL`。
 - 待完成：在真实 PG 上执行 clean schema + 10 并发写入验收，并根据结果决定是否把 REQ-101 状态切为 Completed。
 
 ---
@@ -726,8 +728,10 @@ As a 已经登录了 The Information / Bloomberg / 知网的用户，I want Agen
 - 新增 `browser_extension/` Manifest V3 开发扩展，可在 Chrome 开发者模式加载；Web 端可生成 5 分钟一次性配对码，扩展输入配对码后获得本地令牌并显示暂停状态与最近操作。
 - 新增 `/api/local-browser/pairing`、`/api/local-browser/pairing/verify`、`/api/local-browser/extension/status`，覆盖 Web 端生成配对码、扩展无 Cookie 验证配对、扩展轮询操作状态。
 - 新增 `/api/local-browser/extension/safety`，配对扩展可在 popup 中一键暂停/恢复本地浏览器操作。
-- 新增 `npm run e2e:local-browser`，覆盖未登录保护、非 localhost 地址拦截、CDP 状态、标签页列表、extension pairing、extension pause、allowlist 保存、pause guard、snapshot、screenshot 和 action guard。
-- 待补：扩展侧逐操作确认弹窗、真实付费站点/验证码场景验收。
+- 新增扩展侧逐操作确认：`navigate/click/type/press` 执行前会生成 pending approval，配对扩展 popup 可逐条允许/拒绝；未配对扩展、拒绝或超时都会阻止真实 CDP 动作。
+- 新增 `/api/local-browser/extension/approval`，扩展可无 Cookie 处理待确认操作，审计记录会显示 `pending_approval` / `approved` / `blocked` 状态。
+- 新增 `npm run e2e:local-browser`，覆盖未登录保护、非 localhost 地址拦截、CDP 状态、标签页列表、extension pairing、extension approval guard、extension pause、allowlist 保存、pause guard、snapshot、screenshot 和 action guard。
+- 待补：真实付费站点/验证码场景验收。
 
 #### 相关 OpenManus 代码
 - 可复用：[OpenManus-main/app/tool/browser_use_tool.py](../OpenManus-main/app/tool/browser_use_tool.py) — `wss_url`/`cdp_url` 已支持远程浏览器

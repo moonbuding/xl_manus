@@ -621,7 +621,8 @@ export function AgentWorkspace() {
       setLocalBrowserEndpoint(data.status.endpoint);
       setLocalBrowserSafety({
         paused: Boolean(data.status.paused),
-        recentOperations: data.status.recentOperations ?? []
+        recentOperations: data.status.recentOperations ?? [],
+        pendingApprovals: []
       });
     } catch {
       setLocalBrowserStatus(null);
@@ -2030,6 +2031,7 @@ export function AgentWorkspace() {
         : localBrowserStatus.error ?? "未检测到本地 Chrome CDP"
       : "尚未检测";
     const browserPaused = Boolean(localBrowserSafety?.paused ?? localBrowserStatus?.paused);
+    const pendingApprovals = localBrowserSafety?.pendingApprovals ?? [];
     const recentOperations =
       localBrowserSafety?.recentOperations ?? localBrowserStatus?.recentOperations ?? [];
     const pairedDeviceCount = localBrowserPairing?.pairedDevices.length ?? 0;
@@ -2075,10 +2077,14 @@ export function AgentWorkspace() {
             <div>
               <span className="metric-name">安全开关</span>
               <span className="metric-meta">
-                {browserPaused ? "已暂停所有本地浏览器动作" : "允许已授权域名动作"}
+                {browserPaused
+                  ? "已暂停所有本地浏览器动作"
+                  : pendingApprovals.length
+                    ? `${pendingApprovals.length} 个操作等待扩展确认`
+                    : "允许已授权域名动作"}
               </span>
             </div>
-            <strong>{browserPaused ? "paused" : "active"}</strong>
+            <strong>{browserPaused ? "paused" : pendingApprovals.length ? "pending" : "active"}</strong>
           </div>
           <div className="metric-item">
             <div>
@@ -2183,6 +2189,19 @@ export function AgentWorkspace() {
                   <small>last seen {new Date(device.lastSeenAt).toLocaleTimeString()}</small>
                 </div>
                 <strong className="operation-status is-completed">paired</strong>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {pendingApprovals.length > 0 ? (
+          <div className="browser-operation-list">
+            {pendingApprovals.slice(0, 5).map((approval) => (
+              <div className="browser-operation-item" key={approval.id}>
+                <div>
+                  <span>{approval.description || approval.action}</span>
+                  <small>{approval.title || approval.url || approval.id}</small>
+                </div>
+                <strong className="operation-status is-pending_approval">pending</strong>
               </div>
             ))}
           </div>

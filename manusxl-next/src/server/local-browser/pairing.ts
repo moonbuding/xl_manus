@@ -148,6 +148,11 @@ export function resolveLocalBrowserPairingToken(token?: string) {
   return device;
 }
 
+export function hasLocalBrowserPairedDevice(ownerId: string | undefined) {
+  if (!ownerId) return false;
+  return deviceRecords().some((candidate) => candidate.ownerId === ownerId);
+}
+
 export function getLocalBrowserExtensionState(token?: string): LocalBrowserPairingVerifyResponse {
   const device = resolveLocalBrowserPairingToken(token);
   if (!device) {

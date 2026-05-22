@@ -293,7 +293,13 @@ export interface LocalBrowserScreenshot {
 
 export type LocalBrowserActionType = "navigate" | "click" | "type" | "press";
 
-export type LocalBrowserOperationStatus = "started" | "completed" | "blocked" | "failed";
+export type LocalBrowserOperationStatus =
+  | "started"
+  | "pending_approval"
+  | "approved"
+  | "completed"
+  | "blocked"
+  | "failed";
 
 export interface LocalBrowserOperation {
   id: string;
@@ -309,9 +315,28 @@ export interface LocalBrowserOperation {
   updatedAt: string;
 }
 
+export type LocalBrowserApprovalStatus = "pending" | "approved" | "rejected" | "expired";
+
+export interface LocalBrowserApprovalRequest {
+  id: string;
+  operationId: string;
+  ownerId?: string;
+  source: "agent" | "settings" | "api";
+  action: LocalBrowserActionType;
+  status: LocalBrowserApprovalStatus;
+  title?: string;
+  url?: string;
+  tabId?: string;
+  description?: string;
+  requestedAt: string;
+  expiresAt: string;
+  decidedAt?: string;
+}
+
 export interface LocalBrowserSafetyState {
   paused: boolean;
   recentOperations: LocalBrowserOperation[];
+  pendingApprovals: LocalBrowserApprovalRequest[];
 }
 
 export interface LocalBrowserPairedDevice {

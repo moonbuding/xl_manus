@@ -92,7 +92,8 @@ button.secondary {
 }
 
 .row,
-.operation {
+.operation,
+.approval {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -105,24 +106,49 @@ button.secondary {
   gap: 8px;
 }
 
-.operation {
+.operation,
+.approval {
   border-top: 1px solid #edf2ed;
   padding-top: 7px;
 }
 
-.operation:first-child {
+.operation:first-child,
+.approval:first-child {
   border-top: 0;
   padding-top: 0;
 }
 
-.operation div {
+.operation div,
+.approval div {
   min-width: 0;
 }
 
 .operation span,
-.operation small {
+.operation small,
+.approval span,
+.approval small {
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.approval {
+  align-items: flex-start;
+}
+
+.approval-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.approval-actions button {
+  padding: 6px 8px;
+}
+
+.approval-actions button.reject {
+  border-color: #d4dfd4;
+  background: #f8fbf8;
+  color: #1d251f;
 }

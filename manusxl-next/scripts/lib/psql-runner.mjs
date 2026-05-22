@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 
 function postgresDockerImage() {
   return process.env.MANUSXL_PSQL_DOCKER_IMAGE?.trim() || "postgres:16";
@@ -16,16 +17,34 @@ function dockerReachableDatabaseUrl(databaseUrl) {
   }
 }
 
+function localPsqlCandidates() {
+  return [
+    process.env.MANUSXL_PSQL_BIN?.trim(),
+    "psql",
+    "/Library/PostgreSQL/17/bin/psql",
+    "/Library/PostgreSQL/16/bin/psql",
+    "/opt/homebrew/bin/psql",
+    "/usr/local/bin/psql"
+  ].filter(Boolean);
+}
+
+function canTryPsqlCandidate(candidate) {
+  return !candidate.includes("/") || existsSync(candidate);
+}
+
 function checkLocalPsql() {
-  const result = spawnSync("psql", ["--version"], {
-    encoding: "utf8",
-    timeout: 3000,
-    stdio: "pipe"
-  });
-  if (result.status !== 0) {
-    return { available: false, error: (result.stderr || result.stdout || "本机未找到 psql CLI").trim() };
+  for (const candidate of localPsqlCandidates()) {
+    if (!canTryPsqlCandidate(candidate)) continue;
+    const result = spawnSync(candidate, ["--version"], {
+      encoding: "utf8",
+      timeout: 3000,
+      stdio: "pipe"
+    });
+    if (result.status === 0) {
+      return { available: true, source: "local", version: result.stdout.trim(), bin: candidate };
+    }
   }
-  return { available: true, source: "local", version: result.stdout.trim() };
+  return { available: false, error: "本机未找到 psql CLI" };
 }
 
 function checkDockerPsql() {
@@ -85,7 +104,7 @@ export function runPsql(databaseUrl, args, options = {}) {
             stdio: "pipe"
           }
         )
-      : spawnSync("psql", [databaseUrl, "-v", "ON_ERROR_STOP=1", ...args], {
+      : spawnSync(client.bin ?? "psql", [databaseUrl, "-v", "ON_ERROR_STOP=1", ...args], {
           encoding: "utf8",
           timeout: options.timeoutMs ?? 30_000,
           stdio: "pipe"
@@ -95,4 +114,29 @@ export function runPsql(databaseUrl, args, options = {}) {
     throw new Error((result.stderr || result.stdout || "psql 执行失败").trim());
   }
   return result.stdout.trim();
+}
+
+export function buildPsqlCommand(databaseUrl, args, client = checkPsqlClient()) {
+  if (!client.available) {
+    throw new Error(client.error ?? "未找到可用的 psql 客户端");
+  }
+  if (client.source === "docker") {
+    return {
+      command: "docker",
+      args: [
+        "run",
+        "--rm",
+        postgresDockerImage(),
+        "psql",
+        dockerReachableDatabaseUrl(databaseUrl),
+        "-v",
+        "ON_ERROR_STOP=1",
+        ...args
+      ]
+    };
+  }
+  return {
+    command: client.bin ?? "psql",
+    args: [databaseUrl, "-v", "ON_ERROR_STOP=1", ...args]
+  };
 }

@@ -4,6 +4,7 @@ import {
   resolveLocalBrowserPairingToken
 } from "@/server/local-browser/pairing";
 import {
+  getLocalBrowserSafetyStateForOwner,
   recordLocalBrowserOperation,
   setLocalBrowserPaused
 } from "@/server/local-browser/audit";
@@ -29,10 +30,10 @@ export async function PATCH(request: Request) {
     status: paused ? "blocked" : "completed",
     title: paused ? `${device.name} 暂停本地浏览器操作` : `${device.name} 恢复本地浏览器操作`
   });
-  const safety = setLocalBrowserPaused(paused);
+  setLocalBrowserPaused(paused);
   return NextResponse.json({
     paired: true,
     device: getLocalBrowserExtensionState(body.token).device,
-    safety
+    safety: getLocalBrowserSafetyStateForOwner(device.ownerId)
   });
 }

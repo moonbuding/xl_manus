@@ -1259,6 +1259,14 @@ a {
   color: var(--sage);
 }
 
+.operation-status.is-approved {
+  color: var(--sage);
+}
+
+.operation-status.is-pending_approval {
+  color: #8a6d1f;
+}
+
 .operation-status.is-blocked,
 .operation-status.is-failed {
   color: #9f2a22;

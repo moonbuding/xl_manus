@@ -8,12 +8,12 @@ export const dynamic = "force-dynamic";
 export async function GET(request: Request) {
   const user = requireAuth(request);
   if (user instanceof NextResponse) return user;
-  return NextResponse.json(await listLocalBrowserTabs());
+  return NextResponse.json(await listLocalBrowserTabs(undefined, user.id));
 }
 
 export async function POST(request: Request) {
   const user = requireAuth(request);
   if (user instanceof NextResponse) return user;
   const body = (await request.json().catch(() => ({}))) as { endpoint?: string };
-  return NextResponse.json(await listLocalBrowserTabs(body.endpoint));
+  return NextResponse.json(await listLocalBrowserTabs(body.endpoint, user.id));
 }

@@ -8,10 +8,14 @@ import type {
 } from "@/types/agent";
 import { getLocalBrowserDomainAllowlist, isLocalBrowserPaused } from "@/server/config/app-config";
 import {
+  createLocalBrowserApprovalRequest,
   listLocalBrowserOperations,
+  listLocalBrowserOperationsForOwner,
   recordLocalBrowserOperation,
-  updateLocalBrowserOperation
+  updateLocalBrowserOperation,
+  waitForLocalBrowserApproval
 } from "@/server/local-browser/audit";
+import { hasLocalBrowserPairedDevice } from "@/server/local-browser/pairing";
 
 const defaultCdpEndpoint = "http://127.0.0.1:9222";
 const allowedHosts = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
@@ -31,11 +35,13 @@ export function normalizeLocalBrowserEndpoint(endpoint?: string) {
   return url.toString().replace(/\/$/, "");
 }
 
-export async function getLocalBrowserStatus(endpoint?: string): Promise<LocalBrowserStatus> {
+export async function getLocalBrowserStatus(endpoint?: string, ownerId?: string): Promise<LocalBrowserStatus> {
   const checkedAt = new Date().toISOString();
   const allowlistConfigured = allowedSnapshotHosts().size > 0;
   const paused = isLocalBrowserPaused();
-  const recentOperations = listLocalBrowserOperations(10);
+  const recentOperations = ownerId
+    ? listLocalBrowserOperationsForOwner(ownerId, 10)
+    : listLocalBrowserOperations(10);
   let normalizedEndpoint: string;
   try {
     normalizedEndpoint = normalizeLocalBrowserEndpoint(endpoint);
@@ -115,8 +121,8 @@ async function fetchJson<T>(url: string, timeoutMs = 2500) {
   }
 }
 
-export async function listLocalBrowserTabs(endpoint?: string) {
-  const status = await getLocalBrowserStatus(endpoint);
+export async function listLocalBrowserTabs(endpoint?: string, ownerId?: string) {
+  const status = await getLocalBrowserStatus(endpoint, ownerId);
   if (!status.connected) {
     return { status, tabs: [] as LocalBrowserTab[] };
   }
@@ -223,6 +229,20 @@ function normalizeAction(action?: string): LocalBrowserActionType | "unknown" {
   return "unknown";
 }
 
+function describeLocalBrowserAction(input: {
+  action: LocalBrowserActionType;
+  url?: string | null;
+  x?: number;
+  y?: number;
+  text?: string;
+  key?: string;
+}) {
+  if (input.action === "navigate") return `打开 ${input.url ?? "目标网页"}`;
+  if (input.action === "click") return `点击坐标 ${input.x ?? "?"}, ${input.y ?? "?"}`;
+  if (input.action === "type") return `输入 ${String(input.text ?? "").slice(0, 80) || "文本"}`;
+  return `按下 ${input.key || "按键"}`;
+}
+
 function getTargetUrlForAction(urlValue?: string) {
   if (!urlValue?.trim()) return null;
   try {
@@ -286,7 +306,7 @@ export async function snapshotLocalBrowserTab(input: {
     source: input.source,
     action: "snapshot"
   });
-  const { status, tabs } = await listLocalBrowserTabs(input.endpoint);
+  const { status, tabs } = await listLocalBrowserTabs(input.endpoint, input.ownerId);
   const tab = input.tabId ? tabs.find((candidate) => candidate.id === input.tabId) : tabs[0];
   if (!status.connected) {
     updateLocalBrowserOperation(operation.id, {
@@ -399,7 +419,7 @@ export async function screenshotLocalBrowserTab(input: {
     source: input.source,
     action: "screenshot"
   });
-  const { status, tabs } = await listLocalBrowserTabs(input.endpoint);
+  const { status, tabs } = await listLocalBrowserTabs(input.endpoint, input.ownerId);
   const tab = input.tabId ? tabs.find((candidate) => candidate.id === input.tabId) : tabs[0];
   if (!status.connected) {
     updateLocalBrowserOperation(operation.id, {
@@ -581,7 +601,7 @@ export async function runLocalBrowserAction(input: {
     }
   }
 
-  const { status, tabs } = await listLocalBrowserTabs(input.endpoint);
+  const { status, tabs } = await listLocalBrowserTabs(input.endpoint, input.ownerId);
   const tab = input.tabId ? tabs.find((candidate) => candidate.id === input.tabId) : tabs[0];
   if (!status.connected) {
     updateLocalBrowserOperation(operation.id, {
@@ -628,6 +648,65 @@ export async function runLocalBrowserAction(input: {
       allowed: false,
       ok: false,
       error: "当前域名未加入本地浏览器 allowlist，已阻止浏览器动作。"
+    };
+  }
+
+  if (!hasLocalBrowserPairedDevice(input.ownerId)) {
+    updateLocalBrowserOperation(operation.id, {
+      status: "blocked",
+      title: tab.title,
+      url: targetUrl || tab.url,
+      tabId: tab.id,
+      error: "需要先配对本地浏览器扩展确认操作"
+    });
+    return {
+      endpoint: status.endpoint,
+      tabId: tab.id,
+      title: tab.title,
+      url: targetUrl || tab.url,
+      action,
+      allowed: false,
+      ok: false,
+      error: "需要先配对本地浏览器扩展，并在扩展中确认本次操作。"
+    };
+  }
+
+  const approval = createLocalBrowserApprovalRequest({
+    ownerId: input.ownerId,
+    operationId: operation.id,
+    source: input.source,
+    action,
+    title: tab.title,
+    url: targetUrl || tab.url,
+    tabId: tab.id,
+    description: describeLocalBrowserAction({
+      action,
+      url: targetUrl,
+      x: input.x,
+      y: input.y,
+      text: input.text,
+      key: input.key
+    })
+  });
+  const approvalDecision = await waitForLocalBrowserApproval(approval.id);
+  if (approvalDecision?.status !== "approved") {
+    const reason = approvalDecision?.status === "rejected" ? "扩展拒绝执行" : "扩展确认超时";
+    updateLocalBrowserOperation(operation.id, {
+      status: "blocked",
+      title: tab.title,
+      url: targetUrl || tab.url,
+      tabId: tab.id,
+      error: reason
+    });
+    return {
+      endpoint: status.endpoint,
+      tabId: tab.id,
+      title: tab.title,
+      url: targetUrl || tab.url,
+      action,
+      allowed: false,
+      ok: false,
+      error: `${reason}，本地浏览器动作未执行。`
     };
   }
 

@@ -110,6 +110,20 @@ async function main() {
   const extensionStatusBody = await extensionStatus.json();
   assert(extensionStatus.ok, "本地浏览器扩展状态接口失败");
   assert(extensionStatusBody.paired === true, "本地浏览器扩展状态未识别配对 token");
+  assert(
+    Array.isArray(extensionStatusBody.safety?.pendingApprovals),
+    "本地浏览器扩展状态缺少 pendingApprovals"
+  );
+  const missingApproval = await fetch(url("/api/local-browser/extension/approval"), {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      token: verifiedPairingBody.token,
+      approvalId: "lbap_missing",
+      approved: true
+    })
+  });
+  assert(missingApproval.status === 404, "不存在的扩展确认请求应返回 404");
   const extensionPaused = await fetch(url("/api/local-browser/extension/safety"), {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
@@ -250,6 +264,7 @@ async function main() {
       "cdp status",
       "tabs",
       "extension pairing",
+      "extension approval guard",
       "extension pause",
       "allowlist config",
       "pause guard",

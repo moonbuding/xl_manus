@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 
 export type ManusDatabaseProvider = "sqlite" | "postgres";
 export type PsqlClientSource = "local" | "docker";
@@ -7,6 +8,7 @@ export interface PsqlCliStatus {
   available: boolean;
   version?: string;
   source?: PsqlClientSource;
+  bin?: string;
   error?: string;
 }
 
@@ -20,16 +22,34 @@ export function postgresDatabaseUrl() {
   return process.env.DATABASE_URL?.trim() || undefined;
 }
 
+function localPsqlCandidates() {
+  return [
+    process.env.MANUSXL_PSQL_BIN?.trim(),
+    "psql",
+    "/Library/PostgreSQL/17/bin/psql",
+    "/Library/PostgreSQL/16/bin/psql",
+    "/opt/homebrew/bin/psql",
+    "/usr/local/bin/psql"
+  ].filter(Boolean) as string[];
+}
+
+function canTryPsqlCandidate(candidate: string) {
+  return !candidate.includes("/") || existsSync(candidate);
+}
+
 function checkLocalPsqlCli(): PsqlCliStatus {
-  const result = spawnSync("psql", ["--version"], {
-    encoding: "utf8",
-    timeout: 3000,
-    stdio: "pipe"
-  });
-  if (result.status !== 0) {
-    return { available: false, error: (result.stderr || result.stdout || "本机未找到 psql CLI").trim() };
+  for (const candidate of localPsqlCandidates()) {
+    if (!canTryPsqlCandidate(candidate)) continue;
+    const result = spawnSync(candidate, ["--version"], {
+      encoding: "utf8",
+      timeout: 3000,
+      stdio: "pipe"
+    });
+    if (result.status === 0) {
+      return { available: true, version: result.stdout.trim(), source: "local", bin: candidate };
+    }
   }
-  return { available: true, version: result.stdout.trim(), source: "local" };
+  return { available: false, error: "本机未找到 psql CLI" };
 }
 
 function checkDockerPsqlCli(): PsqlCliStatus {
@@ -124,7 +144,7 @@ export function runPsql(args: string[], options: {
             stdio: ["pipe", "pipe", "pipe"]
           }
         )
-      : spawnSync("psql", [databaseUrl, "-v", "ON_ERROR_STOP=1", "-X", "-q", ...args], {
+      : spawnSync(psql.bin ?? "psql", [databaseUrl, "-v", "ON_ERROR_STOP=1", "-X", "-q", ...args], {
           encoding: "utf8",
           timeout,
           maxBuffer,
