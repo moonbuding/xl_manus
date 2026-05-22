@@ -3,11 +3,7 @@ import { appendFile, cp, mkdir, readFile, stat, writeFile } from "node:fs/promis
 import { basename, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { makeZip } from "@/server/artifacts/generators";
-import {
-  listUploadedFileRecords,
-  materializeUploadedFileRecord,
-  type UploadedFileRecord
-} from "@/server/files/readers";
+import { listUploadedFileRecords, type UploadedFileRecord } from "@/server/files/readers";
 import { getOcrStatus } from "@/server/ocr/status";
 import {
   runLocalBrowserAction,
@@ -15,7 +11,6 @@ import {
   snapshotLocalBrowserTab
 } from "@/server/local-browser/cdp";
 import {
-  createMyComputerSyncUploadOperation,
   createMyComputerSystemOperation,
   getMyComputerStatus,
   planMyComputerFileOperation
@@ -766,23 +761,6 @@ async function runMyComputer(input: AgentToolInput): Promise<AgentToolResult> {
     };
   }
 
-  if (/上传到云端|同步到云端|send to cloud|cloud sync|文件同步/.test(lower)) {
-    const sourcePath =
-      joinedPrompt.match(/(?:上传到云端|同步到云端|send to cloud|cloud sync|文件同步)\s*[:：]?\s*([^\n，。；;]+)/i)?.[1]?.trim() ??
-      root;
-    const operation = await createMyComputerSyncUploadOperation({
-      ownerId: input.ownerId,
-      sourcePath,
-      dryRun: true
-    });
-    return {
-      toolName: "my_computer",
-      ok: true,
-      observation: `已创建本机文件同步授权请求：${operation.target}。允许后才会加密进入云端上传库，默认 7 天过期。`,
-      payload: { status, operation } as unknown as Record<string, unknown>
-    };
-  }
-
   if (/terminal|本机命令|终端命令|命令执行|执行命令/.test(lower)) {
     const command =
       joinedPrompt.match(/(?:执行命令|终端命令|本机命令|terminal)\s*[:：]?\s*([a-z0-9._-]+(?:\s+[^\n，。；;]*)?)/i)?.[1]?.trim() ??
@@ -922,7 +900,7 @@ async function materializeUploadedFiles(input: AgentToolInput) {
     const fileName = safeUploadedFilename(record, index);
     const workspacePath = join(uploadDir, fileName);
     const relativePath = `tmp/uploads/${fileName}`;
-    await materializeUploadedFileRecord(record, workspacePath);
+    await cp(record.storedPath, workspacePath, { force: true });
     files.push(uploadedRecordToEntry(record, { workspacePath, relativePath }));
   }
 

@@ -229,7 +229,7 @@ As a 想让 AI 用 Excel 处理一份本地表格的用户，I want AI 能启动
 ---
 
 ### REQ-204：桌面端 → 云端文件同步（选择性上传，隐私可控）
-**模块**: M08 | **状态**: In Progress | **工作量**: 3-5 人天
+**模块**: M08 | **状态**: Planning | **工作量**: 3-5 人天
 
 #### 背景与价值
 桌面端处理过的文件经常需要让云端进一步加工（如本地 OCR 后让云端 LLM 总结）。需要明确的"选择性上传"机制：默认本地处理本地，必要时用户主动允许上传。
@@ -246,16 +246,10 @@ As a 担心隐私的用户，I want 本机文件默认不上传云端，但我�
 - 非功能：100MB 文件上传 < 30 秒（千兆网）
 
 #### 验收标准
-- [x] 右键文件选"Send to Cloud"后云端 Library 可见（MVP：Web Settings / My Computer 输入本机路径并生成 Send to Cloud 授权）
-- [x] AI 请求上传时用户能 Approve/Deny（已复用 My Computer 动作级授权队列）
-- [x] 上传文件 7 天后自动从云端删除（上传记录带 `expiresAt`，列表读取时自动清理过期文件）
-- [x] 加密传输（HTTPS）+ 加密存储（MVP：本地开发走同源请求；My Computer 同步文件使用 AES-256-GCM 加密落盘）
-
-#### 实现记录
-- 2026-05-23：新增 `/api/my-computer/sync`，本机允许目录内文件会先生成 `file_sync_upload` 授权请求，用户允许后才进入上传库。
-- 2026-05-23：新增 `/api/files` 云端文件列表；Library 页面展示最近云端文件，并可一键加入下一次任务附件。
-- 2026-05-23：My Computer 同步文件默认 7 天 TTL，上传库读取时会清理过期文件；同步文件落盘使用 AES-256-GCM，加密 key 存在 `.manusxl-data/secrets/upload-key.hex` 或环境变量 `MANUSXL_UPLOAD_ENCRYPTION_KEY`。
-- 2026-05-23：参考 OpenManus 文件交付链路（workspace 隔离 + 上传文件 materialize），Agent 创建任务时会将加密同步文件解密到当前任务 workspace。
+- [ ] 右键文件选"Send to Cloud"后云端 Library 可见
+- [ ] AI 请求上传时用户能 Approve/Deny
+- [ ] 上传文件 7 天后自动从云端删除
+- [ ] 加密传输（HTTPS）+ 加密存储
 
 #### 相关 OpenManus 代码
 - 需新建：`app/api/file_sync_routes.py`、`desktop/src/sync/`

@@ -136,7 +136,6 @@ export type MyComputerOperationKind =
   | "file_rename"
   | "file_move"
   | "file_undo"
-  | "file_sync_upload"
   | "app_launch"
   | "clipboard_write"
   | "clipboard_read"
