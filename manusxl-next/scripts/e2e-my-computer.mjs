@@ -1,10 +1,7 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 
 const baseUrl = process.env.MANUSXL_E2E_BASE_URL ?? "http://localhost:3001";
-const execFileAsync = promisify(execFile);
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -171,11 +168,19 @@ async function main() {
     });
     assert(approvedCalculator.body.operation.status === "completed", "Calculator 授权启动后未完成");
     assert(approvedCalculator.body.operation.result?.launched === "Calculator", "Calculator 启动结果不正确");
-    try {
-      await execFileAsync("osascript", ["-e", 'tell application "Calculator" to quit'], { timeout: 4000 });
-    } catch {
-      // Cleanup is best-effort; launch verification above is the actual assertion.
-    }
+    const calculatorQuit = await client.fetchJson("/api/my-computer/actions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "app_quit", target: "Calculator", dryRun: true })
+    });
+    assert(calculatorQuit.body.operation.status === "pending_approval", "Calculator 关闭应等待授权");
+    const approvedCalculatorQuit = await client.fetchJson("/api/my-computer/approvals", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ operationId: calculatorQuit.body.operation.id, decision: "allow_once" })
+    });
+    assert(approvedCalculatorQuit.body.operation.status === "completed", "Calculator 授权关闭后未完成");
+    assert(approvedCalculatorQuit.body.operation.result?.quit === "Calculator", "Calculator 关闭结果不正确");
   }
 
   const clipboard = await client.fetchJson("/api/my-computer/actions", {
@@ -292,6 +297,7 @@ async function main() {
       "content dedupe dry-run",
       "app launch authorization",
       ...(process.platform === "darwin" ? ["calculator launch execution"] : []),
+      ...(process.platform === "darwin" ? ["calculator quit execution"] : []),
       "clipboard read/write execution",
       "persistent always allow",
       "mouse authorization",

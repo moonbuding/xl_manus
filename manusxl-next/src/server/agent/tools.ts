@@ -779,6 +779,24 @@ async function runMyComputer(input: AgentToolInput): Promise<AgentToolResult> {
     };
   }
 
+  if (/关闭.*应用|退出.*应用|quit app|close app/.test(lower)) {
+    const appName =
+      joinedPrompt.match(/(?:关闭|退出)\s*([A-Za-z0-9\u4e00-\u9fa5 ._-]{2,40})/)?.[1]?.trim() ??
+      "Calculator";
+    const operation = await createMyComputerSystemOperation({
+      ownerId: input.ownerId,
+      kind: "app_quit",
+      target: appName,
+      dryRun: true
+    });
+    return {
+      toolName: "my_computer",
+      ok: true,
+      observation: `已创建关闭 ${appName} 的动作授权请求，尚未真正关闭应用。`,
+      payload: { status, operation } as unknown as Record<string, unknown>
+    };
+  }
+
   if (/启动|打开.*应用|app|calculator|excel|word|pages|numbers/.test(lower)) {
     const appName =
       joinedPrompt.match(/(?:启动|打开)\s*([A-Za-z0-9\u4e00-\u9fa5 ._-]{2,40})/)?.[1]?.trim() ??

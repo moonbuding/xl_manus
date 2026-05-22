@@ -8,6 +8,7 @@ export const dynamic = "force-dynamic";
 
 const systemKinds = new Set<MyComputerOperationKind>([
   "app_launch",
+  "app_quit",
   "clipboard_write",
   "clipboard_read",
   "keyboard_shortcut",
@@ -38,6 +39,7 @@ export async function POST(request: Request) {
       ownerId: user.id,
       kind: body.kind as
         | "app_launch"
+        | "app_quit"
         | "clipboard_write"
         | "clipboard_read"
         | "keyboard_shortcut"

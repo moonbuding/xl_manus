@@ -548,6 +548,7 @@ export function AgentWorkspace() {
     actionKind: "app_launch" as Extract<
       MyComputerOperationKind,
       | "app_launch"
+      | "app_quit"
       | "clipboard_write"
       | "clipboard_read"
       | "keyboard_shortcut"
@@ -3080,6 +3081,7 @@ export function AgentWorkspace() {
               }
             >
               <option value="app_launch">启动应用</option>
+              <option value="app_quit">关闭应用</option>
               <option value="clipboard_write">写入剪贴板</option>
               <option value="clipboard_read">读取剪贴板</option>
               <option value="keyboard_shortcut">键盘快捷键</option>
@@ -3131,13 +3133,21 @@ export function AgentWorkspace() {
             </div>
           ) : (
             <label className="settings-field">
-              <span>{myComputerDraft.actionKind === "app_launch" ? "应用名" : "快捷键"}</span>
+              <span>
+                {myComputerDraft.actionKind === "app_launch" || myComputerDraft.actionKind === "app_quit"
+                  ? "应用名"
+                  : "快捷键"}
+              </span>
               <input
                 value={myComputerDraft.actionTarget}
                 onChange={(event) =>
                   setMyComputerDraft((current) => ({ ...current, actionTarget: event.target.value }))
                 }
-                placeholder={myComputerDraft.actionKind === "app_launch" ? "Calculator" : "cmd+c"}
+                placeholder={
+                  myComputerDraft.actionKind === "app_launch" || myComputerDraft.actionKind === "app_quit"
+                    ? "Calculator"
+                    : "cmd+c"
+                }
               />
             </label>
           )}

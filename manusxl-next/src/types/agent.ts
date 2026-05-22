@@ -137,6 +137,7 @@ export type MyComputerOperationKind =
   | "file_move"
   | "file_undo"
   | "app_launch"
+  | "app_quit"
   | "clipboard_write"
   | "clipboard_read"
   | "keyboard_shortcut"

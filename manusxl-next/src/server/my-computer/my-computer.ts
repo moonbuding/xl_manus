@@ -341,6 +341,13 @@ export async function getMyComputerStatus(ownerId?: string): Promise<MyComputerS
         note: "macOS 使用 open -a，Windows/Linux 使用平台命令。"
       },
       {
+        id: "app_quit",
+        label: "应用关闭",
+        ready: process.platform === "darwin" || process.platform === "win32" || process.platform === "linux",
+        requiresApproval: true,
+        note: "macOS 使用 osascript，Windows/Linux 使用平台命令。"
+      },
+      {
         id: "clipboard_write",
         label: "剪贴板写入",
         ready: true,
@@ -776,7 +783,7 @@ export async function createMyComputerSystemOperation(input: {
   ownerId?: string;
   kind: Extract<
     MyComputerOperationKind,
-    "app_launch" | "clipboard_write" | "keyboard_shortcut" | "mouse_click" | "terminal_command"
+    "app_launch" | "app_quit" | "clipboard_write" | "keyboard_shortcut" | "mouse_click" | "terminal_command"
     | "clipboard_read"
   >;
   target?: string;
@@ -826,6 +833,7 @@ function describeSystemOperation(
   }
 ) {
   if (kind === "app_launch") return `启动应用：${input.target ?? "unknown"}`;
+  if (kind === "app_quit") return `关闭应用：${input.target ?? "unknown"}`;
   if (kind === "clipboard_write") return `写入剪贴板：${input.text?.slice(0, 40) ?? ""}`;
   if (kind === "clipboard_read") return "读取剪贴板";
   if (kind === "keyboard_shortcut") return `发送键盘快捷键：${input.target ?? input.text ?? ""}`;
@@ -863,6 +871,9 @@ async function runSystemOperation(operation: MyComputerOperation) {
   if (operation.kind === "app_launch") {
     return await launchApplication(operation.target);
   }
+  if (operation.kind === "app_quit") {
+    return await quitApplication(operation.target);
+  }
   if (operation.kind === "clipboard_write") {
     return await writeClipboard(String(detail.text ?? operation.target));
   }
@@ -893,6 +904,26 @@ async function launchApplication(target: string) {
   }
   await execFileAsync("xdg-open", [target], { timeout: 8000 });
   return { launched: target, platform: process.platform };
+}
+
+function appleScriptString(value: string) {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+async function quitApplication(target: string) {
+  if (!target.trim()) throw new Error("缺少应用名称。");
+  if (process.platform === "darwin") {
+    const appName = appleScriptString(target);
+    await execFileAsync("osascript", ["-e", `tell application "${appName}" to quit`], { timeout: 8000 });
+    return { quit: target, platform: process.platform };
+  }
+  if (process.platform === "win32") {
+    const imageName = target.toLowerCase().endsWith(".exe") ? target : `${target}.exe`;
+    await execFileAsync("taskkill", ["/IM", imageName, "/F"], { timeout: 8000 });
+    return { quit: target, platform: process.platform };
+  }
+  await execFileAsync("pkill", ["-f", target], { timeout: 8000 });
+  return { quit: target, platform: process.platform };
 }
 
 async function writeClipboard(text: string) {
