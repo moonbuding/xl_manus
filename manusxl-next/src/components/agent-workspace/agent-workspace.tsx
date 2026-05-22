@@ -8,6 +8,7 @@ import {
   Brain,
   CheckCircle2,
   CircleStop,
+  CloudUpload,
   Clock3,
   Code2,
   Database,
@@ -178,6 +179,10 @@ const statusText: Record<TaskStatus, string> = {
 
 type NavigationView = "workspace" | "agent" | "library" | "settings";
 type AuthMode = "phone" | "email-login" | "email-register";
+type CloudFileSummary = UploadedFileSummary & {
+  createdAt?: string;
+  expiresAt?: string;
+};
 
 interface SandboxStatus {
   mode: string;
@@ -452,6 +457,7 @@ function parseEnvDraft(value: string) {
 export function AgentWorkspace() {
   const [prompt, setPrompt] = useState("");
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFileSummary[]>([]);
+  const [cloudFiles, setCloudFiles] = useState<CloudFileSummary[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [templates, setTemplates] = useState<TaskTemplate[]>([]);
   const [skills, setSkills] = useState<AgentSkill[]>([]);
@@ -533,6 +539,7 @@ export function AgentWorkspace() {
   const [isApprovingMyComputer, setIsApprovingMyComputer] = useState(false);
   const [isUndoingMyComputer, setIsUndoingMyComputer] = useState(false);
   const [isRunningMyComputerAction, setIsRunningMyComputerAction] = useState(false);
+  const [isSyncingMyComputerFile, setIsSyncingMyComputerFile] = useState(false);
   const [localBrowserEndpoint, setLocalBrowserEndpoint] = useState("http://127.0.0.1:9222");
   const [localBrowserActionDraft, setLocalBrowserActionDraft] = useState({
     action: "navigate" as "navigate" | "click" | "type" | "press",
@@ -557,6 +564,7 @@ export function AgentWorkspace() {
     actionTarget: "Calculator",
     actionText: "来自 ManusXL 的剪贴板测试",
     actionCommand: "pwd",
+    syncPath: "",
     x: "320",
     y: "240"
   });
@@ -680,6 +688,17 @@ export function AgentWorkspace() {
       setBillingSummary(await readJson<BillingSummary>(response));
     } catch {
       setBillingSummary(null);
+    }
+  }, []);
+
+  const refreshCloudFiles = useCallback(async () => {
+    try {
+      const response = await fetch("/api/files?limit=30", { cache: "no-store" });
+      if (!response.ok) return;
+      const data = await readJson<{ files: CloudFileSummary[] }>(response, { files: [] });
+      setCloudFiles(data.files);
+    } catch {
+      setCloudFiles([]);
     }
   }, []);
 
@@ -993,8 +1012,13 @@ export function AgentWorkspace() {
           ? { ...current, operation: data.operation }
           : current
       );
+      const syncedFile = data.operation.result?.file as UploadedFileSummary | undefined;
+      if (data.operation.kind === "file_sync_upload" && syncedFile) {
+        setUploadedFiles((current) => [...current.filter((file) => file.id !== syncedFile.id), syncedFile]);
+        await refreshCloudFiles();
+      }
       await refreshMyComputerStatus();
-      if (data.operation.kind.startsWith("file_")) {
+      if (data.operation.kind.startsWith("file_") && data.operation.kind !== "file_sync_upload") {
         await scanMyComputerRoot();
       }
     } catch (caught: unknown) {
@@ -1002,7 +1026,7 @@ export function AgentWorkspace() {
     } finally {
       setIsApprovingMyComputer(false);
     }
-  }, [refreshMyComputerStatus, scanMyComputerRoot]);
+  }, [refreshCloudFiles, refreshMyComputerStatus, scanMyComputerRoot]);
 
   const runMyComputerSystemAction = useCallback(async () => {
     setIsRunningMyComputerAction(true);
@@ -1035,6 +1059,28 @@ export function AgentWorkspace() {
       setIsRunningMyComputerAction(false);
     }
   }, [myComputerDraft, refreshMyComputerStatus]);
+
+  const requestMyComputerFileSync = useCallback(async () => {
+    setIsSyncingMyComputerFile(true);
+    try {
+      const response = await fetch("/api/my-computer/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourcePath: myComputerDraft.syncPath || myComputerDraft.root,
+          dryRun: true
+        })
+      });
+      const data = await readJson<{ operation?: MyComputerOperation; error?: string }>(response);
+      if (!response.ok || !data.operation) throw new Error(data.error ?? "创建文件同步授权失败");
+      setMyComputerActionResult(data.operation);
+      await refreshMyComputerStatus();
+    } catch (caught: unknown) {
+      setError(getErrorMessage(caught, "创建 My Computer 文件同步失败"));
+    } finally {
+      setIsSyncingMyComputerFile(false);
+    }
+  }, [myComputerDraft.root, myComputerDraft.syncPath, refreshMyComputerStatus]);
 
   const undoMyComputerLastFileOperation = useCallback(async () => {
     setIsUndoingMyComputer(true);
@@ -1195,6 +1241,7 @@ export function AgentWorkspace() {
         void refreshMcpServers();
         void refreshMcpCatalog();
         void refreshBilling();
+        void refreshCloudFiles();
         void refreshSandboxStatus();
         void refreshDatabaseStatus();
         void refreshLocalBrowserStatus();
@@ -1242,6 +1289,7 @@ export function AgentWorkspace() {
     refreshAuthStatus,
     refreshAuthUser,
     refreshBilling,
+    refreshCloudFiles,
     refreshDatabaseStatus,
     refreshLocalBrowserSafety,
     refreshLocalBrowserPairing,
@@ -1352,6 +1400,7 @@ export function AgentWorkspace() {
         await refreshSkills();
         await refreshMcpServers();
         await refreshBilling();
+        await refreshCloudFiles();
         await refreshMyComputerStatus();
       }
     } catch (caught) {
@@ -1367,6 +1416,8 @@ export function AgentWorkspace() {
     closeStream();
     setAuthUser(null);
     setTasks([]);
+    setCloudFiles([]);
+    setUploadedFiles([]);
     setActiveTask(null);
     setContextMetrics(null);
     setBillingSummary(null);
@@ -2034,6 +2085,10 @@ export function AgentWorkspace() {
             <div className="stat-value">{templates.length}</div>
             <div className="stat-label">模板</div>
           </div>
+          <div className="stat-box">
+            <div className="stat-value">{cloudFiles.length}</div>
+            <div className="stat-label">云端文件</div>
+          </div>
         </div>
 
         <div className="view-grid two-columns">
@@ -2049,6 +2104,36 @@ export function AgentWorkspace() {
             {renderTemplatePanel()}
           </section>
         </div>
+
+        <section className="section-panel">
+          <div className="panel-title">
+            <FileText size={14} />
+            云端文件
+          </div>
+          {cloudFiles.length ? (
+            <div className="task-library-list">
+              {cloudFiles.slice(0, 12).map((file) => (
+                <div className="task-library-item" key={file.id}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setUploadedFiles((current) => [...current.filter((item) => item.id !== file.id), file]);
+                      navigateTo("workspace");
+                    }}
+                  >
+                    <span>{file.name}</span>
+                    <small>
+                      {formatSize(file.size)}
+                      {file.expiresAt ? ` · ${new Date(file.expiresAt).toLocaleDateString()} 过期` : ""}
+                    </small>
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="muted-note">还没有云端文件。</p>
+          )}
+        </section>
 
         <section className="section-panel">
           <div className="panel-title">
@@ -3066,6 +3151,28 @@ export function AgentWorkspace() {
             ) : null}
           </div>
         ) : null}
+
+        <div className="browser-action-grid">
+          <label className="settings-field">
+            <span>同步文件</span>
+            <input
+              value={myComputerDraft.syncPath}
+              onChange={(event) =>
+                setMyComputerDraft((current) => ({ ...current, syncPath: event.target.value }))
+              }
+              placeholder={myComputerScan?.entries.find((entry) => entry.kind === "file")?.path ?? rootLabel}
+            />
+          </label>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isSyncingMyComputerFile}
+            onClick={() => void requestMyComputerFileSync()}
+          >
+            {isSyncingMyComputerFile ? <Loader2 size={15} className="spin" /> : <CloudUpload size={15} />}
+            Send to Cloud
+          </button>
+        </div>
 
         <div className="browser-action-grid">
           <label className="settings-field">

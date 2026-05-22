@@ -1,6 +1,7 @@
-import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { basename, extname, join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { copyFile, lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, extname, join } from "node:path";
 import { inflateRawSync, inflateSync } from "node:zlib";
 import { createId } from "@/lib/id";
 import { dataPath } from "@/server/data-root";
@@ -28,6 +29,7 @@ export interface UploadedFileRecord extends UploadedFileSummary {
   ownerId?: string;
   storedPath: string;
   createdAt: string;
+  expiresAt?: string;
 }
 
 interface UploadPersistenceAdapter {
@@ -35,6 +37,8 @@ interface UploadPersistenceAdapter {
   ensureSchema: () => void;
   save: (record: UploadedFileRecord) => void;
   get: (fileId: string, ownerId?: string) => UploadedFileRecord | undefined;
+  list: (ownerId: string | undefined, limit: number) => UploadedFileRecord[];
+  delete: (fileId: string, ownerId?: string) => void;
 }
 
 const globalForUploads = globalThis as unknown as {
@@ -117,6 +121,31 @@ function getUploadedFileRecordSqlite(fileId: string, ownerId?: string) {
   return row ? (JSON.parse(row.data_json) as UploadedFileRecord) : undefined;
 }
 
+function listUploadedFileRecordsSqlite(ownerId: string | undefined, limit: number) {
+  const db = getUploadDb();
+  const normalizedLimit = Math.max(1, Math.min(200, Math.floor(limit)));
+  const rows = ownerId
+    ? (db
+        .prepare(
+          "SELECT data_json FROM uploaded_files WHERE owner_id = ? ORDER BY created_at DESC LIMIT ?"
+        )
+        .all(ownerId, normalizedLimit) as Array<{ data_json: string }>)
+    : (db
+        .prepare("SELECT data_json FROM uploaded_files ORDER BY created_at DESC LIMIT ?")
+        .all(normalizedLimit) as Array<{ data_json: string }>);
+
+  return rows.map((row) => JSON.parse(row.data_json) as UploadedFileRecord);
+}
+
+function deleteUploadedFileRecordSqlite(fileId: string, ownerId?: string) {
+  const db = getUploadDb();
+  if (ownerId) {
+    db.prepare("DELETE FROM uploaded_files WHERE id = ? AND owner_id = ?").run(fileId, ownerId);
+    return;
+  }
+  db.prepare("DELETE FROM uploaded_files WHERE id = ?").run(fileId);
+}
+
 function postgresSchemaPath() {
   return join(process.cwd(), "db", "postgres", "0001_initial.sql");
 }
@@ -193,6 +222,39 @@ function getUploadedFileRecordPostgres(fileId: string, ownerId?: string) {
   return row ? (JSON.parse(row) as UploadedFileRecord) : undefined;
 }
 
+function listUploadedFileRecordsPostgres(ownerId: string | undefined, limit: number) {
+  const normalizedLimit = Math.max(1, Math.min(200, Math.floor(limit)));
+  const ownerFilter = ownerId ? `WHERE owner_id = ${postgresValue(ownerId)}` : "";
+  const output = runPsql([
+    "-At",
+    "-c",
+    `
+      SELECT data_json::text
+      FROM uploaded_files
+      ${ownerFilter}
+      ORDER BY created_at DESC
+      LIMIT ${normalizedLimit};
+    `
+  ]);
+  return output
+    .split("\n")
+    .map((row) => row.trim())
+    .filter(Boolean)
+    .map((row) => JSON.parse(row) as UploadedFileRecord);
+}
+
+function deleteUploadedFileRecordPostgres(fileId: string, ownerId?: string) {
+  const ownerFilter = ownerId ? `AND owner_id = ${postgresValue(ownerId)}` : "";
+  runPsql([
+    "-c",
+    `
+      DELETE FROM uploaded_files
+      WHERE id = ${postgresValue(fileId)}
+      ${ownerFilter};
+    `
+  ]);
+}
+
 function createSqliteUploadStore(): UploadPersistenceAdapter {
   return {
     provider: "sqlite",
@@ -200,7 +262,9 @@ function createSqliteUploadStore(): UploadPersistenceAdapter {
       getUploadDb();
     },
     save: saveUploadRecordSqlite,
-    get: getUploadedFileRecordSqlite
+    get: getUploadedFileRecordSqlite,
+    list: listUploadedFileRecordsSqlite,
+    delete: deleteUploadedFileRecordSqlite
   };
 }
 
@@ -212,7 +276,9 @@ function createPostgresUploadStore(): UploadPersistenceAdapter {
     save: (record) => {
       runPsql(["-c", uploadRecordUpsertSql(record)]);
     },
-    get: getUploadedFileRecordPostgres
+    get: getUploadedFileRecordPostgres,
+    list: listUploadedFileRecordsPostgres,
+    delete: deleteUploadedFileRecordPostgres
   };
 }
 
@@ -247,8 +313,35 @@ function saveUploadRecord(record: UploadedFileRecord) {
   getUploadStore().save(record);
 }
 
+async function deleteUploadRecord(record: UploadedFileRecord) {
+  getUploadStore().delete(record.id, record.ownerId);
+  await rm(record.storedPath, { force: true });
+}
+
+function isExpiredUpload(record: UploadedFileRecord, now = new Date()) {
+  return Boolean(record.expiresAt && new Date(record.expiresAt).getTime() <= now.getTime());
+}
+
+async function pruneExpiredRecords(records: UploadedFileRecord[], now = new Date()) {
+  const live: UploadedFileRecord[] = [];
+  for (const record of records) {
+    if (isExpiredUpload(record, now)) {
+      await deleteUploadRecord(record);
+    } else {
+      live.push(record);
+    }
+  }
+  return live;
+}
+
 export function getUploadedFileRecord(fileId: string, ownerId?: string) {
-  return getUploadStore().get(fileId, ownerId);
+  const record = getUploadStore().get(fileId, ownerId);
+  if (!record) return undefined;
+  if (isExpiredUpload(record)) {
+    void deleteUploadRecord(record);
+    return undefined;
+  }
+  return record;
 }
 
 export function listUploadedFileRecords(ownerId: string | undefined, fileIds: string[]) {
@@ -261,11 +354,80 @@ export function listUploadedFileRecords(ownerId: string | undefined, fileIds: st
     .filter((record): record is UploadedFileRecord => Boolean(record));
 }
 
+export async function listUploadedFileRecordsForOwner(ownerId: string | undefined, limit = 50) {
+  const records = getUploadStore().list(ownerId, limit);
+  return await pruneExpiredRecords(records);
+}
+
 function sanitizeFilename(value: string) {
   return basename(value)
     .replace(/[/:*?"<>|\\]/g, "_")
     .replace(/\s+/g, "-")
     .slice(0, 160);
+}
+
+function uploadSecretPath() {
+  return dataPath("secrets", "upload-key.hex");
+}
+
+function uploadEncryptionKey() {
+  const raw = process.env.MANUSXL_UPLOAD_ENCRYPTION_KEY?.trim();
+  if (raw) {
+    if (/^[0-9a-f]{64}$/i.test(raw)) return Buffer.from(raw, "hex");
+    const decoded = Buffer.from(raw, "base64");
+    if (decoded.length === 32) return decoded;
+  }
+
+  const secretPath = uploadSecretPath();
+  if (!existsSync(secretPath)) {
+    mkdirSync(dirname(secretPath), { recursive: true });
+    writeFileSync(secretPath, randomBytes(32).toString("hex"), { mode: 0o600 });
+  }
+  return Buffer.from(readFileSync(secretPath, "utf8").trim(), "hex");
+}
+
+function encryptUploadBuffer(buffer: Buffer) {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", uploadEncryptionKey(), iv);
+  const ciphertext = Buffer.concat([cipher.update(buffer), cipher.final()]);
+  return {
+    ciphertext,
+    iv: iv.toString("base64"),
+    tag: cipher.getAuthTag().toString("base64")
+  };
+}
+
+function decryptUploadBuffer(buffer: Buffer, metadata: Record<string, string | number | boolean>) {
+  if (!metadata.storageEncrypted) return buffer;
+  const iv = Buffer.from(String(metadata.encryptionIv ?? ""), "base64");
+  const tag = Buffer.from(String(metadata.encryptionTag ?? ""), "base64");
+  const decipher = createDecipheriv("aes-256-gcm", uploadEncryptionKey(), iv);
+  decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(buffer), decipher.final()]);
+}
+
+function inferMimeType(name: string) {
+  const extension = extname(name).toLowerCase();
+  const map: Record<string, string> = {
+    ".txt": "text/plain",
+    ".md": "text/markdown",
+    ".markdown": "text/markdown",
+    ".json": "application/json",
+    ".xml": "application/xml",
+    ".html": "text/html",
+    ".htm": "text/html",
+    ".csv": "text/csv",
+    ".tsv": "text/tab-separated-values",
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  };
+  return map[extension] ?? "application/octet-stream";
 }
 
 function normalizeText(value: string, limit = TEXT_PREVIEW_LIMIT) {
@@ -1024,6 +1186,66 @@ export async function saveUploadedFile(file: File, ownerId?: string) {
     size,
     storedPath
   };
+}
+
+export async function saveAndAnalyzeLocalFile(input: {
+  sourcePath: string;
+  ownerId?: string;
+  ttlDays?: number;
+}) {
+  const stats = await lstat(input.sourcePath);
+  if (!stats.isFile()) throw new Error("只能同步单个本机文件。");
+  if (stats.size <= 0) throw new Error("文件为空。");
+  if (stats.size > MAX_UPLOAD_BYTES) throw new Error("文件超过 25MB，当前版本暂不处理。");
+
+  const id = createId("mcfile");
+  const safeName = sanitizeFilename(basename(input.sourcePath) || "my-computer-file.bin");
+  const uploadRoot = input.ownerId ? dataPath("uploads", input.ownerId) : dataPath("uploads");
+  await mkdir(uploadRoot, { recursive: true });
+
+  const storedPath = join(uploadRoot, `${id}-${safeName}.enc`);
+  const buffer = await readFile(input.sourcePath);
+  const analysis = await analyzeStoredFile({
+    id,
+    name: safeName,
+    mimeType: inferMimeType(safeName),
+    size: stats.size,
+    storedPath: input.sourcePath
+  });
+  const encrypted = encryptUploadBuffer(buffer);
+  await writeFile(storedPath, encrypted.ciphertext);
+
+  const createdAt = new Date();
+  const ttlDays = input.ttlDays ?? 7;
+  const expiresAt = new Date(createdAt.getTime() + ttlDays * 24 * 60 * 60 * 1000).toISOString();
+  const record: UploadedFileRecord = {
+    ...analysis,
+    ownerId: input.ownerId,
+    storedPath,
+    createdAt: createdAt.toISOString(),
+    expiresAt,
+    metadata: {
+      ...analysis.metadata,
+      source: "my_computer",
+      originalPath: input.sourcePath,
+      ttlDays,
+      storageEncrypted: true,
+      encryption: "aes-256-gcm",
+      encryptionIv: encrypted.iv,
+      encryptionTag: encrypted.tag
+    }
+  };
+  saveUploadRecord(record);
+  return record;
+}
+
+export async function materializeUploadedFileRecord(record: UploadedFileRecord, destination: string) {
+  if (record.metadata.storageEncrypted) {
+    const encrypted = await readFile(record.storedPath);
+    await writeFile(destination, decryptUploadBuffer(encrypted, record.metadata));
+    return;
+  }
+  await copyFile(record.storedPath, destination);
 }
 
 export async function saveAndAnalyzeUpload(file: File, ownerId?: string) {

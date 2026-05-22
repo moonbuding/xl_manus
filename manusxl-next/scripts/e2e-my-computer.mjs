@@ -117,6 +117,27 @@ async function main() {
     existsSync(join(root, "ManusXL Sorted", "images", "photo sample.jpg")),
     "文件分类没有移动图片文件"
   );
+  const syncSource = join(root, "ManusXL Sorted", "documents", "report one.txt");
+  const syncUpload = await client.fetchJson("/api/my-computer/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sourcePath: syncSource, dryRun: true })
+  });
+  assert(syncUpload.body.operation.status === "pending_approval", "文件同步应等待授权");
+  const approvedSyncUpload = await client.fetchJson("/api/my-computer/approvals", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ operationId: syncUpload.body.operation.id, decision: "allow_once" })
+  });
+  assert(approvedSyncUpload.body.operation.status === "completed", "文件同步授权后未完成");
+  assert(approvedSyncUpload.body.operation.result?.file?.id, "文件同步没有返回云端文件 id");
+  assert(approvedSyncUpload.body.operation.result?.storageEncrypted === true, "文件同步未标记加密存储");
+  assert(approvedSyncUpload.body.operation.result?.expiresAt, "文件同步未返回过期时间");
+  const cloudFiles = await client.fetchJson("/api/files?limit=10");
+  assert(
+    cloudFiles.body.files.some((file) => file.id === approvedSyncUpload.body.operation.result.file.id),
+    "同步文件没有出现在云端 Library"
+  );
   const undoneClassify = await client.fetchJson("/api/my-computer/undo", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -265,6 +286,7 @@ async function main() {
       "allowed roots",
       "file scan",
       "classify dry-run and approval",
+      "selective cloud sync",
       "file operation undo",
       "content dedupe dry-run",
       "app launch authorization",

@@ -30,6 +30,7 @@ import {
   updateAppConfig
 } from "@/server/config/app-config";
 import { dataPath } from "@/server/data-root";
+import { saveAndAnalyzeLocalFile } from "@/server/files/readers";
 import type {
   MyComputerApprovalDecision,
   MyComputerFileAction,
@@ -47,6 +48,7 @@ const maxRecentOperations = 80;
 const maxFileHashBytes = 50 * 1024 * 1024;
 const terminalTimeoutMs = 5000;
 const terminalMaxBuffer = 256 * 1024;
+const fileSyncTtlDays = 7;
 const allowedTerminalCommands = new Set(["pwd", "whoami", "date", "ls", "echo"]);
 const undoableFileKinds = new Set<MyComputerOperationKind>([
   "file_classify",
@@ -54,6 +56,7 @@ const undoableFileKinds = new Set<MyComputerOperationKind>([
   "file_rename",
   "file_move"
 ]);
+const alwaysDeniedKinds = new Set<MyComputerOperationKind>(["file_sync_upload"]);
 
 const categoryByExtension: Record<string, string> = {
   ".jpg": "images",
@@ -332,6 +335,13 @@ export async function getMyComputerStatus(ownerId?: string): Promise<MyComputerS
         ready: operations.some((operation) => isUndoableFileOperation(operation, ownerId)),
         requiresApproval: true,
         note: "可撤销最近一次已完成的批量移动/重命名。"
+      },
+      {
+        id: "file_sync_upload",
+        label: "同步到云端",
+        ready: true,
+        requiresApproval: true,
+        note: "本机文件默认不上传；确认后加密存储到云端上传库，默认 7 天过期。"
       },
       {
         id: "app_launch",
@@ -617,6 +627,39 @@ export async function planMyComputerFileOperation(input: {
   };
 }
 
+export async function createMyComputerSyncUploadOperation(input: {
+  ownerId?: string;
+  sourcePath: string;
+  dryRun?: boolean;
+}) {
+  if (isMyComputerPaused()) throw new Error("My Computer 已暂停。");
+  const sourcePath = normalizeTargetPath(input.sourcePath);
+  const { target } = assertAllowedPath(sourcePath);
+  const fileStats = await stat(target);
+  if (!fileStats.isFile()) throw new Error("只能选择单个文件同步到云端。");
+  const expiresAt = new Date(Date.now() + fileSyncTtlDays * 24 * 60 * 60 * 1000).toISOString();
+  const shouldExecute = input.dryRun === false;
+  const operation = makeOperation({
+    ownerId: input.ownerId,
+    kind: "file_sync_upload",
+    target,
+    description: `同步到云端：${basename(target)}`,
+    dryRun: !shouldExecute,
+    requiresApproval: true,
+    status: shouldExecute ? "approved" : "pending_approval",
+    result: {
+      sourcePath: target,
+      size: fileStats.size,
+      ttlDays: fileSyncTtlDays,
+      expiresAt,
+      storageEncrypted: true
+    }
+  });
+
+  if (!shouldExecute) return operation;
+  return await executeSystemOperation(operation, "allow_once");
+}
+
 export async function approveAndRunMyComputerOperation(input: {
   ownerId?: string;
   operationId: string;
@@ -627,25 +670,28 @@ export async function approveAndRunMyComputerOperation(input: {
   );
   if (!operation) throw new Error("My Computer 操作不存在或已过期。");
 
-  if (input.decision === "deny") {
+  const decision =
+    input.decision === "always" && alwaysDeniedKinds.has(operation.kind) ? "allow_once" : input.decision;
+
+  if (decision === "deny") {
     const blocked = updateOperation(operation.id, {
       status: "blocked",
-      approvalDecision: input.decision,
+      approvalDecision: decision,
       error: "用户拒绝执行"
     })!;
     auditOperation(blocked, "blocked");
     return blocked;
   }
 
-  if (input.decision === "always") {
+  if (decision === "always") {
     alwaysAllowSet().add(approvalKey(operation.kind, operation.target));
     persistAlwaysAllowRules();
   }
 
   if (operation.actions?.length) {
-    return await executeFileActions(operation, input.decision);
+    return await executeFileActions(operation, decision);
   }
-  return await executeSystemOperation(operation, input.decision);
+  return await executeSystemOperation(operation, decision);
 }
 
 async function executeFileActions(operation: MyComputerOperation, decision: MyComputerApprovalDecision) {
@@ -878,7 +924,35 @@ async function runSystemOperation(operation: MyComputerOperation) {
   if (operation.kind === "terminal_command") {
     return await runTerminalCommand(operation);
   }
+  if (operation.kind === "file_sync_upload") {
+    return await syncUploadFile(operation);
+  }
   return {};
+}
+
+async function syncUploadFile(operation: MyComputerOperation) {
+  const sourcePath = String(operation.result?.sourcePath ?? operation.target);
+  assertAllowedPath(sourcePath);
+  const record = await saveAndAnalyzeLocalFile({
+    sourcePath,
+    ownerId: operation.ownerId,
+    ttlDays: fileSyncTtlDays
+  });
+  return {
+    file: {
+      id: record.id,
+      name: record.name,
+      mimeType: record.mimeType,
+      extension: record.extension,
+      size: record.size,
+      textPreview: record.textPreview,
+      summary: record.summary,
+      metadata: record.metadata
+    },
+    sourcePath,
+    expiresAt: record.expiresAt,
+    storageEncrypted: Boolean(record.metadata.storageEncrypted)
+  };
 }
 
 async function launchApplication(target: string) {
