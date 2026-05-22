@@ -744,16 +744,19 @@ async function runMyComputer(input: AgentToolInput): Promise<AgentToolResult> {
   const root = status.allowedRoots[0];
 
   if (/剪贴板|clipboard/.test(lower)) {
+    const shouldRead = /读取|读|查看|read|paste/.test(lower);
     const operation = await createMyComputerSystemOperation({
       ownerId: input.ownerId,
-      kind: "clipboard_write",
-      text: input.step.slice(0, 500) || "ManusXL My Computer clipboard draft",
+      kind: shouldRead ? "clipboard_read" : "clipboard_write",
+      text: shouldRead ? undefined : input.step.slice(0, 500) || "ManusXL My Computer clipboard draft",
       dryRun: true
     });
     return {
       toolName: "my_computer",
       ok: true,
-      observation: "已创建剪贴板写入授权请求，等待用户 Allow Once 或 Always Allow 后执行。",
+      observation: shouldRead
+        ? "已创建剪贴板读取授权请求，等待用户 Allow Once 或 Always Allow 后执行。"
+        : "已创建剪贴板写入授权请求，等待用户 Allow Once 或 Always Allow 后执行。",
       payload: { status, operation } as unknown as Record<string, unknown>
     };
   }

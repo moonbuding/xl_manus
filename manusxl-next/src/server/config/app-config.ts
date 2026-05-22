@@ -26,6 +26,7 @@ export interface StoredAppConfig {
   localBrowserPaused?: boolean;
   myComputerAllowedRoots?: string[];
   myComputerPaused?: boolean;
+  myComputerAlwaysAllowRules?: string[];
 }
 
 const secretFile = dataPath("config-secret");
@@ -254,6 +255,29 @@ function readStoredFilesystemRoots(value: string | undefined) {
   return normalizeFilesystemRoots(value);
 }
 
+function normalizeStringList(value: string | string[] | undefined, limit = 100) {
+  const values = Array.isArray(value) ? value : (value ?? "").split(/[\n,]/);
+  return Array.from(
+    new Set(
+      values
+        .map((item) => item.trim())
+        .filter(Boolean)
+        .map((item) => item.slice(0, 240))
+    )
+  ).slice(0, limit);
+}
+
+function readStoredStringList(value: string | undefined, limit = 100) {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (Array.isArray(parsed)) return normalizeStringList(parsed.map(String), limit);
+  } catch {
+    return normalizeStringList(value, limit);
+  }
+  return normalizeStringList(value, limit);
+}
+
 export function getStoredAppConfig(): StoredAppConfig {
   const store = getConfigStore();
   const temperature = Number(store.get("runtime.temperature"));
@@ -263,6 +287,7 @@ export function getStoredAppConfig(): StoredAppConfig {
   const localBrowserPaused = store.get("localBrowser.paused");
   const myComputerPaused = store.get("myComputer.paused");
   const myComputerAllowedRoots = readStoredFilesystemRoots(store.get("myComputer.allowedRoots"));
+  const myComputerAlwaysAllowRules = readStoredStringList(store.get("myComputer.alwaysAllowRules"));
   const localBrowserDomainAllowlist = readStoredDomainAllowlist(
     store.get("localBrowser.domainAllowlist")
   );
@@ -281,7 +306,8 @@ export function getStoredAppConfig(): StoredAppConfig {
     localBrowserDomainAllowlist,
     localBrowserPaused: localBrowserPaused === undefined ? undefined : localBrowserPaused === "true",
     myComputerAllowedRoots,
-    myComputerPaused: myComputerPaused === undefined ? undefined : myComputerPaused === "true"
+    myComputerPaused: myComputerPaused === undefined ? undefined : myComputerPaused === "true",
+    myComputerAlwaysAllowRules
   };
 }
 
@@ -317,7 +343,8 @@ export function getAppConfig() {
       stored.myComputerAllowedRoots && stored.myComputerAllowedRoots.length > 0
         ? stored.myComputerAllowedRoots
         : envMyComputerAllowedRoots,
-    myComputerPaused: stored.myComputerPaused ?? process.env.MANUSXL_MY_COMPUTER_PAUSED === "true"
+    myComputerPaused: stored.myComputerPaused ?? process.env.MANUSXL_MY_COMPUTER_PAUSED === "true",
+    myComputerAlwaysAllowRules: stored.myComputerAlwaysAllowRules ?? []
   };
 }
 
@@ -335,6 +362,10 @@ export function getMyComputerAllowedRoots() {
 
 export function isMyComputerPaused() {
   return getAppConfig().myComputerPaused;
+}
+
+export function getMyComputerAlwaysAllowRules() {
+  return getAppConfig().myComputerAlwaysAllowRules;
 }
 
 export function updateAppConfig(config: StoredAppConfig) {
@@ -389,6 +420,12 @@ export function updateAppConfig(config: StoredAppConfig) {
   }
   if (config.myComputerPaused !== undefined) {
     store.set("myComputer.paused", String(config.myComputerPaused));
+  }
+  if (config.myComputerAlwaysAllowRules !== undefined) {
+    store.set(
+      "myComputer.alwaysAllowRules",
+      JSON.stringify(normalizeStringList(config.myComputerAlwaysAllowRules))
+    );
   }
   return getAppConfig();
 }

@@ -162,11 +162,12 @@ As a Downloads 文件夹堆了几百个文件的用户，I want 一句话让 AI 
 #### 验收标准
 - [x] dry-run "按文件类型分类 Downloads/允许目录" 显示分类预览，用户确认后才移动文件
 - [x] 查重按文件内容 hash 识别重复项，不依赖文件名
-- [ ] undo 能恢复最近一次批量重命名
+- [x] undo 能恢复最近一次批量移动/重命名
 - [x] 操作日志进入审计日志，Settings 可查看 recent operations
 
 #### 实现记录
 - 2026-05-23：新增 `/api/my-computer/files/scan`、`/api/my-computer/files/plan`、`/api/my-computer/approvals`；支持允许目录校验、分类/重命名/查重 dry-run、Allow Once/Always/Deny 授权和执行。
+- 2026-05-23：新增 `/api/my-computer/undo` 和 Settings / My Computer 撤销入口；最近一次已完成的批量移动/重命名可按反向文件动作恢复。
 
 #### 相关 OpenManus 代码
 - 可复用：REQ-108 的批量处理逻辑（移植到桌面端 IPC）
@@ -205,13 +206,14 @@ As a 想让 AI 用 Excel 处理一份本地表格的用户，I want AI 能启动
 - [x] 剪贴板写入动作已接入授权模型；macOS 执行层使用 `pbcopy`
 - [x] 模拟点击已接入动作级授权与 dry-run，真实点击待接入 nut.js/cliclick
 - [ ] macOS 上 AI 能启动 Calculator 应用
-- [ ] AI 写文本到剪贴板，用户能粘贴
+- [x] AI 写文本到剪贴板，用户能粘贴；剪贴板读取也走动作授权
 - [ ] 模拟点击在指定坐标生效
 - [ ] terminal 命令执行结果回传云端
-- [x] 首次操作进入待授权列表，支持 Allow Once / Always Allow / Deny
+- [x] 首次操作进入待授权列表，支持 Allow Once / Always Allow / Deny；Always Allow 规则持久化后同类动作免二次确认
 
 #### 实现记录
 - 2026-05-23：新增 `/api/my-computer/actions`，支持应用启动、剪贴板、键盘快捷键、鼠标点击的授权请求；真实鼠标点击和 terminal 执行默认关闭，待接入更细权限与底层库。
+- 2026-05-23：剪贴板写入/读取已支持真实执行验收；Always Allow 按 `(action_type, target)` 持久化，后续同类动作可免确认执行。
 
 #### 相关 OpenManus 代码
 - 完全新建：`desktop/src/tools/system_tools.ts`

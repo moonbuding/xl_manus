@@ -103,7 +103,8 @@ export function getDeepSeekConfig() {
     promptCacheEnabled: config.promptCacheEnabled,
     localBrowserDomainAllowlist: config.localBrowserDomainAllowlist,
     myComputerAllowedRoots: config.myComputerAllowedRoots,
-    myComputerPaused: config.myComputerPaused
+    myComputerPaused: config.myComputerPaused,
+    myComputerAlwaysAllowRules: config.myComputerAlwaysAllowRules
   };
 }
 

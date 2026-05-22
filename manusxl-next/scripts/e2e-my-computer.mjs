@@ -78,7 +78,7 @@ async function main() {
   const settings = await client.fetchJson("/api/my-computer/settings", {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ allowedRoots: [root], paused: false })
+    body: JSON.stringify({ allowedRoots: [root], paused: false, alwaysAllowRules: [] })
   });
   assert(settings.body.connected === true, "My Computer 桥接未连接");
   assert(settings.body.allowedRoots.includes(root), "允许目录未保存");
@@ -117,6 +117,14 @@ async function main() {
     existsSync(join(root, "ManusXL Sorted", "images", "photo sample.jpg")),
     "文件分类没有移动图片文件"
   );
+  const undoneClassify = await client.fetchJson("/api/my-computer/undo", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ operationId: approvedClassify.body.operation.id })
+  });
+  assert(undoneClassify.body.operation.status === "completed", "文件分类撤销未完成");
+  assert(existsSync(join(root, "report one.txt")), "撤销后文档文件未恢复原位");
+  assert(existsSync(join(root, "photo sample.jpg")), "撤销后图片文件未恢复原位");
 
   writeFileSync(join(root, "duplicate-c.txt"), "same content again");
   writeFileSync(join(root, "duplicate-d.txt"), "same content again");
@@ -153,6 +161,47 @@ async function main() {
     body: JSON.stringify({ kind: "clipboard_write", text: "My Computer E2E", dryRun: true })
   });
   assert(clipboard.body.operation.status === "pending_approval", "剪贴板 dry-run 应等待授权");
+  const approvedClipboard = await client.fetchJson("/api/my-computer/approvals", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ operationId: clipboard.body.operation.id, decision: "allow_once" })
+  });
+  assert(approvedClipboard.body.operation.status === "completed", "剪贴板写入授权后未完成");
+
+  const clipboardRead = await client.fetchJson("/api/my-computer/actions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind: "clipboard_read", dryRun: true })
+  });
+  assert(clipboardRead.body.operation.status === "pending_approval", "剪贴板读取 dry-run 应等待授权");
+  const approvedClipboardRead = await client.fetchJson("/api/my-computer/approvals", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ operationId: clipboardRead.body.operation.id, decision: "allow_once" })
+  });
+  assert(approvedClipboardRead.body.operation.status === "completed", "剪贴板读取授权后未完成");
+  assert(
+    String(approvedClipboardRead.body.operation.result?.text ?? "").includes("My Computer E2E"),
+    "剪贴板读取没有返回刚写入的文本"
+  );
+
+  const alwaysClipboard = await client.fetchJson("/api/my-computer/actions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind: "clipboard_write", text: "My Computer Always", dryRun: true })
+  });
+  const approvedAlwaysClipboard = await client.fetchJson("/api/my-computer/approvals", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ operationId: alwaysClipboard.body.operation.id, decision: "always" })
+  });
+  assert(approvedAlwaysClipboard.body.operation.status === "completed", "剪贴板 Always Allow 首次授权未完成");
+  const autoClipboard = await client.fetchJson("/api/my-computer/actions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind: "clipboard_write", text: "My Computer Auto Allowed", dryRun: true })
+  });
+  assert(autoClipboard.body.operation.status === "completed", "Always Allow 后同类剪贴板写入应免确认完成");
 
   const mouse = await client.fetchJson("/api/my-computer/actions", {
     method: "POST",
@@ -187,9 +236,11 @@ async function main() {
       "allowed roots",
       "file scan",
       "classify dry-run and approval",
+      "file operation undo",
       "content dedupe dry-run",
       "app launch authorization",
-      "clipboard authorization",
+      "clipboard read/write execution",
+      "persistent always allow",
       "mouse authorization",
       "path guard",
       "audit log"

@@ -531,6 +531,7 @@ export function AgentWorkspace() {
   const [isScanningMyComputer, setIsScanningMyComputer] = useState(false);
   const [isPlanningMyComputer, setIsPlanningMyComputer] = useState(false);
   const [isApprovingMyComputer, setIsApprovingMyComputer] = useState(false);
+  const [isUndoingMyComputer, setIsUndoingMyComputer] = useState(false);
   const [isRunningMyComputerAction, setIsRunningMyComputerAction] = useState(false);
   const [localBrowserEndpoint, setLocalBrowserEndpoint] = useState("http://127.0.0.1:9222");
   const [localBrowserActionDraft, setLocalBrowserActionDraft] = useState({
@@ -546,7 +547,7 @@ export function AgentWorkspace() {
     mode: "classify" as MyComputerFilePlanMode,
     actionKind: "app_launch" as Extract<
       MyComputerOperationKind,
-      "app_launch" | "clipboard_write" | "keyboard_shortcut" | "mouse_click"
+      "app_launch" | "clipboard_write" | "clipboard_read" | "keyboard_shortcut" | "mouse_click"
     >,
     actionTarget: "Calculator",
     actionText: "来自 ManusXL 的剪贴板测试",
@@ -901,6 +902,27 @@ export function AgentWorkspace() {
     }
   }, [settingsDraft.myComputerAllowedRoots]);
 
+  const clearMyComputerAlwaysAllow = useCallback(async () => {
+    setIsSavingMyComputer(true);
+    try {
+      const response = await fetch("/api/my-computer/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          allowedRoots: parseFilesystemRoots(settingsDraft.myComputerAllowedRoots),
+          paused: myComputerStatus?.paused,
+          alwaysAllowRules: []
+        })
+      });
+      const data = await readJson<MyComputerStatus>(response);
+      setMyComputerStatus(data);
+    } catch (caught: unknown) {
+      setError(getErrorMessage(caught, "清空 My Computer 授权规则失败"));
+    } finally {
+      setIsSavingMyComputer(false);
+    }
+  }, [myComputerStatus, settingsDraft.myComputerAllowedRoots]);
+
   const scanMyComputerRoot = useCallback(async () => {
     setIsScanningMyComputer(true);
     setMyComputerPlan(null);
@@ -985,7 +1007,7 @@ export function AgentWorkspace() {
         body: JSON.stringify({
           kind: myComputerDraft.actionKind,
           target:
-            myComputerDraft.actionKind === "clipboard_write"
+            myComputerDraft.actionKind === "clipboard_write" || myComputerDraft.actionKind === "clipboard_read"
               ? undefined
               : myComputerDraft.actionKind === "mouse_click"
                 ? "screen"
@@ -1006,6 +1028,28 @@ export function AgentWorkspace() {
       setIsRunningMyComputerAction(false);
     }
   }, [myComputerDraft, refreshMyComputerStatus]);
+
+  const undoMyComputerLastFileOperation = useCallback(async () => {
+    setIsUndoingMyComputer(true);
+    try {
+      const response = await fetch("/api/my-computer/undo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          operationId: myComputerPlan?.operation.status === "completed" ? myComputerPlan.operation.id : undefined
+        })
+      });
+      const data = await readJson<{ operation?: MyComputerOperation; error?: string }>(response);
+      if (!response.ok || !data.operation) throw new Error(data.error ?? "撤销 My Computer 操作失败");
+      setMyComputerActionResult(data.operation);
+      await refreshMyComputerStatus();
+      await scanMyComputerRoot();
+    } catch (caught: unknown) {
+      setError(getErrorMessage(caught, "撤销 My Computer 文件操作失败"));
+    } finally {
+      setIsUndoingMyComputer(false);
+    }
+  }, [myComputerPlan, refreshMyComputerStatus, scanMyComputerRoot]);
 
   const refreshOcrStatus = useCallback(async () => {
     try {
@@ -2784,6 +2828,12 @@ export function AgentWorkspace() {
     const pendingCount = myComputerStatus?.pendingApprovals.length ?? 0;
     const rootLabel = myComputerStatus?.allowedRoots[0] ?? "尚未配置";
     const latestOperation = myComputerActionResult ?? myComputerPlan?.operation;
+    const hasUndoableFileOperation = Boolean(
+      myComputerStatus?.recentOperations.some((operation) =>
+        ["file_classify", "file_dedupe", "file_rename", "file_move"].includes(operation.kind) &&
+        operation.status === "completed"
+      )
+    );
 
     return (
       <div className="sandbox-panel">
@@ -2862,6 +2912,24 @@ export function AgentWorkspace() {
           >
             {paused ? <Play size={15} /> : <CircleStop size={15} />}
             {paused ? "恢复 My Computer" : "暂停 My Computer"}
+          </button>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isUndoingMyComputer || !hasUndoableFileOperation}
+            onClick={() => void undoMyComputerLastFileOperation()}
+          >
+            {isUndoingMyComputer ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />}
+            撤销最近
+          </button>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isSavingMyComputer}
+            onClick={() => void clearMyComputerAlwaysAllow()}
+          >
+            <ShieldCheck size={15} />
+            清空授权
           </button>
         </div>
 
@@ -3006,6 +3074,7 @@ export function AgentWorkspace() {
             >
               <option value="app_launch">启动应用</option>
               <option value="clipboard_write">写入剪贴板</option>
+              <option value="clipboard_read">读取剪贴板</option>
               <option value="keyboard_shortcut">键盘快捷键</option>
               <option value="mouse_click">鼠标点击</option>
             </select>
@@ -3020,6 +3089,8 @@ export function AgentWorkspace() {
                 }
               />
             </label>
+          ) : myComputerDraft.actionKind === "clipboard_read" ? (
+            <p className="muted-note">读取剪贴板会先进入动作授权，确认后只回传文本长度和预览。</p>
           ) : myComputerDraft.actionKind === "mouse_click" ? (
             <div className="browser-coordinate-row">
               <label className="settings-field">

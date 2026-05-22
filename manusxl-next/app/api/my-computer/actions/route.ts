@@ -9,6 +9,7 @@ export const dynamic = "force-dynamic";
 const systemKinds = new Set<MyComputerOperationKind>([
   "app_launch",
   "clipboard_write",
+  "clipboard_read",
   "keyboard_shortcut",
   "mouse_click",
   "terminal_command"
@@ -35,7 +36,13 @@ export async function POST(request: Request) {
   try {
     const operation = await createMyComputerSystemOperation({
       ownerId: user.id,
-      kind: body.kind as "app_launch" | "clipboard_write" | "keyboard_shortcut" | "mouse_click" | "terminal_command",
+      kind: body.kind as
+        | "app_launch"
+        | "clipboard_write"
+        | "clipboard_read"
+        | "keyboard_shortcut"
+        | "mouse_click"
+        | "terminal_command",
       target: body.target,
       text: body.text,
       command: body.command,

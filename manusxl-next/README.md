@@ -184,7 +184,7 @@ My Computer MVP 验收：
 npm run e2e:my-computer
 ```
 
-该脚本会验证 My Computer 本地桥接、允许目录、文件扫描、分类 dry-run + 授权执行、内容查重 dry-run、应用启动/剪贴板/鼠标动作授权、路径越权拦截和审计日志。Settings / My Computer 面板可配置允许目录、暂停本机动作，并查看最近操作。
+该脚本会验证 My Computer 本地桥接、允许目录、文件扫描、分类 dry-run + 授权执行、文件操作撤销、内容查重 dry-run、应用启动授权、剪贴板真实读写、Always Allow 免确认、鼠标动作授权、路径越权拦截和审计日志。Settings / My Computer 面板可配置允许目录、暂停本机动作、撤销最近文件操作，并查看最近操作。
 
 批量文件处理验收：
 

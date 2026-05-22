@@ -24,6 +24,7 @@ import { promisify } from "node:util";
 import { createId } from "@/lib/id";
 import { requestAuditContext, safeRecordAuditLog } from "@/server/audit/audit-store";
 import {
+  getMyComputerAlwaysAllowRules,
   getMyComputerAllowedRoots,
   isMyComputerPaused,
   updateAppConfig
@@ -44,6 +45,12 @@ import type {
 const execFileAsync = promisify(execFile);
 const maxRecentOperations = 80;
 const maxFileHashBytes = 50 * 1024 * 1024;
+const undoableFileKinds = new Set<MyComputerOperationKind>([
+  "file_classify",
+  "file_dedupe",
+  "file_rename",
+  "file_move"
+]);
 
 const categoryByExtension: Record<string, string> = {
   ".jpg": "images",
@@ -102,7 +109,16 @@ function operationList() {
 
 function alwaysAllowSet() {
   globalForMyComputer.manusxlMyComputerAlwaysAllow ??= new Set<string>();
+  getMyComputerAlwaysAllowRules().forEach((rule) =>
+    globalForMyComputer.manusxlMyComputerAlwaysAllow?.add(rule)
+  );
   return globalForMyComputer.manusxlMyComputerAlwaysAllow;
+}
+
+function persistAlwaysAllowRules() {
+  updateAppConfig({
+    myComputerAlwaysAllowRules: Array.from(alwaysAllowSet()).slice(0, 100)
+  });
 }
 
 function expandHome(value: string) {
@@ -204,6 +220,22 @@ function approvalKey(kind: MyComputerOperationKind, target: string) {
   return `${kind}:${normalizedTarget}`;
 }
 
+function systemOperationTarget(
+  kind: MyComputerOperationKind,
+  input: {
+    target?: string;
+    text?: string;
+    command?: string;
+    x?: number;
+    y?: number;
+  }
+) {
+  if (kind === "clipboard_write" || kind === "clipboard_read") return "clipboard";
+  if (kind === "mouse_click") return `screen:${input.x ?? 0},${input.y ?? 0}`;
+  if (kind === "terminal_command") return (input.command ?? "").trim();
+  return (input.target ?? input.text ?? "").trim();
+}
+
 function auditOperation(operation: MyComputerOperation, auditStatus: "started" | "completed" | "failed" | "blocked") {
   if (!operation.ownerId) return;
   safeRecordAuditLog({
@@ -221,14 +253,37 @@ function auditOperation(operation: MyComputerOperation, auditStatus: "started" |
   });
 }
 
+function isUndoableFileOperation(operation: MyComputerOperation, ownerId?: string) {
+  if (ownerId && operation.ownerId !== ownerId) return false;
+  if (operation.status !== "completed") return false;
+  if (!undoableFileKinds.has(operation.kind)) return false;
+  const applied = operation.result?.applied;
+  return Array.isArray(applied) && applied.length > 0;
+}
+
+function appliedActionsFromOperation(operation: MyComputerOperation) {
+  const applied = operation.result?.applied;
+  if (!Array.isArray(applied)) return [];
+  return applied.filter((item): item is MyComputerFileAction => {
+    if (!item || typeof item !== "object") return false;
+    const action = item as Partial<MyComputerFileAction>;
+    return typeof action.sourcePath === "string" && typeof action.targetPath === "string";
+  });
+}
+
 export async function updateMyComputerSettings(input: {
   allowedRoots?: string[];
   paused?: boolean;
+  alwaysAllowRules?: string[];
 }) {
   const allowedRoots = input.allowedRoots?.map(normalizeRoot).filter((root) => !isDangerousRoot(root));
+  if (input.alwaysAllowRules !== undefined) {
+    globalForMyComputer.manusxlMyComputerAlwaysAllow = new Set(input.alwaysAllowRules);
+  }
   updateAppConfig({
     myComputerAllowedRoots: allowedRoots,
-    myComputerPaused: input.paused
+    myComputerPaused: input.paused,
+    myComputerAlwaysAllowRules: input.alwaysAllowRules
   });
   await ensureMyComputerDefaultRoot();
   return getMyComputerStatus();
@@ -269,6 +324,13 @@ export async function getMyComputerStatus(ownerId?: string): Promise<MyComputerS
         note: "按内容 hash 识别重复文件，并移动到隔离目录。"
       },
       {
+        id: "file_undo",
+        label: "文件撤销",
+        ready: operations.some((operation) => isUndoableFileOperation(operation, ownerId)),
+        requiresApproval: true,
+        note: "可撤销最近一次已完成的批量移动/重命名。"
+      },
+      {
         id: "app_launch",
         label: "应用启动",
         ready: process.platform === "darwin" || process.platform === "win32" || process.platform === "linux",
@@ -281,6 +343,13 @@ export async function getMyComputerStatus(ownerId?: string): Promise<MyComputerS
         ready: true,
         requiresApproval: true,
         note: "macOS 使用 pbcopy；不可用时写入本地回退文件。"
+      },
+      {
+        id: "clipboard_read",
+        label: "剪贴板读取",
+        ready: true,
+        requiresApproval: true,
+        note: "macOS 使用 pbpaste；不可用时读取本地回退文件。"
       },
       {
         id: "keyboard_shortcut",
@@ -560,6 +629,7 @@ export async function approveAndRunMyComputerOperation(input: {
 
   if (input.decision === "always") {
     alwaysAllowSet().add(approvalKey(operation.kind, operation.target));
+    persistAlwaysAllowRules();
   }
 
   if (operation.actions?.length) {
@@ -590,7 +660,8 @@ async function executeFileActions(operation: MyComputerOperation, decision: MyCo
       status: "completed",
       dryRun: false,
       result: {
-        appliedActions: applied.length
+        appliedActions: applied.length,
+        applied
       }
     })!;
     auditOperation(completed, "completed");
@@ -600,7 +671,90 @@ async function executeFileActions(operation: MyComputerOperation, decision: MyCo
       status: "failed",
       error: error instanceof Error ? error.message : String(error),
       result: {
-        appliedActions: applied.length
+        appliedActions: applied.length,
+        applied
+      }
+    })!;
+    auditOperation(failed, "failed");
+    return failed;
+  }
+}
+
+export async function undoMyComputerFileOperation(input: {
+  ownerId?: string;
+  operationId?: string;
+}) {
+  if (isMyComputerPaused()) throw new Error("My Computer 已暂停。");
+  const targetOperation = operationList().find((operation) =>
+    input.operationId
+      ? operation.id === input.operationId && (!input.ownerId || operation.ownerId === input.ownerId)
+      : isUndoableFileOperation(operation, input.ownerId)
+  );
+  if (!targetOperation) throw new Error("没有可撤销的 My Computer 文件操作。");
+  if (!isUndoableFileOperation(targetOperation, input.ownerId)) {
+    throw new Error("该 My Computer 文件操作当前不可撤销。");
+  }
+
+  const applied = appliedActionsFromOperation(targetOperation);
+  if (applied.length === 0) throw new Error("该操作没有可恢复的文件动作。");
+
+  const undoOperation = makeOperation({
+    ownerId: input.ownerId,
+    kind: "file_undo",
+    target: targetOperation.target,
+    description: `撤销 ${targetOperation.description}`,
+    dryRun: false,
+    requiresApproval: false,
+    actions: applied.map((action) => ({
+      ...action,
+      id: createId("mcundo"),
+      sourcePath: action.targetPath,
+      targetPath: action.sourcePath,
+      reason: `撤销：${action.reason}`
+    })),
+    status: "approved",
+    result: {
+      sourceOperationId: targetOperation.id
+    }
+  });
+
+  const restored: MyComputerFileAction[] = [];
+  try {
+    for (const action of [...applied].reverse()) {
+      assertAllowedPath(action.sourcePath);
+      assertAllowedPath(action.targetPath);
+      await access(action.targetPath, constants.F_OK);
+      try {
+        await access(action.sourcePath, constants.F_OK);
+        throw new Error(`撤销目标已存在，已停止以避免覆盖：${action.sourcePath}`);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "ENOENT") throw error;
+      }
+      await mkdir(dirname(action.sourcePath), { recursive: true });
+      await rename(action.targetPath, action.sourcePath);
+      restored.push(action);
+    }
+
+    const completed = updateOperation(undoOperation.id, {
+      status: "completed",
+      result: {
+        sourceOperationId: targetOperation.id,
+        restoredActions: restored.length,
+        restored
+      }
+    })!;
+    updateOperation(targetOperation.id, { status: "undone" });
+    auditOperation(completed, "completed");
+    return completed;
+  } catch (error) {
+    const failed = updateOperation(undoOperation.id, {
+      status: "failed",
+      error: error instanceof Error ? error.message : String(error),
+      result: {
+        sourceOperationId: targetOperation.id,
+        restoredActions: restored.length,
+        restored
       }
     })!;
     auditOperation(failed, "failed");
@@ -613,6 +767,7 @@ export async function createMyComputerSystemOperation(input: {
   kind: Extract<
     MyComputerOperationKind,
     "app_launch" | "clipboard_write" | "keyboard_shortcut" | "mouse_click" | "terminal_command"
+    | "clipboard_read"
   >;
   target?: string;
   text?: string;
@@ -624,18 +779,18 @@ export async function createMyComputerSystemOperation(input: {
   decision?: MyComputerApprovalDecision;
 }) {
   if (isMyComputerPaused()) throw new Error("My Computer 已暂停。");
-  const target = (input.target || input.command || input.text || `${input.x ?? 0},${input.y ?? 0}`).trim();
+  const target = systemOperationTarget(input.kind, input) || input.kind;
   const key = approvalKey(input.kind, target || input.kind);
-  const dryRun = input.dryRun ?? true;
   const alreadyAllowed = alwaysAllowSet().has(key);
+  const shouldExecute = alreadyAllowed || (input.dryRun === false && Boolean(input.decision));
   const operation = makeOperation({
     ownerId: input.ownerId,
     kind: input.kind,
     target: target || input.kind,
     description: describeSystemOperation(input.kind, input),
-    dryRun,
+    dryRun: !shouldExecute,
     requiresApproval: true,
-    status: dryRun || (!input.decision && !alreadyAllowed) ? "pending_approval" : "approved",
+    status: shouldExecute ? "approved" : "pending_approval",
     result: {
       text: input.text,
       args: input.args,
@@ -644,7 +799,7 @@ export async function createMyComputerSystemOperation(input: {
     }
   });
 
-  if (dryRun || (!input.decision && !alreadyAllowed)) return operation;
+  if (!shouldExecute) return operation;
   return await executeSystemOperation(operation, input.decision ?? "always");
 }
 
@@ -661,6 +816,7 @@ function describeSystemOperation(
 ) {
   if (kind === "app_launch") return `启动应用：${input.target ?? "unknown"}`;
   if (kind === "clipboard_write") return `写入剪贴板：${input.text?.slice(0, 40) ?? ""}`;
+  if (kind === "clipboard_read") return "读取剪贴板";
   if (kind === "keyboard_shortcut") return `发送键盘快捷键：${input.target ?? input.text ?? ""}`;
   if (kind === "mouse_click") return `鼠标点击：${input.x ?? 0}, ${input.y ?? 0}`;
   if (kind === "terminal_command") return `执行终端命令：${input.command ?? ""}`;
@@ -698,6 +854,9 @@ async function runSystemOperation(operation: MyComputerOperation) {
   }
   if (operation.kind === "clipboard_write") {
     return await writeClipboard(String(detail.text ?? operation.target));
+  }
+  if (operation.kind === "clipboard_read") {
+    return await readClipboard();
   }
   if (operation.kind === "keyboard_shortcut") {
     return await sendKeyboardShortcut(operation.target);
@@ -741,6 +900,25 @@ async function writeClipboard(text: string) {
   await mkdir(dirname(fallbackPath), { recursive: true });
   await writeFile(fallbackPath, text, "utf8");
   return { clipboard: "file-fallback", path: fallbackPath, size: text.length };
+}
+
+async function readClipboard() {
+  if (process.platform === "darwin") {
+    const { stdout } = await execFileAsync("pbpaste", [], {
+      timeout: 5000,
+      maxBuffer: 1024 * 1024
+    });
+    const text = stdout.toString();
+    return { clipboard: "pbpaste", text, size: text.length };
+  }
+
+  const fallbackPath = resolve(dataPath("my-computer", "clipboard.txt"));
+  try {
+    const text = await readFile(fallbackPath, "utf8");
+    return { clipboard: "file-fallback", path: fallbackPath, text, size: text.length };
+  } catch {
+    return { clipboard: "file-fallback", path: fallbackPath, text: "", size: 0 };
+  }
 }
 
 async function sendKeyboardShortcut(shortcut: string) {

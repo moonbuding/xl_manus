@@ -12,10 +12,12 @@ export async function PATCH(request: Request) {
   const body = (await request.json().catch(() => ({}))) as {
     allowedRoots?: string[];
     paused?: boolean;
+    alwaysAllowRules?: string[];
   };
   const status = await updateMyComputerSettings({
     allowedRoots: body.allowedRoots,
-    paused: body.paused
+    paused: body.paused,
+    alwaysAllowRules: body.alwaysAllowRules
   });
   safeRecordAuditLog({
     userId: user.id,
@@ -25,7 +27,8 @@ export async function PATCH(request: Request) {
     ...requestAuditContext(request),
     metadata: {
       allowedRootCount: body.allowedRoots?.length,
-      paused: body.paused
+      paused: body.paused,
+      alwaysAllowRuleCount: body.alwaysAllowRules?.length
     }
   });
   return NextResponse.json(status);

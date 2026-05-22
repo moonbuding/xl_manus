@@ -135,8 +135,10 @@ export type MyComputerOperationKind =
   | "file_dedupe"
   | "file_rename"
   | "file_move"
+  | "file_undo"
   | "app_launch"
   | "clipboard_write"
+  | "clipboard_read"
   | "keyboard_shortcut"
   | "mouse_click"
   | "terminal_command";
@@ -146,6 +148,7 @@ export type MyComputerOperationStatus =
   | "pending_approval"
   | "approved"
   | "completed"
+  | "undone"
   | "blocked"
   | "failed";
 
