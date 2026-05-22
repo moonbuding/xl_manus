@@ -120,6 +120,14 @@ npm run e2e:database-status
 
 该脚本会验证数据库状态接口的登录保护、SQLite 行数统计、PostgreSQL CLI/schema 检查字段和迁移命令提示。
 
+本地浏览器 CDP 接入验收：
+
+```bash
+npm run e2e:local-browser
+```
+
+该脚本会验证本地浏览器状态接口的登录保护、localhost 安全限制和 CDP 状态返回。
+
 批量文件处理验收：
 
 ```bash

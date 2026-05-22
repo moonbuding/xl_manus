@@ -244,6 +244,16 @@ export interface DatabaseStatus {
   };
 }
 
+export interface LocalBrowserStatus {
+  endpoint: string;
+  connected: boolean;
+  checkedAt: string;
+  browser?: string;
+  protocolVersion?: string;
+  webSocketDebuggerUrl?: string;
+  error?: string;
+}
+
 export interface TaskTemplate {
   id: string;
   ownerId?: string;

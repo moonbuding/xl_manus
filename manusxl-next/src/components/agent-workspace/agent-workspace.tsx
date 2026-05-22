@@ -17,6 +17,7 @@ import {
   FileText,
   FileType,
   Gauge,
+  Globe,
   Home,
   Loader2,
   PanelRight,
@@ -47,6 +48,7 @@ import type {
   ContextMetricsSummary,
   CreateTaskResponse,
   DatabaseStatus,
+  LocalBrowserStatus,
   McpCatalogItem,
   McpServer,
   Task,
@@ -411,6 +413,7 @@ export function AgentWorkspace() {
   const [sandboxStatus, setSandboxStatus] = useState<SandboxStatus | null>(null);
   const [sandboxSelfTest, setSandboxSelfTest] = useState<SandboxSelfTestResult | null>(null);
   const [databaseStatus, setDatabaseStatus] = useState<DatabaseStatus | null>(null);
+  const [localBrowserStatus, setLocalBrowserStatus] = useState<LocalBrowserStatus | null>(null);
   const [ocrStatus, setOcrStatus] = useState<OcrStatus | null>(null);
   const [templateRun, setTemplateRun] = useState<{
     template: TaskTemplate;
@@ -438,6 +441,8 @@ export function AgentWorkspace() {
   const [isUploadingSkill, setIsUploadingSkill] = useState(false);
   const [isRunningSandboxTest, setIsRunningSandboxTest] = useState(false);
   const [isCheckingDatabase, setIsCheckingDatabase] = useState(false);
+  const [isCheckingLocalBrowser, setIsCheckingLocalBrowser] = useState(false);
+  const [localBrowserEndpoint, setLocalBrowserEndpoint] = useState("http://127.0.0.1:9222");
   const [isAddingMcp, setIsAddingMcp] = useState(false);
   const [mcpError, setMcpError] = useState<string | null>(null);
   const [mcpDraft, setMcpDraft] = useState({
@@ -550,6 +555,26 @@ export function AgentWorkspace() {
       setDatabaseStatus(null);
     } finally {
       if (checkPostgres) setIsCheckingDatabase(false);
+    }
+  }, []);
+
+  const refreshLocalBrowserStatus = useCallback(async (endpoint?: string) => {
+    setIsCheckingLocalBrowser(true);
+    try {
+      const response = await fetch("/api/local-browser/status", {
+        method: endpoint ? "POST" : "GET",
+        headers: endpoint ? { "Content-Type": "application/json" } : undefined,
+        body: endpoint ? JSON.stringify({ endpoint }) : undefined,
+        cache: "no-store"
+      });
+      if (!response.ok) return;
+      const data = await readJson<LocalBrowserStatus>(response);
+      setLocalBrowserStatus(data);
+      setLocalBrowserEndpoint(data.endpoint);
+    } catch {
+      setLocalBrowserStatus(null);
+    } finally {
+      setIsCheckingLocalBrowser(false);
     }
   }, []);
 
@@ -690,6 +715,7 @@ export function AgentWorkspace() {
         void refreshBilling();
         void refreshSandboxStatus();
         void refreshDatabaseStatus();
+        void refreshLocalBrowserStatus();
         void refreshOcrStatus();
       });
       void fetch("/api/config", { cache: "no-store" })
@@ -724,6 +750,7 @@ export function AgentWorkspace() {
     refreshAuthUser,
     refreshBilling,
     refreshDatabaseStatus,
+    refreshLocalBrowserStatus,
     refreshMcpCatalog,
     refreshMcpServers,
     refreshOcrStatus,
@@ -1540,6 +1567,14 @@ export function AgentWorkspace() {
 
           <section className="section-panel">
             <div className="panel-title">
+              <Globe size={14} />
+              本地浏览器
+            </div>
+            {renderLocalBrowserPanel()}
+          </section>
+
+          <section className="section-panel">
+            <div className="panel-title">
               <FileText size={14} />
               OCR
             </div>
@@ -1768,6 +1803,59 @@ export function AgentWorkspace() {
               : sandboxSelfTest.resourceError?.message ?? sandboxSelfTest.error ?? "沙盒自检失败。"}
           </p>
         ) : null}
+      </div>
+    );
+  }
+
+  function renderLocalBrowserPanel() {
+    const statusLabel = localBrowserStatus
+      ? localBrowserStatus.connected
+        ? "connected"
+        : "offline"
+      : "unknown";
+    const detail = localBrowserStatus
+      ? localBrowserStatus.connected
+        ? `${localBrowserStatus.browser ?? "Chrome"} · CDP ${localBrowserStatus.protocolVersion ?? "unknown"}`
+        : localBrowserStatus.error ?? "未检测到本地 Chrome CDP"
+      : "尚未检测";
+
+    return (
+      <div className="sandbox-panel">
+        <div className="metric-list compact">
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">连接</span>
+              <span className="metric-meta">{detail}</span>
+            </div>
+            <strong>{statusLabel}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">CDP 地址</span>
+              <span className="metric-meta">{localBrowserStatus?.endpoint ?? localBrowserEndpoint}</span>
+            </div>
+            <strong>{localBrowserStatus?.webSocketDebuggerUrl ? "ws" : "http"}</strong>
+          </div>
+        </div>
+        <label className="settings-field">
+          <span>Chrome DevTools 地址</span>
+          <input
+            value={localBrowserEndpoint}
+            onChange={(event) => setLocalBrowserEndpoint(event.target.value)}
+            placeholder="http://127.0.0.1:9222"
+          />
+        </label>
+        <div className="panel-actions">
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isCheckingLocalBrowser}
+            onClick={() => void refreshLocalBrowserStatus(localBrowserEndpoint)}
+          >
+            {isCheckingLocalBrowser ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />}
+            检测连接
+          </button>
+        </div>
       </div>
     );
   }

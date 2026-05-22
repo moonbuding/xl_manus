@@ -75,7 +75,7 @@ REQ-105 (重试增强) ────┤         REQ-110 (Prompt Cache)
 | REQ-111 | 多模型混合调度：规划用 Opus、执行用 Sonnet/Haiku | M10 | 3-5 人天 | Completed |
 | REQ-112 | 任务模板系统：常用任务保存为模板，一键复用 | M06 | 2-3 人天 | Completed |
 | REQ-113 | **工具动态启用（per-task tool masking）**：按任务上下文 mask 不相关工具 | M02 | 3-4 人天 | Completed |
-| REQ-114 | **本地浏览器集成（用户已登录态）**：通过 Chrome 扩展/CDP 利用本机浏览器绕 paywall/CAPTCHA | M03 | 5-7 人天 | Planning |
+| REQ-114 | **本地浏览器集成（用户已登录态）**：通过 Chrome 扩展/CDP 利用本机浏览器绕 paywall/CAPTCHA | M03 | 5-7 人天 | In Progress |
 | REQ-115 | **Skills 包格式（SKILL.md 兼容 Anthropic 开放标准）**：可加载社区 skill，按需启用 | M02 | 4-5 人天 | Completed |
 | REQ-116 | **Data Visualization Dashboard 生成**：基于数据自动出图表（matplotlib/plotly）+ 拼装 HTML dashboard | M05 | 3-4 人天 | Completed |
 | **总计** | | | **46-67 人天（约 9-14 周）** | |
@@ -690,7 +690,7 @@ As a 平台开发者，I want Agent 在做"网页调研"时不暴露"shell 执�
 ---
 
 ### REQ-114：本地浏览器集成（用户已登录态）
-**模块**: M03 | **状态**: Planning | **工作量**: 5-7 人天
+**模块**: M03 | **状态**: In Progress | **工作量**: 5-7 人天
 
 #### 背景与价值
 Manus 用户最大痛点之一是"**被 paywall + CAPTCHA 卡住——深度调研被现实墙阻挡**"（[REQ-000 §6.2](REQ-000-manus-capability-research.md)）。利用用户本地浏览器的已登录态（cookies/session）就能绕开 99% 的人机校验。这是复刻品对 Manus 的直接差异化优势。
@@ -712,6 +712,13 @@ As a 已经登录了 The Information / Bloomberg / 知网的用户，I want Agen
 - [ ] Agent 能通过本地浏览器登录态访问付费文章
 - [ ] 用户在扩展 UI 看到 Agent 当前操作
 - [ ] 域名不在 allowlist 时操作被拦截
+
+#### 实施记录（2026-05-22）
+- 新增 `/api/local-browser/status`，登录后可检测本地 Chrome DevTools Protocol endpoint，默认 `http://127.0.0.1:9222`。
+- CDP endpoint 已做 localhost/127.0.0.1 限制，避免把检测接口变成任意内网探测入口。
+- Settings 新增"本地浏览器"面板，可配置 CDP 地址并显示 Chrome/CDP 连接状态。
+- 新增 `npm run e2e:local-browser`，覆盖未登录保护、非 localhost 地址拦截和 CDP 状态返回。
+- 待补：Chrome 扩展/本地 helper 配对、域名 allowlist、Agent browser tool 通过 CDP 获取 DOM/截图和执行点击输入。
 
 #### 相关 OpenManus 代码
 - 可复用：[OpenManus-main/app/tool/browser_use_tool.py](../OpenManus-main/app/tool/browser_use_tool.py) — `wss_url`/`cdp_url` 已支持远程浏览器
