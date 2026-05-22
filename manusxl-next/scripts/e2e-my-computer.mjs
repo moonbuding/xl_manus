@@ -210,6 +210,35 @@ async function main() {
   });
   assert(mouse.body.operation.status === "pending_approval", "鼠标动作 dry-run 应等待授权");
 
+  const terminal = await client.fetchJson("/api/my-computer/actions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind: "terminal_command", command: "pwd", dryRun: true })
+  });
+  assert(terminal.body.operation.status === "pending_approval", "本机命令 dry-run 应等待授权");
+  const approvedTerminal = await client.fetchJson("/api/my-computer/approvals", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ operationId: terminal.body.operation.id, decision: "allow_once" })
+  });
+  assert(approvedTerminal.body.operation.status === "completed", "本机命令授权后未完成");
+  assert(
+    String(approvedTerminal.body.operation.result?.stdout ?? "").includes(root),
+    "本机命令没有在 My Computer 允许目录内执行"
+  );
+
+  const unsafeTerminal = await client.fetchJson("/api/my-computer/actions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind: "terminal_command", command: "rm -rf /", dryRun: true })
+  });
+  const blockedTerminal = await client.fetchJson("/api/my-computer/approvals", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ operationId: unsafeTerminal.body.operation.id, decision: "allow_once" })
+  });
+  assert(blockedTerminal.body.operation.status === "failed", "非白名单本机命令应被阻止");
+
   const blockedOutsideRoot = await client.fetchJson(
     "/api/my-computer/files/scan",
     {
@@ -242,6 +271,8 @@ async function main() {
       "clipboard read/write execution",
       "persistent always allow",
       "mouse authorization",
+      "safe terminal command",
+      "unsafe terminal blocked",
       "path guard",
       "audit log"
     ]

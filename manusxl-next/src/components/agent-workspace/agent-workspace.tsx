@@ -547,10 +547,16 @@ export function AgentWorkspace() {
     mode: "classify" as MyComputerFilePlanMode,
     actionKind: "app_launch" as Extract<
       MyComputerOperationKind,
-      "app_launch" | "clipboard_write" | "clipboard_read" | "keyboard_shortcut" | "mouse_click"
+      | "app_launch"
+      | "clipboard_write"
+      | "clipboard_read"
+      | "keyboard_shortcut"
+      | "mouse_click"
+      | "terminal_command"
     >,
     actionTarget: "Calculator",
     actionText: "来自 ManusXL 的剪贴板测试",
+    actionCommand: "pwd",
     x: "320",
     y: "240"
   });
@@ -1013,6 +1019,7 @@ export function AgentWorkspace() {
                 ? "screen"
                 : myComputerDraft.actionTarget,
           text: myComputerDraft.actionKind === "clipboard_write" ? myComputerDraft.actionText : undefined,
+          command: myComputerDraft.actionKind === "terminal_command" ? myComputerDraft.actionCommand : undefined,
           x: myComputerDraft.actionKind === "mouse_click" ? Number(myComputerDraft.x) : undefined,
           y: myComputerDraft.actionKind === "mouse_click" ? Number(myComputerDraft.y) : undefined,
           dryRun: true
@@ -3077,6 +3084,7 @@ export function AgentWorkspace() {
               <option value="clipboard_read">读取剪贴板</option>
               <option value="keyboard_shortcut">键盘快捷键</option>
               <option value="mouse_click">鼠标点击</option>
+              <option value="terminal_command">本机命令</option>
             </select>
           </label>
           {myComputerDraft.actionKind === "clipboard_write" ? (
@@ -3091,6 +3099,17 @@ export function AgentWorkspace() {
             </label>
           ) : myComputerDraft.actionKind === "clipboard_read" ? (
             <p className="muted-note">读取剪贴板会先进入动作授权，确认后只回传文本长度和预览。</p>
+          ) : myComputerDraft.actionKind === "terminal_command" ? (
+            <label className="settings-field">
+              <span>命令</span>
+              <input
+                value={myComputerDraft.actionCommand}
+                onChange={(event) =>
+                  setMyComputerDraft((current) => ({ ...current, actionCommand: event.target.value }))
+                }
+                placeholder="pwd"
+              />
+            </label>
           ) : myComputerDraft.actionKind === "mouse_click" ? (
             <div className="browser-coordinate-row">
               <label className="settings-field">

@@ -761,6 +761,24 @@ async function runMyComputer(input: AgentToolInput): Promise<AgentToolResult> {
     };
   }
 
+  if (/terminal|本机命令|终端命令|命令执行|执行命令/.test(lower)) {
+    const command =
+      joinedPrompt.match(/(?:执行命令|终端命令|本机命令|terminal)\s*[:：]?\s*([a-z0-9._-]+(?:\s+[^\n，。；;]*)?)/i)?.[1]?.trim() ??
+      "pwd";
+    const operation = await createMyComputerSystemOperation({
+      ownerId: input.ownerId,
+      kind: "terminal_command",
+      command,
+      dryRun: true
+    });
+    return {
+      toolName: "my_computer",
+      ok: true,
+      observation: `已创建本机命令授权请求：${command}。命令仅在 My Computer 允许目录内执行。`,
+      payload: { status, operation } as unknown as Record<string, unknown>
+    };
+  }
+
   if (/启动|打开.*应用|app|calculator|excel|word|pages|numbers/.test(lower)) {
     const appName =
       joinedPrompt.match(/(?:启动|打开)\s*([A-Za-z0-9\u4e00-\u9fa5 ._-]{2,40})/)?.[1]?.trim() ??

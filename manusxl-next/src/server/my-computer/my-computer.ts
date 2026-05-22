@@ -45,6 +45,9 @@ import type {
 const execFileAsync = promisify(execFile);
 const maxRecentOperations = 80;
 const maxFileHashBytes = 50 * 1024 * 1024;
+const terminalTimeoutMs = 5000;
+const terminalMaxBuffer = 256 * 1024;
+const allowedTerminalCommands = new Set(["pwd", "whoami", "date", "ls", "echo"]);
 const undoableFileKinds = new Set<MyComputerOperationKind>([
   "file_classify",
   "file_dedupe",
@@ -364,6 +367,13 @@ export async function getMyComputerStatus(ownerId?: string): Promise<MyComputerS
         ready: false,
         requiresApproval: true,
         note: "MVP 先提供授权和 dry-run；真实点击后续接 nut.js 或 cliclick。"
+      },
+      {
+        id: "terminal_command",
+        label: "本机命令",
+        ready: true,
+        requiresApproval: true,
+        note: "仅允许短时白名单命令，cwd 固定在 My Computer 允许目录。"
       }
     ],
     recentOperations: operations.slice(0, 20),
@@ -793,6 +803,7 @@ export async function createMyComputerSystemOperation(input: {
     status: shouldExecute ? "approved" : "pending_approval",
     result: {
       text: input.text,
+      command: input.command,
       args: input.args,
       x: input.x,
       y: input.y
@@ -865,7 +876,7 @@ async function runSystemOperation(operation: MyComputerOperation) {
     throw new Error("鼠标点击执行需要接入 nut.js 或 cliclick；当前 MVP 只提供授权和 dry-run。");
   }
   if (operation.kind === "terminal_command") {
-    throw new Error("本机 terminal 执行默认关闭；请先接入命令 allowlist 后启用。");
+    return await runTerminalCommand(operation);
   }
   return {};
 }
@@ -919,6 +930,56 @@ async function readClipboard() {
   } catch {
     return { clipboard: "file-fallback", path: fallbackPath, text: "", size: 0 };
   }
+}
+
+function splitCommandLine(value: string) {
+  return value
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 12);
+}
+
+function validateTerminalArg(arg: string, cwd: string) {
+  if (arg.length > 160) throw new Error("命令参数过长。");
+  if (/[\0\r\n;&|<>`$]/.test(arg)) throw new Error("命令参数包含不安全字符。");
+  if (arg.startsWith("-")) return arg;
+  const resolved = resolve(cwd, expandHome(arg));
+  if (arg.includes("/") || arg.includes("\\")) {
+    assertAllowedPath(resolved);
+  }
+  return arg;
+}
+
+async function runTerminalCommand(operation: MyComputerOperation) {
+  const detail = operation.result ?? {};
+  const rawCommand = String(detail.command ?? operation.target).trim();
+  const providedArgs = Array.isArray(detail.args) ? detail.args.map(String) : undefined;
+  const parts = providedArgs ? [rawCommand, ...providedArgs] : splitCommandLine(rawCommand);
+  const command = basename(parts[0] ?? "");
+  if (!allowedTerminalCommands.has(command)) {
+    throw new Error(`本机命令未加入 My Computer 白名单：${command || "empty"}`);
+  }
+
+  const cwd = configuredAllowedRoots()[0];
+  await mkdir(cwd, { recursive: true });
+  assertAllowedPath(cwd);
+  const args = parts.slice(1).map((arg) => validateTerminalArg(arg, cwd));
+  const startedAt = Date.now();
+  const { stdout, stderr } = await execFileAsync(command, args, {
+    cwd,
+    timeout: terminalTimeoutMs,
+    maxBuffer: terminalMaxBuffer
+  });
+  return {
+    command,
+    args,
+    cwd,
+    exitCode: 0,
+    stdout: stdout.toString().slice(0, 12000),
+    stderr: stderr.toString().slice(0, 12000),
+    durationMs: Date.now() - startedAt
+  };
 }
 
 async function sendKeyboardShortcut(shortcut: string) {
