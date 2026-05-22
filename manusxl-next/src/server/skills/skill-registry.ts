@@ -1,8 +1,15 @@
+import { spawnSync } from "node:child_process";
 import { inflateRawSync } from "node:zlib";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, extname, join, posix } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { dataPath } from "@/server/data-root";
+import {
+  canUsePostgresRuntime,
+  checkPsqlCli,
+  postgresDatabaseUrl,
+  requestedDatabaseProvider
+} from "@/server/db/provider";
 import { getManusDb } from "@/server/sqlite";
 import type { AgentSkill } from "@/types/agent";
 
@@ -109,6 +116,17 @@ const builtinSkills: AgentSkill[] = [
 
 const executableSkillScripts = ["main.py", "run.py", "skill.py", "handler.py"];
 
+const globalForSkills = globalThis as unknown as {
+  manusxlSkillSettingsStore?: SkillSettingsPersistenceAdapter;
+};
+
+interface SkillSettingsPersistenceAdapter {
+  provider: "sqlite" | "postgres";
+  ensureSchema: () => void;
+  readEnabled: (skillId: string, ownerId?: string) => number | undefined;
+  setEnabled: (skillId: string, enabled: boolean, ownerId?: string) => void;
+}
+
 function openSkillsDb() {
   const db = getManusDb();
   db.exec(`
@@ -124,12 +142,6 @@ function openSkillsDb() {
   return db;
 }
 
-function getDb() {
-  const db = openSkillsDb();
-  ensureSkillSchema(db);
-  return db;
-}
-
 function ensureSkillSchema(db: DatabaseSync) {
   const columns = new Set(
     (db.prepare("PRAGMA table_info(skill_settings)").all() as Array<{ name: string }>).map(
@@ -141,6 +153,136 @@ function ensureSkillSchema(db: DatabaseSync) {
   db.exec("CREATE INDEX IF NOT EXISTS idx_skill_settings_owner_id ON skill_settings(owner_id)");
 }
 
+function createSqliteSkillSettingsStore(): SkillSettingsPersistenceAdapter {
+  const db = openSkillsDb();
+  return {
+    provider: "sqlite",
+    ensureSchema: () => ensureSkillSchema(db),
+    readEnabled: (id, ownerId) => {
+      const row = db.prepare("SELECT enabled FROM skill_settings WHERE id = ?").get(settingId(id, ownerId)) as
+        | { enabled: number }
+        | undefined;
+      return row?.enabled;
+    },
+    setEnabled: (id, enabled, ownerId) => {
+      db.prepare(`
+        INSERT INTO skill_settings (id, owner_id, skill_id, enabled, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          owner_id = excluded.owner_id,
+          skill_id = excluded.skill_id,
+          enabled = excluded.enabled,
+          updated_at = excluded.updated_at
+      `).run(settingId(id, ownerId), ownerId ?? null, id, enabled ? 1 : 0, new Date().toISOString());
+    }
+  };
+}
+
+function postgresSchemaPath() {
+  return join(process.cwd(), "db", "postgres", "0001_initial.sql");
+}
+
+function quotePostgresString(value: string) {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+function postgresValue(value: string | number | null | undefined) {
+  if (value === undefined || value === null) return "NULL";
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : "NULL";
+  return quotePostgresString(value);
+}
+
+function runPsql(args: string[]) {
+  const databaseUrl = postgresDatabaseUrl();
+  if (!databaseUrl) throw new Error("DATABASE_URL 未配置，无法使用 PostgreSQL Skill 设置存储");
+
+  const result = spawnSync("psql", [databaseUrl, "-v", "ON_ERROR_STOP=1", "-X", "-q", ...args], {
+    encoding: "utf8",
+    maxBuffer: 4 * 1024 * 1024,
+    stdio: ["pipe", "pipe", "pipe"]
+  });
+  if (result.status !== 0) {
+    throw new Error((result.stderr || result.stdout || "psql 执行失败").trim());
+  }
+  return result.stdout;
+}
+
+function ensurePostgresSchema() {
+  const schemaPath = postgresSchemaPath();
+  if (!existsSync(schemaPath)) {
+    throw new Error(`找不到 PostgreSQL schema：${schemaPath}`);
+  }
+  runPsql(["-f", schemaPath]);
+}
+
+function createPostgresSkillSettingsStore(): SkillSettingsPersistenceAdapter {
+  ensurePostgresSchema();
+  return {
+    provider: "postgres",
+    ensureSchema: ensurePostgresSchema,
+    readEnabled: (id, ownerId) => {
+      const output = runPsql([
+        "-At",
+        "-c",
+        `
+          SELECT enabled
+          FROM skill_settings
+          WHERE id = ${postgresValue(settingId(id, ownerId))}
+          LIMIT 1;
+        `
+      ]).trim();
+      return output ? Number.parseInt(output, 10) : undefined;
+    },
+    setEnabled: (id, enabled, ownerId) => {
+      runPsql([
+        "-c",
+        `
+          INSERT INTO skill_settings (id, owner_id, skill_id, enabled, updated_at)
+          VALUES (
+            ${postgresValue(settingId(id, ownerId))},
+            ${postgresValue(ownerId)},
+            ${postgresValue(id)},
+            ${postgresValue(enabled ? 1 : 0)},
+            ${postgresValue(new Date().toISOString())}
+          )
+          ON CONFLICT (id) DO UPDATE SET
+            owner_id = EXCLUDED.owner_id,
+            skill_id = EXCLUDED.skill_id,
+            enabled = EXCLUDED.enabled,
+            updated_at = EXCLUDED.updated_at;
+        `
+      ]);
+    }
+  };
+}
+
+function createSkillSettingsStore(): SkillSettingsPersistenceAdapter {
+  const requestedProvider = requestedDatabaseProvider();
+  if (requestedProvider === "postgres") {
+    const psql = checkPsqlCli();
+    if (!canUsePostgresRuntime(psql)) {
+      console.warn(
+        "MANUSXL_DATABASE_PROVIDER=postgres 已设置，但 DATABASE_URL 或 psql CLI 不可用，Skill 设置存储回退 SQLite。"
+      );
+      return createSqliteSkillSettingsStore();
+    }
+    try {
+      return createPostgresSkillSettingsStore();
+    } catch (error) {
+      console.warn(
+        `PostgreSQL Skill 设置存储初始化失败，已回退 SQLite：${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+  return createSqliteSkillSettingsStore();
+}
+
+function getSkillSettingsStore() {
+  globalForSkills.manusxlSkillSettingsStore ??= createSkillSettingsStore();
+  globalForSkills.manusxlSkillSettingsStore.ensureSchema();
+  return globalForSkills.manusxlSkillSettingsStore;
+}
+
 function localSkillsRoot(ownerId?: string) {
   return ownerId ? dataPath("skills", ownerId) : sharedSkillsRoot;
 }
@@ -149,17 +291,13 @@ function settingId(skillId: string, ownerId?: string) {
   return ownerId ? `${ownerId}:${skillId}` : skillId;
 }
 
-function readSkillSetting(db: DatabaseSync, id: string, ownerId?: string) {
-  const row = db.prepare("SELECT enabled FROM skill_settings WHERE id = ?").get(settingId(id, ownerId)) as
-    | { enabled: number }
-    | undefined;
-  return row?.enabled;
+function readSkillSetting(id: string, ownerId?: string) {
+  return getSkillSettingsStore().readEnabled(id, ownerId);
 }
 
 function applyEnabledSettings(skills: AgentSkill[], ownerId?: string) {
-  const db = getDb();
   return skills.map((skill) => {
-    const enabled = readSkillSetting(db, skill.id, ownerId);
+    const enabled = readSkillSetting(skill.id, ownerId);
     return {
       ...skill,
       ownerId: skill.ownerId ?? ownerId,
@@ -242,16 +380,7 @@ export function listSkills(ownerId?: string) {
 }
 
 export function updateSkillEnabled(skillId: string, enabled: boolean, ownerId?: string) {
-  const db = getDb();
-  db.prepare(`
-    INSERT INTO skill_settings (id, owner_id, skill_id, enabled, updated_at)
-    VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET
-      owner_id = excluded.owner_id,
-      skill_id = excluded.skill_id,
-      enabled = excluded.enabled,
-      updated_at = excluded.updated_at
-  `).run(settingId(skillId, ownerId), ownerId ?? null, skillId, enabled ? 1 : 0, new Date().toISOString());
+  getSkillSettingsStore().setEnabled(skillId, enabled, ownerId);
   return listSkills(ownerId);
 }
 
