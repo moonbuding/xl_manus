@@ -54,6 +54,11 @@ function stateCookieName(provider: OAuthProvider) {
   return `manusxl_oauth_state_${provider}`;
 }
 
+function isDevelopmentOAuthRehearsal(request: Request) {
+  const url = new URL(request.url);
+  return process.env.NODE_ENV !== "production" && url.searchParams.get("dev") === "1";
+}
+
 function envNamesForProvider(provider: OAuthProvider) {
   return provider === "google"
     ? {
@@ -83,13 +88,29 @@ export function startOAuth(providerParam: string, request: Request) {
   const provider = providerFromParam(providerParam);
   if (!provider) return NextResponse.json({ error: "Unsupported OAuth provider" }, { status: 404 });
   const config = providerConfig(provider);
-  if (!config.clientId || !config.clientSecret) {
+  const developmentRehearsal = isDevelopmentOAuthRehearsal(request);
+  if (!developmentRehearsal && (!config.clientId || !config.clientSecret)) {
     return NextResponse.json({ error: `${provider} OAuth 未配置 Client ID/Secret` }, { status: 400 });
   }
 
   const state = randomBytes(24).toString("base64url");
+  if (developmentRehearsal) {
+    const rehearsalCallbackUrl = new URL(callbackUrl(request, provider));
+    rehearsalCallbackUrl.searchParams.set("code", `dev-oauth-${provider}-${Date.now().toString(36)}`);
+    rehearsalCallbackUrl.searchParams.set("state", state);
+    const response = NextResponse.redirect(rehearsalCallbackUrl);
+    response.cookies.set(stateCookieName(provider), state, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: false,
+      path: "/",
+      maxAge: 10 * 60
+    });
+    return response;
+  }
+
   const authorizeUrl = new URL(config.authorizeUrl);
-  authorizeUrl.searchParams.set("client_id", config.clientId);
+  authorizeUrl.searchParams.set("client_id", config.clientId ?? "");
   authorizeUrl.searchParams.set("redirect_uri", callbackUrl(request, provider));
   authorizeUrl.searchParams.set("response_type", "code");
   authorizeUrl.searchParams.set("scope", config.scope);
@@ -111,6 +132,10 @@ export function startOAuth(providerParam: string, request: Request) {
 }
 
 async function exchangeToken(provider: OAuthProvider, code: string, request: Request) {
+  if (process.env.NODE_ENV !== "production" && code.startsWith(`dev-oauth-${provider}-`)) {
+    return `dev-oauth-token:${provider}:${code}`;
+  }
+
   const config = providerConfig(provider);
   if (!config.clientId || !config.clientSecret) {
     throw new Error(`${provider} OAuth 未配置 Client ID/Secret`);
@@ -177,6 +202,13 @@ async function fetchGithubProfile(accessToken: string): Promise<OAuthProfile> {
 }
 
 async function fetchProfile(provider: OAuthProvider, accessToken: string) {
+  if (process.env.NODE_ENV !== "production" && accessToken.startsWith(`dev-oauth-token:${provider}:`)) {
+    return {
+      providerAccountId: `dev-${provider}`,
+      email: `dev-${provider}@oauth.manusxl.local`,
+      displayName: `Dev ${provider}`
+    };
+  }
   return provider === "google" ? fetchGoogleProfile(accessToken) : fetchGithubProfile(accessToken);
 }
 

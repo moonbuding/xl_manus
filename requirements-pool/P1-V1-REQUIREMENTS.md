@@ -162,7 +162,7 @@ As a 第一次访问产品的用户，I want 点 "Sign in with Google" 一键登
 - 非功能：JWT 过期 7 天，refresh token 30 天
 
 #### 验收标准
-- [ ] Google OAuth 流程能完成 callback 并创建用户（待真实 Google Client ID/Secret）
+- [x] Google OAuth 流程能完成 callback 并创建用户（开发演练模式已覆盖 state cookie、callback、用户创建和 session；真实 Google Client ID/Secret 待外部验收）
 - [x] 开发阶段手机号验证码登录成功，验证码直接显示在页面，不接短信服务
 - [x] Email 注册收到验证邮件，验证后登录成功（保留 API 兼容，当前不作为主入口）
 - [x] 未登录访问 `/api/tasks` 返回 401
@@ -179,7 +179,8 @@ As a 第一次访问产品的用户，I want 点 "Sign in with Google" 一键登
 - 新增 `auth_sessions` 会话表，refresh token 带 session id 并保存哈希；refresh 时轮换并撤销旧 token，logout 时撤销当前 refresh token，`npm run e2e:auth` 已覆盖旧 token/退出后 token 无法续期。
 - 新增 SMTP 邮件投递底座：`MANUSXL_SMTP_HOST/PORT/SECURE/USER/PASSWORD` + `MANUSXL_EMAIL_FROM` 配置后，邮箱注册会发送真实验证码邮件；本地开发保留 `MANUSXL_AUTH_SHOW_VERIFICATION_CODE=true` 直接显示验证码。
 - 新增 `/api/auth/status` 与 Settings 认证状态面板，可显示 SMTP 投递模式、Google/GitHub OAuth 配置缺口、生产回调 URL、session cookie TTL 和 secure 状态。
-- `npm run e2e:auth` 已覆盖 email delivery mode 返回、认证状态接口、本地验证码显示、邮箱验证、Bearer token、refresh token 轮换和 logout 撤销。
+- 新增开发 OAuth 回调演练：`/api/auth/oauth/google/start?dev=1` 在非生产环境完整走 state cookie、callback、创建 OAuth 用户和写入 session，不访问外部 Google 网络。
+- `npm run e2e:auth` 已覆盖 dev oauth callback、email delivery mode 返回、认证状态接口、本地验证码显示、邮箱验证、Bearer token、refresh token 轮换和 logout 撤销。
 - 待补：使用真实 SMTP 凭据做外发邮件验收、生产 OAuth 回调域名配置验收。
 
 #### 相关 OpenManus 代码

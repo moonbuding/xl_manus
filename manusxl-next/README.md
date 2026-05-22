@@ -45,6 +45,14 @@ MANUSXL_SMTP_PASSWORD=your_smtp_password
 
 未配置 SMTP 时，邮箱注册仍走开发模式并返回本地验证码；配置 SMTP 后会发送验证邮件，生产环境建议关闭 `MANUSXL_AUTH_SHOW_VERIFICATION_CODE`。
 
+本地开发也支持 OAuth 回调演练，不访问 Google/GitHub 网络，但会完整走 state cookie、callback、创建用户和写入 session：
+
+```bash
+open http://localhost:3001/api/auth/oauth/google/start?dev=1
+```
+
+真实 OAuth 上线时，在第三方后台把回调地址配置为 Settings / 认证面板展示的 `/api/auth/oauth/{provider}/callback`，并填入 `MANUSXL_GOOGLE_CLIENT_ID/SECRET` 或 `MANUSXL_GITHUB_CLIENT_ID/SECRET`。
+
 `MANUSXL_SANDBOX_MODE=auto` 会优先用 Docker 执行 Python/Shell 工具；如果 Docker 基础设施不可用，会回退到本地执行并在工具 payload 中记录原因。用户脚本失败、超时、OOM 或磁盘配额超限不会回退本机。要强制只用 Docker，可设为 `docker`；要禁用沙盒，可设为 `local`。`MANUSXL_SANDBOX_POOL=1` 会在同一个任务内复用容器，任务结束后自动清理。`MANUSXL_WORKSPACE_QUOTA_MB` 用于限制单任务 workspace 的软磁盘配额。首次启用 Docker 沙盒前建议先拉取镜像：
 
 ```bash

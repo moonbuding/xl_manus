@@ -76,6 +76,25 @@ async function main() {
     oauthNotConfigured.status === 400 || oauthNotConfigured.status === 307 || oauthNotConfigured.status === 302,
     "Google OAuth start 应在未配置时安全失败，或在已配置时重定向"
   );
+  const oauthClient = createClient();
+  const devOAuthStart = await oauthClient.fetchJson(
+    "/api/auth/oauth/google/start?dev=1",
+    { redirect: "manual" },
+    true
+  );
+  assert([302, 303, 307, 308].includes(devOAuthStart.response.status), "开发 OAuth 演练 start 应重定向 callback");
+  const devOAuthLocation = devOAuthStart.response.headers.get("location");
+  assert(devOAuthLocation?.includes("/api/auth/oauth/google/callback"), "开发 OAuth 演练缺少 callback location");
+  const devOAuthCallbackUrl = new URL(devOAuthLocation, baseUrl);
+  const devOAuthCallback = await oauthClient.fetchJson(
+    `${devOAuthCallbackUrl.pathname}${devOAuthCallbackUrl.search}`,
+    { redirect: "manual" },
+    true
+  );
+  assert([302, 303, 307, 308].includes(devOAuthCallback.response.status), "开发 OAuth 演练 callback 应写入 session 并重定向");
+  const devOAuthMe = await oauthClient.fetchJson("/api/auth/me");
+  assert(devOAuthMe.body.user?.email === "dev-google@oauth.manusxl.local", "开发 OAuth 演练没有创建 Google 用户");
+  await oauthClient.fetchJson("/api/auth/logout", { method: "POST" });
 
   const email = `e2e-${Date.now()}@example.com`;
   const password = "password-123";
@@ -143,6 +162,7 @@ async function main() {
     email,
     checked: [
       "unauthorized",
+      "dev oauth callback",
       "email register",
       "email delivery",
       "email verify",
