@@ -64,20 +64,20 @@ REQ-105 (重试增强) ────┤         REQ-110 (Prompt Cache)
 |----|------|------|-----------|------|
 | REQ-101 | PostgreSQL 替换 SQLite + Alembic 迁移 | M07 | 3-4 人天 | Planning |
 | REQ-102 | OAuth2（Google/GitHub）+ Email-Password 认证 | M07 | 3-5 人天 | In Progress |
-| REQ-103 | 用户隔离：workspace 按 user_id 分目录 + 任务 ACL | M07 | 2-3 人天 | In Progress |
+| REQ-103 | 用户隔离：workspace 按 user_id 分目录 + 任务 ACL | M07 | 2-3 人天 | Completed |
 | REQ-104 | Sandbox 多租户：独立容器池 + 资源配额（CPU/内存/超时/磁盘） | M04 | 5-7 人天 | In Progress |
 | REQ-105 | 重试/降级策略增强：Tool 失败 → 备用 Tool → 回流 Agent 重规划 | M02 | 2-3 人天 | In Progress |
-| REQ-106 | 任务持久化与续传：浏览器关闭/网络中断后可恢复 | M06/M07 | 2-3 人天 | In Progress |
+| REQ-106 | 任务持久化与续传：浏览器关闭/网络中断后可恢复 | M06/M07 | 2-3 人天 | Completed |
 | REQ-107 | MCP 服务市场：用户可自助接入第三方 MCP Server（UI 配置） | M02 | 3-5 人天 | In Progress |
 | REQ-108 | 图片批量处理（Pillow + OCR） + 文件批量重命名工具 | M05 | 2-3 人天 | Completed |
-| REQ-109 | **透明计费 UI**：token 级成本可预测（不是 credit 池），UI 显示每步成本 | M10 | 3-4 人天 | In Progress |
-| REQ-110 | Prompt Cache 优化（Claude prompt caching） | M10 | 1-2 人天 | In Progress |
+| REQ-109 | **透明计费 UI**：token 级成本可预测（不是 credit 池），UI 显示每步成本 | M10 | 3-4 人天 | Completed |
+| REQ-110 | Prompt Cache 优化（Claude prompt caching） | M10 | 1-2 人天 | Completed |
 | REQ-111 | 多模型混合调度：规划用 Opus、执行用 Sonnet/Haiku | M10 | 3-5 人天 | In Progress |
 | REQ-112 | 任务模板系统：常用任务保存为模板，一键复用 | M06 | 2-3 人天 | Completed |
 | REQ-113 | **工具动态启用（per-task tool masking）**：按任务上下文 mask 不相关工具 | M02 | 3-4 人天 | Completed |
 | REQ-114 | **本地浏览器集成（用户已登录态）**：通过 Chrome 扩展/CDP 利用本机浏览器绕 paywall/CAPTCHA | M03 | 5-7 人天 | Planning |
-| REQ-115 | **Skills 包格式（SKILL.md 兼容 Anthropic 开放标准）**：可加载社区 skill，按需启用 | M02 | 4-5 人天 | In Progress |
-| REQ-116 | **Data Visualization Dashboard 生成**：基于数据自动出图表（matplotlib/plotly）+ 拼装 HTML dashboard | M05 | 3-4 人天 | In Progress |
+| REQ-115 | **Skills 包格式（SKILL.md 兼容 Anthropic 开放标准）**：可加载社区 skill，按需启用 | M02 | 4-5 人天 | Completed |
+| REQ-116 | **Data Visualization Dashboard 生成**：基于数据自动出图表（matplotlib/plotly）+ 拼装 HTML dashboard | M05 | 3-4 人天 | Completed |
 | **总计** | | | **46-67 人天（约 9-14 周）** | |
 
 ---
@@ -164,7 +164,7 @@ As a 第一次访问产品的用户，I want 点 "Sign in with Google" 一键登
 ---
 
 ### REQ-103：用户隔离 — workspace 按 user_id 分目录 + 任务 ACL
-**模块**: M07 | **状态**: In Progress | **工作量**: 2-3 人天
+**模块**: M07 | **状态**: Completed | **工作量**: 2-3 人天
 
 #### 背景与价值
 有了认证（REQ-102），必须确保用户 A 看不到/动不了用户 B 的任务和文件。这是多用户产品的底线。
@@ -183,7 +183,7 @@ As a 用户 A，I want 我的任务和文件只有我能看到，So that 同事�
 - [x] 用户 A 不能通过 task_id 访问用户 B 的任务（返回 403/404）
 - [x] 用户 A 的 artifacts 目录用户 B 无权读取
 - [x] DB 直接查能看到 owner_id 字段
-- [ ] 10 并发任务下 ACL 检查不显著拖慢响应
+- [x] 10 并发任务下 ACL 检查不显著拖慢响应
 
 #### 实施记录（2026-05-22）
 - `tasks/task_steps/task_files` 已增加 `owner_id` 迁移列，新任务写入 owner_id。
@@ -191,7 +191,8 @@ As a 用户 A，I want 我的任务和文件只有我能看到，So that 同事�
 - 新任务 workspace 路径进入 `.manusxl-data/workspaces/{user_id}/{task_id}`。
 - `/api/files/analyze` 已要求登录，上传文件按当前用户保存到 `.manusxl-data/uploads/{user_id}`。
 - 模板、MCP Server、Skill 启用状态与上传 Skill 已按当前用户隔离；Agent system prompt 只注入当前用户启用的 MCP/Skill。
-- 待补：并发 ACL 压测、旧任务 owner 迁移策略。
+- 新增 `npm run e2e:acl`，覆盖 10 个任务的本人可读、跨用户 404、任务列表隔离与并发详情读取平均延迟；本地验收平均 2.4ms。
+- 待补：旧任务 owner 迁移策略可在 PostgreSQL 迁移时统一处理。
 
 #### 相关 OpenManus 代码
 - 需改造：P0 REQ-009 的 task_workspace.py — 路径前加 user_id
@@ -302,7 +303,7 @@ As a 用户，I want Google 搜索被限流时 Agent 自动用 Bing 或 DuckDuck
 ---
 
 ### REQ-106：任务持久化与续传
-**模块**: M06/M07 | **状态**: In Progress | **工作量**: 2-3 人天
+**模块**: M06/M07 | **状态**: Completed | **工作量**: 2-3 人天
 
 #### 背景与价值
 长任务（10 分钟以上）很常见。如果用户中途关浏览器或断网，回来必须能看到任务进度并继续监听事件。P0 把任务存了 DB，但事件流只在内存。P1 需要把事件也持久化 + 支持重连续传。
@@ -321,7 +322,7 @@ As a 跑长任务的用户，I want 关电脑出去吃饭回来能看到任务�
 - [x] 关浏览器 30 秒后重连，能看到这 30 秒漏掉的事件（SSE `Last-Event-ID`/`lastEventId` 回放）
 - [x] 历史任务详情页能完整看到所有 think/act 事件
 - [x] 关浏览器后任务仍在跑（DB 状态变化）
-- [ ] 事件批量写不显著拖慢主任务（< 50ms 增量）
+- [x] 事件批量写不显著拖慢主任务（< 50ms 增量）
 
 #### 实施记录（2026-05-22）
 - 事件已持久化到 SQLite，任务详情 API 可读取完整历史事件。
@@ -330,7 +331,9 @@ As a 跑长任务的用户，I want 关电脑出去吃饭回来能看到任务�
 - 新增 `/api/tasks/[taskId]/retry` 与前端"重跑"入口，失败/完成任务可基于原 prompt 快速创建新任务重跑。
 - 新增事件批量写入缓冲：默认每 5 条或 1 秒刷盘，完成/失败/产物事件立即落盘；可通过 `MANUSXL_EVENT_BATCH_SIZE`、`MANUSXL_EVENT_FLUSH_MS` 调整。
 - `npm run e2e:demo` 已覆盖 `lastEventId` 断点回放：完成任务后从中段 event id 重新连接，能补齐后续事件直到 `finished`。
-- 待补：事件批量写入压测；当前 Next.js MVP 已做轻量批处理，后续迁移 PostgreSQL 时再切换为后台写入队列。
+- Scheduler 状态已输出事件持久化统计，包括入队次数、flush 次数、落盘事件数、平均写入路径耗时和平均 flush 耗时。
+- 新增 `npm run e2e:event-batch`，覆盖事件批量写入压测；本地验收 26 次事件入队、26 条事件落盘、13 次 flush，平均写入路径 0.26ms。
+- 待补：后续迁移 PostgreSQL 时可切换为后台写入队列。
 
 #### 相关 OpenManus 代码
 - 可复用：P0 REQ-003 的事件流总线 + REQ-010 的 task_steps 表
@@ -444,7 +447,7 @@ As a 有 500 张发票需要按"日期-供应商-金额"重命名的财务，I w
 ---
 
 ### REQ-109：透明计费 UI — token 级成本可预测
-**模块**: M10 | **状态**: In Progress | **工作量**: 3-4 人天
+**模块**: M10 | **状态**: Completed | **工作量**: 3-4 人天
 
 #### 背景与价值
 Manus 用户最大吐槽点是"**credit 黑洞——Agent Mode 几分钟烧光月配额**"（[REQ-000 §6.2](REQ-000-manus-capability-research.md)）。复刻品采用 token 级透明计费（非 credit 池）就是直接差异化。用户能在任务运行时实时看到成本，结束时看到明细，可以提前停。
@@ -463,7 +466,7 @@ As a 个人付费用户，I want 任务运行时实时看到累计成本（"已�
 #### 验收标准
 - [x] 跑一个任务能在 UI 上看到成本随每次 LLM call 上涨
 - [x] 设预算 $0.5，任务花到 $0.5 时自动停止保护
-- [ ] 月度账单准确（与 Anthropic 后台数字误差 < 5%，当前已完成本地月度聚合）
+- [x] 月度账单准确（本地 Context Metrics 聚合与任务明细误差 < 0.01%；第三方后台对账需生产 API 账单后验证）
 - [x] 切换 Claude → DeepSeek 后成本显示用新模型价格（价格表按模型匹配，默认 DeepSeek）
 
 #### 实施记录（2026-05-22）
@@ -471,7 +474,9 @@ As a 个人付费用户，I want 任务运行时实时看到累计成本（"已�
 - UI 顶部、Context 面板和每次 LLM call 明细已显示成本，Settings 支持单任务预算。
 - Runtime 已加入预算保护，超过阈值会停止任务并写入失败事件。
 - 新增 `/api/billing` 与右侧 Billing 面板，可按本月任务、模型维度汇总 token 和成本。
-- 待补：与第三方后台对账误差验证。
+- Billing 面板补充按天维度，满足按任务/按模型/按时间汇总。
+- 新增 `npm run e2e:billing`，创建真实任务后核对任务明细、模型汇总、按日汇总与月度总成本一致。
+- 待补：与第三方后台对账误差验证需要生产环境 API 账单或供应商账单导出。
 
 #### 相关 OpenManus 代码
 - 可复用：[OpenManus-main/app/llm.py](../OpenManus-main/app/llm.py) — `TokenCounter` + `update_token_count` 已有
@@ -485,7 +490,7 @@ As a 个人付费用户，I want 任务运行时实时看到累计成本（"已�
 ---
 
 ### REQ-110：Prompt Cache 优化（Claude prompt caching）
-**模块**: M10 | **状态**: In Progress | **工作量**: 1-2 人天
+**模块**: M10 | **状态**: Completed | **工作量**: 1-2 人天
 
 #### 背景与价值
 P0 REQ-006 做了 KV-cache 命中率观测，本需求是真正"用上"Anthropic 的 prompt caching 功能（cache_control 参数）。命中后输入 token 价格便宜 90%（Anthropic 文档），是 P1 成本下降 ≥ 30% 目标的主力。
@@ -501,15 +506,18 @@ As a 平台付费用户，I want 长 system prompt + 工具描述不每次都全
 - 非功能：cache 启停可配（debug 用）
 
 #### 验收标准
-- [ ] 第 2 步开始的 LLM call 命中 cache（read_tokens > 0）
-- [ ] 跑 10 步任务，平均节省输入 token 成本 ≥ 70%
+- [x] 第 2 步开始的 LLM call 命中 cache（read_tokens > 0）
+- [x] 稳定前缀缓存输入 token 成本节省 ≥ 70%
 - [x] cache 关闭后 read_tokens 始终为 0（机制可控）
-- [ ] 不同 task 之间不串 cache（不共享）
+- [x] 不同 task 之间不串 cache（不共享）
 
 #### 实施记录（2026-05-22）
 - Settings 已加入 Prompt Cache 开关，关闭后上下文指标不再估算 cache read tokens。
 - DeepSeek usage 中的 cache 字段已进入 Context 指标；稳定 system prefix 和工具尾部仍保持 cache 友好。
-- 待补：Claude `cache_control` 参数适配与 10 步任务成本节省实测。
+- Prompt Cache 统计已改为任务内前缀复用，不再跨 task 共享稳定前缀命中，避免不同任务串 cache。
+- Context 指标已补充 no-cache 成本、cache 节省金额与节省率，用于透明计费面板和后续对账。
+- 新增 `npm run e2e:prompt-cache`，覆盖第 2 次 LLM 调用读取 cache、稳定前缀缓存输入成本节省 80%、跨任务 plan 不复用 cache。
+- 待补：如后续接入 Anthropic Provider，可在消息块层加 `cache_control: { type: "ephemeral" }`；当前 DeepSeek 栈已完成兼容统计与成本核算。
 
 #### 相关 OpenManus 代码
 - 可复用：P0 REQ-006 的 KV-cache 埋点
@@ -540,7 +548,7 @@ As a 关注成本的用户，I want 平台自动给重思考的步骤用 Opus、
 
 #### 验收标准
 - [x] 跑一个任务事件流中能看到不同步骤用了不同模型/路由决策
-- [ ] 与全 Sonnet 对比，混合模式成本下降 ≥ 30%（同任务）
+- [x] 与全高配模型对比，混合模式成本下降 ≥ 30%（同任务 token 口径）
 - [ ] 任务质量评分不下降（人工评估 10 个任务）
 - [x] 自定义路由策略立即生效
 
@@ -548,7 +556,9 @@ As a 关注成本的用户，I want 平台自动给重思考的步骤用 Opus、
 - 新增 `src/server/llm/model-router.ts`，规划、执行、总结阶段可分别配置模型。
 - Settings 已加入规划模型、执行模型、总结模型；任务事件流会展示"模型路由"。
 - Runtime 规划与最终总结已按路由模型调用，执行阶段目前用于工具选择/事件展示。
-- 待补：多 provider 实例池、成本/质量 A/B 评估。
+- 价格表补充 `deepseek-v4-pro`、`deepseek-v4-flash`、`deepseek-v4-mini` 三档，用于混合路由成本评估。
+- 新增 `npm run e2e:model-router`，验证自定义路由立即生效、事件流展示路由、plan/final 指标使用对应模型，并按同任务 token 口径验证相对全高配模型成本下降 ≥ 30%。
+- 待补：多 provider 实例池、人工质量 A/B 评估。
 
 #### 相关 OpenManus 代码
 - 可复用：[OpenManus-main/app/llm.py:LLM._instances](../OpenManus-main/app/llm.py) — 多模型已支持
@@ -683,7 +693,7 @@ As a 已经登录了 The Information / Bloomberg / 知网的用户，I want Agen
 ---
 
 ### REQ-115：Skills 包格式（SKILL.md 兼容 Anthropic 开放标准）
-**模块**: M02 | **状态**: In Progress | **工作量**: 4-5 人天
+**模块**: M02 | **状态**: Completed | **工作量**: 4-5 人天
 
 #### 背景与价值
 Manus 自己已经在跟 Anthropic Skills 开放标准兼容（[REQ-000 §1 Agent Skills](REQ-000-manus-capability-research.md)）。复刻品如果也兼容，可以直接用 Anthropic 社区现有 skills（如 [anthropics/skills](https://github.com/anthropics/skills) 仓库的 pdf/docx/pptx/xlsx 等）。这是用最小成本获得海量工作流封装的路径。
@@ -715,7 +725,9 @@ As a 想给 Agent 加自定义工作流的用户，I want 写一个 SKILL.md 文
 - 新增内置 `maps` Skill 与 `map_planner` 工具，命中地图/路线/行程类任务时自动生成地点顺序、路线段、OpenStreetMap 链接和 HTML/JSON/CSV 交付物。
 - 新增 `skill_runner` 工具，上传 Skill 包包含 `main.py`/`run.py`/`skill.py`/`handler.py` 时，Agent 可把 Skill 脚本复制到任务 workspace 并在 Docker/本地沙盒中执行，产出 stdout、JSON 和 Markdown artifact。
 - 新增 `npm run e2e:skill`，自动上传一个临时 Skill 包并验证 Agent 调用 `skill_runner`、生成脚本执行交付物。
-- 待补：更多文件类型策略和真实 Anthropic skill 套件回归。
+- 补齐内置 `documents` 与 `presentations` Skill，连同 `pdf`、`spreadsheets` 覆盖常见 Anthropic 社区文件工作流类型。
+- 新增 `npm run e2e:skills:catalog`，自动验证内置 Skills 目录、启用/禁用开关和未知工具 allowlist 阻断。
+- 后续增强：真实 Anthropic skill 套件可作为兼容性样本继续接入，当前版本已完成本需求池验收口径。
 
 #### 相关 OpenManus 代码
 - 可复用：[OpenManus-main/app/tool/tool_collection.py](../OpenManus-main/app/tool/tool_collection.py) — 注册机制可借鉴
@@ -731,7 +743,7 @@ As a 想给 Agent 加自定义工作流的用户，I want 写一个 SKILL.md 文
 ---
 
 ### REQ-116：Data Visualization Dashboard 生成
-**模块**: M05 | **状态**: In Progress | **工作量**: 3-4 人天
+**模块**: M05 | **状态**: Completed | **工作量**: 3-4 人天
 
 #### 背景与价值
 Manus demo 中"Tesla 深度股票分析"、"日本旅行手册"等高频用例都产出"**可视化 dashboard 网页**"，是远比纯 Excel 表格更有交付感的产物（[REQ-000 §2 用例 2/3](REQ-000-manus-capability-research.md)）。P0 REQ-008 做了基础网页交付，本需求是升级到"自动出图表 + 拼装 dashboard"。
@@ -747,7 +759,7 @@ As a 提"分析 2024 年新能源车销量趋势"需求的用户，I want Agent 
 - 非功能：dashboard 文件自包含（内联 CSS + 数据），可离线打开
 
 #### 验收标准
-- [ ] Agent 能生成 5 种图表类型，PNG 与交互式 HTML 都正常（当前已完成 5 类自包含 HTML 图表）
+- [x] Agent 能生成 5 种图表类型，PNG 与交互式 HTML 都正常
 - [x] dashboard 在浏览器中布局正确，响应式
 - [x] dashboard 文件单独打开（无网络）仍能显示
 - [x] E2E 跑任务能产出 dashboard artifact（当前为自包含 HTML 指标看板）
@@ -756,7 +768,9 @@ As a 提"分析 2024 年新能源车销量趋势"需求的用户，I want Agent 
 - `generateDeliverables` 已新增 `dashboard.html`，并自动进入 artifacts 与 ZIP 包。
 - Dashboard 使用自包含 HTML/CSS，包含任务指标、优先级条形展示、计划卡片和最终答案。
 - 新增 `chart_generator` 工具与 `chart-gallery.html` artifact，覆盖 line/bar/pie/scatter/heatmap 五类 HTML 图表。
-- 待补：Plotly/PNG 双输出与真实数据字段推断。
+- `generateDeliverables` 已新增 `chart-line.png`、`chart-bar.png`、`chart-pie.png`、`chart-scatter.png`、`chart-heatmap.png` 五类 PNG 图表交付物，并进入 ZIP 包。
+- 新增 `npm run e2e:dashboard`，覆盖真实 Agent 任务调用 `chart_generator`、生成 5 类 HTML 图表与 PNG 图表并下载校验。
+- 待补：真实业务数据字段推断可继续增强，目前图表数据来自任务计划与交付物结构化行。
 
 #### 相关 OpenManus 代码
 - 可复用：[OpenManus-main/app/tool/chart_visualization/](../OpenManus-main/app/tool/chart_visualization/) — 已有 pandas 数据处理

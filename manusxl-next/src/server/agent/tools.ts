@@ -2500,10 +2500,11 @@ async function runChartGenerator(input: AgentToolInput): Promise<AgentToolResult
   return {
     toolName: "chart_generator",
     ok: true,
-    observation: "已生成 5 类图表规格：line、bar、pie、scatter、heatmap，并写入 tmp/chart-spec.json。",
+    observation: "已生成 5 类图表规格：line、bar、pie、scatter、heatmap，任务交付物会包含交互式 HTML 与 5 张 PNG 图表。",
     payload: {
       outputPath,
       chartTypes,
+      outputFormats: ["html", "png"],
       chartSpec: spec
     }
   };

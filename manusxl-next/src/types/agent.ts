@@ -22,6 +22,7 @@ export type ArtifactType =
   | "xlsx"
   | "pptx"
   | "pdf"
+  | "png"
   | "html"
   | "zip"
   | "txt"
@@ -146,6 +147,11 @@ export interface ContextMetricsSummary {
   averageCacheHitRate: number;
   estimatedCostUsd: number;
   estimatedCostCny: number;
+  estimatedNoCacheCostUsd: number;
+  estimatedNoCacheCostCny: number;
+  estimatedCacheSavingsUsd: number;
+  estimatedCacheSavingsCny: number;
+  estimatedCacheSavingsRate: number;
   stablePrefixHits: number;
   prefixInvalidations: number;
   latest?: ContextMetric;

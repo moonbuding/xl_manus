@@ -83,6 +83,26 @@ const defaultSkills: AgentSkill[] = [
     validationStatus: "allowed"
   },
   {
+    id: "builtin-documents",
+    name: "documents",
+    description: "处理 DOCX/Word 文档解析、改写、摘要、批注建议和结构化报告。",
+    triggers: ["docx", "word", "文档", "合同", "简历", "改写", "批注"],
+    toolsRequired: ["file_reader", "artifact_writer"],
+    source: "builtin",
+    enabled: true,
+    validationStatus: "allowed"
+  },
+  {
+    id: "builtin-presentations",
+    name: "presentations",
+    description: "把调研、数据分析和方案整理成 PPT/PPTX 大纲、讲稿与演示交付物。",
+    triggers: ["ppt", "pptx", "幻灯片", "路演", "汇报", "演示"],
+    toolsRequired: ["file_reader", "data_analysis", "artifact_writer"],
+    source: "builtin",
+    enabled: true,
+    validationStatus: "allowed"
+  },
+  {
     id: "builtin-batch-files",
     name: "batch-files",
     description: "为图片、文档和表格生成批量重命名、分类、移动 dry-run 清单。",
@@ -215,6 +235,10 @@ function formatPercent(value: number) {
 
 function formatUsd(value: number) {
   return `$${value.toFixed(value < 0.01 ? 4 : 2)}`;
+}
+
+function formatCny(value: number) {
+  return `¥${value.toFixed(value < 0.1 ? 4 : 2)}`;
 }
 
 async function readJson<T>(response: Response, fallback?: T): Promise<T> {
@@ -2478,7 +2502,7 @@ function BillingPanel({ summary }: { summary: BillingSummary | null }) {
       <div className="library-stats">
         <div className="stat-box">
           <div className="stat-value">{formatUsd(summary.estimatedCostUsd)}</div>
-          <div className="stat-label">{summary.month}</div>
+          <div className="stat-label">{summary.month} · {formatCny(summary.estimatedCostCny)}</div>
         </div>
         <div className="stat-box">
           <div className="stat-value">{formatNumber(summary.totalTokens)}</div>
@@ -2510,6 +2534,19 @@ function BillingPanel({ summary }: { summary: BillingSummary | null }) {
               <span className="metric-meta">{formatNumber(model.totalTokens)} tokens</span>
             </div>
             <strong>{formatUsd(model.estimatedCostUsd)}</strong>
+          </div>
+        ))}
+      </div>
+      <div className="metric-list compact">
+        {summary.byDay.slice(-7).map((day) => (
+          <div key={day.name} className="metric-item">
+            <div>
+              <span className="metric-name">{day.name}</span>
+              <span className="metric-meta">
+                {day.totalCalls} calls · {formatNumber(day.totalTokens)} tokens
+              </span>
+            </div>
+            <strong>{formatUsd(day.estimatedCostUsd)}</strong>
           </div>
         ))}
       </div>

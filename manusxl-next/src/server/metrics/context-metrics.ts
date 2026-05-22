@@ -125,15 +125,32 @@ function hashText(value: string) {
   return createHash("sha256").update(value).digest("hex").slice(0, 16);
 }
 
-function hasSeenPrefix(prefixHash: string) {
+function hasSeenPrefix(prefixHash: string, taskId?: string) {
+  if (!taskId) return false;
   const row = getDb()
-    .prepare("SELECT COUNT(*) AS count FROM context_metrics WHERE prefix_hash = ?")
-    .get(prefixHash) as { count: number };
+    .prepare("SELECT COUNT(*) AS count FROM context_metrics WHERE prefix_hash = ? AND task_id = ?")
+    .get(prefixHash, taskId) as { count: number };
   return row.count > 0;
 }
 
 function normalizeUsage(value: UsagePayload | undefined) {
   return value ?? {};
+}
+
+function positiveTokenCount(value: number | undefined) {
+  return Number.isFinite(value) && value && value > 0 ? Math.floor(value) : undefined;
+}
+
+function cacheReadTokensFromUsage(usage: UsagePayload) {
+  return positiveTokenCount(
+    usage.cache_read_input_tokens ??
+    usage.prompt_cache_hit_tokens ??
+    usage.prompt_tokens_details?.cached_tokens
+  );
+}
+
+function cacheCreationTokensFromUsage(usage: UsagePayload) {
+  return positiveTokenCount(usage.cache_creation_input_tokens ?? usage.prompt_cache_miss_tokens);
 }
 
 function normalizeMetric(metric: ContextMetric): ContextMetric {
@@ -163,19 +180,16 @@ export function recordContextMetric(input: RecordMetricInput) {
   const completionTokens = usage.completion_tokens ?? 0;
   const totalTokens = usage.total_tokens ?? promptTokens + completionTokens;
   const promptCacheEnabled = input.promptCacheEnabled ?? true;
-  const stablePrefixReused = promptCacheEnabled && hasSeenPrefix(prefixHash);
+  const stablePrefixReused = promptCacheEnabled && hasSeenPrefix(prefixHash, input.taskId);
+  const providerCacheReadTokens = cacheReadTokensFromUsage(usage);
+  const providerCacheCreationTokens = cacheCreationTokensFromUsage(usage);
   const cacheReadTokens =
-    promptCacheEnabled
-      ? (usage.cache_read_input_tokens ??
-        usage.prompt_cache_hit_tokens ??
-        usage.prompt_tokens_details?.cached_tokens ??
-        (stablePrefixReused ? Math.min(prefixTokens, promptTokens) : 0))
+    promptCacheEnabled && stablePrefixReused
+      ? (providerCacheReadTokens ?? Math.min(prefixTokens, promptTokens))
       : 0;
   const cacheCreationTokens =
     promptCacheEnabled
-      ? (usage.cache_creation_input_tokens ??
-        usage.prompt_cache_miss_tokens ??
-        (stablePrefixReused ? 0 : Math.min(prefixTokens, promptTokens)))
+      ? (providerCacheCreationTokens ?? (stablePrefixReused ? 0 : Math.min(prefixTokens, promptTokens)))
       : 0;
   const cacheHitRate = promptTokens > 0 ? Math.min(1, cacheReadTokens / promptTokens) : 0;
   const cost = estimateCost({
@@ -330,6 +344,30 @@ export function getContextMetricsSummary(taskId?: string, ownerId?: string): Con
   const cacheCreationTokens = summaryRows.reduce((sum, metric) => sum + metric.cacheCreationTokens, 0);
   const estimatedCostUsd = summaryRows.reduce((sum, metric) => sum + (metric.estimatedCostUsd ?? 0), 0);
   const estimatedCostCny = summaryRows.reduce((sum, metric) => sum + (metric.estimatedCostCny ?? 0), 0);
+  const noCacheCostUsd = summaryRows.reduce(
+    (sum, metric) =>
+      sum +
+      estimateCost({
+        model: metric.model,
+        promptTokens: metric.promptTokens,
+        completionTokens: metric.completionTokens,
+        cacheReadTokens: 0
+      }).estimatedCostUsd,
+    0
+  );
+  const noCacheCostCny = summaryRows.reduce(
+    (sum, metric) =>
+      sum +
+      estimateCost({
+        model: metric.model,
+        promptTokens: metric.promptTokens,
+        completionTokens: metric.completionTokens,
+        cacheReadTokens: 0
+      }).estimatedCostCny,
+    0
+  );
+  const cacheSavingsUsd = Math.max(0, noCacheCostUsd - estimatedCostUsd);
+  const cacheSavingsCny = Math.max(0, noCacheCostCny - estimatedCostCny);
   const prefixHashes = new Set(summaryRows.map((metric) => metric.prefixHash));
 
   return {
@@ -342,6 +380,12 @@ export function getContextMetricsSummary(taskId?: string, ownerId?: string): Con
     averageCacheHitRate: promptTokens > 0 ? cacheReadTokens / promptTokens : 0,
     estimatedCostUsd: Number(estimatedCostUsd.toFixed(8)),
     estimatedCostCny: Number(estimatedCostCny.toFixed(6)),
+    estimatedNoCacheCostUsd: Number(noCacheCostUsd.toFixed(8)),
+    estimatedNoCacheCostCny: Number(noCacheCostCny.toFixed(6)),
+    estimatedCacheSavingsUsd: Number(cacheSavingsUsd.toFixed(8)),
+    estimatedCacheSavingsCny: Number(cacheSavingsCny.toFixed(6)),
+    estimatedCacheSavingsRate:
+      noCacheCostUsd > 0 ? Number((cacheSavingsUsd / noCacheCostUsd).toFixed(4)) : 0,
     stablePrefixHits: summaryRows.filter((metric) => metric.stablePrefixReused).length,
     prefixInvalidations: Math.max(0, prefixHashes.size - 1),
     latest: summaryRows[0],

@@ -1,6 +1,6 @@
 import { getTaskTimeoutMs } from "@/server/agent/runtime-config";
 import { isAgentTaskRunning, runAgentTask } from "@/server/agent/runtime";
-import { addTaskEvent, getTask } from "@/server/tasks/task-store";
+import { addTaskEvent, getEventPersistenceStats, getTask } from "@/server/tasks/task-store";
 
 interface SchedulerState {
   queue: string[];
@@ -136,6 +136,7 @@ export function getSchedulerSnapshot() {
     runtime: {
       taskTimeoutMs: getTaskTimeoutMs()
     },
+    eventPersistence: getEventPersistenceStats(),
     queue: [...state.queue],
     running: [...state.running],
     runningByOwner: Object.fromEntries(

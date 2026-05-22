@@ -61,6 +61,24 @@ const builtinSkills: AgentSkill[] = [
     enabled: true
   },
   {
+    id: "builtin-documents",
+    name: "documents",
+    description: "处理 DOCX/Word 文档解析、改写、摘要、批注建议和结构化报告。",
+    triggers: ["docx", "word", "文档", "合同", "简历", "改写", "批注"],
+    toolsRequired: ["file_reader", "artifact_writer"],
+    source: "builtin",
+    enabled: true
+  },
+  {
+    id: "builtin-presentations",
+    name: "presentations",
+    description: "把调研、数据分析和方案整理成 PPT/PPTX 大纲、讲稿与演示交付物。",
+    triggers: ["ppt", "pptx", "幻灯片", "路演", "汇报", "演示"],
+    toolsRequired: ["file_reader", "data_analysis", "artifact_writer"],
+    source: "builtin",
+    enabled: true
+  },
+  {
     id: "builtin-batch-files",
     name: "batch-files",
     description: "为图片、文档和表格生成批量重命名、分类、移动 dry-run 清单。",

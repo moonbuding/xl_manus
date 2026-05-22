@@ -14,12 +14,23 @@ interface TaskStoreState {
   db: DatabaseSync;
   pendingEvents: Array<{ event: AgentEvent; ownerId?: string }>;
   pendingTaskIds: Set<string>;
+  eventPersistenceStats: EventPersistenceStats;
   flushTimer?: ReturnType<typeof setTimeout>;
 }
 
 const globalForTasks = globalThis as unknown as {
   manusxlTaskStore?: TaskStoreState;
 };
+
+interface EventPersistenceStats {
+  queueCalls: number;
+  queueDurationMsTotal: number;
+  flushes: number;
+  flushedEvents: number;
+  flushDurationMsTotal: number;
+  maxFlushDurationMs: number;
+  updatedAt?: string;
+}
 
 const dataFile = dataPath("tasks.json");
 const workspaceRoot = dataPath("workspaces");
@@ -241,6 +252,34 @@ function persistTask(task: Task) {
   upsertTask(getState().db, task);
 }
 
+function createEventPersistenceStats(): EventPersistenceStats {
+  return {
+    queueCalls: 0,
+    queueDurationMsTotal: 0,
+    flushes: 0,
+    flushedEvents: 0,
+    flushDurationMsTotal: 0,
+    maxFlushDurationMs: 0
+  };
+}
+
+function recordQueueDuration(state: TaskStoreState, durationMs: number) {
+  state.eventPersistenceStats.queueCalls += 1;
+  state.eventPersistenceStats.queueDurationMsTotal += durationMs;
+  state.eventPersistenceStats.updatedAt = new Date().toISOString();
+}
+
+function recordFlushDuration(state: TaskStoreState, eventCount: number, durationMs: number) {
+  state.eventPersistenceStats.flushes += 1;
+  state.eventPersistenceStats.flushedEvents += eventCount;
+  state.eventPersistenceStats.flushDurationMsTotal += durationMs;
+  state.eventPersistenceStats.maxFlushDurationMs = Math.max(
+    state.eventPersistenceStats.maxFlushDurationMs,
+    durationMs
+  );
+  state.eventPersistenceStats.updatedAt = new Date().toISOString();
+}
+
 function flushPendingEventWrites(state = getState()) {
   if (state.flushTimer) {
     clearTimeout(state.flushTimer);
@@ -251,6 +290,7 @@ function flushPendingEventWrites(state = getState()) {
   const pendingEvents = state.pendingEvents.splice(0);
   const pendingTaskIds = [...state.pendingTaskIds];
   state.pendingTaskIds.clear();
+  const startedAt = performance.now();
 
   state.db.exec("BEGIN");
   try {
@@ -260,6 +300,7 @@ function flushPendingEventWrites(state = getState()) {
       if (task) upsertTask(state.db, task);
     });
     state.db.exec("COMMIT");
+    recordFlushDuration(state, pendingEvents.length, performance.now() - startedAt);
   } catch (error) {
     state.db.exec("ROLLBACK");
     state.pendingEvents.unshift(...pendingEvents);
@@ -280,15 +321,18 @@ function schedulePendingEventFlush(state: TaskStoreState) {
 }
 
 function queueEventPersist(state: TaskStoreState, task: Task, event: AgentEvent) {
+  const startedAt = performance.now();
   state.pendingEvents.push({ event, ownerId: task.ownerId });
   state.pendingTaskIds.add(task.id);
 
   if (isTerminalEvent(event) || state.pendingEvents.length >= eventBatchSize()) {
     flushPendingEventWrites(state);
+    recordQueueDuration(state, performance.now() - startedAt);
     return;
   }
 
   schedulePendingEventFlush(state);
+  recordQueueDuration(state, performance.now() - startedAt);
 }
 
 function persistArtifactManifest(task: Task) {
@@ -317,6 +361,7 @@ function getState() {
     ensureTaskSchema(existingState.db);
     existingState.pendingEvents ??= [];
     existingState.pendingTaskIds ??= new Set<string>();
+    existingState.eventPersistenceStats ??= createEventPersistenceStats();
     return existingState;
   }
 
@@ -326,10 +371,25 @@ function getState() {
     subscribers: existingState?.subscribers ?? new Map<string, Set<Subscriber>>(),
     db,
     pendingEvents: [],
-    pendingTaskIds: new Set<string>()
+    pendingTaskIds: new Set<string>(),
+    eventPersistenceStats: createEventPersistenceStats()
   };
   globalForTasks.manusxlTaskStore = nextState;
   return nextState;
+}
+
+export function getEventPersistenceStats() {
+  const stats = getState().eventPersistenceStats;
+  return {
+    ...stats,
+    averageQueueDurationMs:
+      stats.queueCalls > 0 ? Number((stats.queueDurationMsTotal / stats.queueCalls).toFixed(3)) : 0,
+    averageFlushDurationMs:
+      stats.flushes > 0 ? Number((stats.flushDurationMsTotal / stats.flushes).toFixed(3)) : 0,
+    queueDurationMsTotal: Number(stats.queueDurationMsTotal.toFixed(3)),
+    flushDurationMsTotal: Number(stats.flushDurationMsTotal.toFixed(3)),
+    maxFlushDurationMs: Number(stats.maxFlushDurationMs.toFixed(3))
+  };
 }
 
 export function listTasks(query?: string, ownerId?: string) {
