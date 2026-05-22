@@ -12,6 +12,7 @@ import {
 } from "@/server/agent/context";
 import {
   executeAgentToolWithFallback,
+  estimateToolMaskingSavings,
   inferToolsForStep,
   pickTool,
   selectToolsForPrompt,
@@ -19,6 +20,7 @@ import {
 } from "@/server/agent/tools";
 import { chatWithDeepSeek, getDeepSeekConfig, type ChatMessage } from "@/server/llm/deepseek";
 import { routeModel } from "@/server/llm/model-router";
+import { hasExecutableSkillForPrompt } from "@/server/skills/skill-registry";
 import {
   formatContextMetricForEvent,
   getContextMetricsSummary,
@@ -146,13 +148,19 @@ function parsePlan(raw: string, maxSteps = 6) {
   return lines.length > 0 ? lines : DEFAULT_PLAN;
 }
 
-function ensureFileReadingStep(prompt: string, plan: string[]) {
-  if (!prompt.includes("[上传文件摘要]")) return plan;
+function ensureFileReadingStep(prompt: string, plan: string[], uploadedFileIds: string[] = []) {
+  if (!prompt.includes("[上传文件摘要]") && uploadedFileIds.length === 0) return plan;
   if (plan.some((step) => /上传文件|文件摘要|附件|读取上传|读取附件/i.test(step))) {
     return plan;
   }
 
   return ["读取上传文件摘要并提取可用信息", ...plan].slice(0, 6);
+}
+
+function taskIntentText(prompt: string) {
+  const marker = "[上传文件摘要]";
+  const markerIndex = prompt.indexOf(marker);
+  return markerIndex >= 0 ? prompt.slice(0, markerIndex) : prompt;
 }
 
 function ensureMcpStep(prompt: string, plan: string[]) {
@@ -173,11 +181,55 @@ function ensureBatchFileOpsStep(prompt: string, plan: string[]) {
   return ["生成上传文件的批量重命名和分类 dry-run 清单", ...plan].slice(0, 6);
 }
 
+function ensureImageProcessStep(prompt: string, plan: string[]) {
+  if (!/(图片|照片|image|photo).*(压缩|缩放|旋转|格式转换|转成|convert|resize|compress)|(压缩|缩放|旋转|格式转换|转成|convert|resize|compress).*(图片|照片|image|photo)/i.test(prompt)) {
+    return plan;
+  }
+  if (plan.some((step) => /图片|照片|batch_image_process|压缩|缩放|旋转|格式转换|convert|resize|compress/i.test(step))) {
+    return plan;
+  }
+
+  return ["批量处理上传图片并生成压缩/转换结果包", ...plan].slice(0, 6);
+}
+
+function ensureImageOcrStep(prompt: string, plan: string[]) {
+  if (!/ocr|文字识别|识别.*(图片|照片|发票|名片|扫描|文字)|提取.*(图片|照片).*文字|发票|名片/i.test(prompt)) {
+    return plan;
+  }
+  if (plan.some((step) => /ocr|image_ocr|文字识别|识别.*文字|提取.*文字|发票|名片/i.test(step))) {
+    return plan;
+  }
+
+  return ["OCR 识别上传图片文字并生成提取报告", ...plan].slice(0, 6);
+}
+
+function ensureMapStep(prompt: string, plan: string[]) {
+  if (!/地图|路线|行程|旅行|旅游|门店|地址|附近|周边|导航|map|route|itinerary|location/i.test(prompt)) {
+    return plan;
+  }
+  if (plan.some((step) => /地图|路线|行程|地点|map_planner|route|itinerary/i.test(step))) {
+    return plan;
+  }
+
+  return ["生成地点顺序、路线段和地图式 HTML 交付物", ...plan].slice(0, 6);
+}
+
+function ensureSkillRunnerStep(prompt: string, ownerId: string | undefined, plan: string[]) {
+  if (!hasExecutableSkillForPrompt(prompt, ownerId)) return plan;
+  if (plan.some((step) => /skill_runner|Skill 脚本|本地 Skill|自定义 Skill/i.test(step))) {
+    return plan;
+  }
+
+  return ["执行匹配到的本地 Skill 脚本并读取沙盒结果", ...plan].slice(0, 6);
+}
+
 async function generatePlan(
   taskId: string,
   prompt: string,
   model: string,
   messages: ChatMessage[],
+  ownerId?: string,
+  uploadedFileIds: string[] = [],
   signal?: AbortSignal
 ) {
   const fallback = JSON.stringify(DEFAULT_PLAN);
@@ -192,10 +244,27 @@ async function generatePlan(
     signal,
     messages
   });
+  const intent = taskIntentText(prompt);
 
-  return ensureMcpStep(
-    prompt,
-    ensureBatchFileOpsStep(prompt, ensureFileReadingStep(prompt, parsePlan(raw, config.maxSteps)))
+  return ensureSkillRunnerStep(
+    intent,
+    ownerId,
+    ensureMapStep(
+      intent,
+      ensureMcpStep(
+        intent,
+        ensureBatchFileOpsStep(
+          intent,
+          ensureImageOcrStep(
+            intent,
+            ensureImageProcessStep(
+              intent,
+              ensureFileReadingStep(prompt, parsePlan(raw, config.maxSteps), uploadedFileIds)
+            )
+          )
+        )
+      )
+    )
   );
 }
 
@@ -333,7 +402,8 @@ export async function runAgentTask(taskId: string, options: { resumed?: boolean 
 
     updateTaskStatus(taskId, "running");
     const memoryPath = await ensureTaskMemory(taskId, task.prompt, task.ownerId);
-    let enabledTools = selectToolsForPrompt(task.prompt);
+    let enabledTools = selectToolsForPrompt(task.prompt, task.ownerId);
+    const initialToolMasking = estimateToolMaskingSavings(enabledTools);
     const planningRoute = routeModel("planning", task.prompt);
     const executionRoute = routeModel("execution", task.prompt);
     const finalRoute = routeModel("final_answer", task.prompt);
@@ -347,8 +417,11 @@ export async function runAgentTask(taskId: string, options: { resumed?: boolean 
       type: "message",
       stepIndex: 1,
       title: "工具动态启用",
-      content: `本任务启用 ${enabledTools.length} 个工具：${enabledTools.join("、")}`,
-      payload: { enabledTools }
+      content: [
+        `本任务启用 ${enabledTools.length} 个工具：${enabledTools.join("、")}`,
+        `相对全量 ${initialToolMasking.allToolCount} 个工具，已 mask ${initialToolMasking.maskedToolCount} 个；工具描述 token 预计下降 ${Math.round(initialToolMasking.tokenReductionPercent * 100)}%。`
+      ].join("\n"),
+      payload: { enabledTools, toolMasking: initialToolMasking }
     });
     addTaskEvent(taskId, {
       type: "message",
@@ -397,6 +470,8 @@ export async function runAgentTask(taskId: string, options: { resumed?: boolean 
       task.prompt,
       planningRoute.model,
       planningMessages,
+      task.ownerId,
+      task.uploadedFileIds ?? [],
       timeoutController.signal
     );
     if (shouldStopTask(taskId, startedAt, timeoutMs, 4)) return;
@@ -486,10 +561,22 @@ export async function runAgentTask(taskId: string, options: { resumed?: boolean 
         {
           taskId,
           ownerId: task.ownerId,
+          uploadedFileIds: task.uploadedFileIds ?? [],
           prompt: task.prompt,
           step,
           stepIndex: index,
-          plan
+          plan,
+          emitProgress: (progress) =>
+            addTaskEvent(taskId, {
+              type: "message",
+              stepIndex,
+              title: progress.title,
+              content: progress.content,
+              payload: {
+                toolName,
+                progress: progress.payload
+              }
+            })
         },
         enabledTools
       );

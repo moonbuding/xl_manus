@@ -980,6 +980,31 @@ a {
   gap: 8px;
 }
 
+.template-tags {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.template-tag {
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--muted);
+  padding: 5px 9px;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.template-tag.active {
+  border-color: var(--sage);
+  background: rgba(96, 116, 95, 0.12);
+  color: var(--ink);
+  font-weight: 750;
+}
+
 .template-item {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 34px;
@@ -1019,6 +1044,18 @@ a {
   white-space: nowrap;
   color: var(--muted);
   font-size: 10px;
+}
+
+.template-lock {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
 }
 
 .template-variable-panel {

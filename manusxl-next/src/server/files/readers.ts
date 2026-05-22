@@ -4,6 +4,7 @@ import { basename, extname, join } from "node:path";
 import { inflateRawSync, inflateSync } from "node:zlib";
 import { createId } from "@/lib/id";
 import { dataPath } from "@/server/data-root";
+import { getManusDb } from "@/server/sqlite";
 import type { UploadedFileSummary } from "@/types/agent";
 
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
@@ -15,6 +16,98 @@ interface ZipEntry {
   compressedSize: number;
   uncompressedSize: number;
   localHeaderOffset: number;
+}
+
+export interface UploadedFileRecord extends UploadedFileSummary {
+  ownerId?: string;
+  storedPath: string;
+  createdAt: string;
+}
+
+function getUploadDb() {
+  const db = getManusDb();
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS uploaded_files (
+      id TEXT PRIMARY KEY,
+      owner_id TEXT,
+      name TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      extension TEXT NOT NULL,
+      size INTEGER NOT NULL,
+      stored_path TEXT NOT NULL,
+      text_preview TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      metadata_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      data_json TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_uploaded_files_owner_id ON uploaded_files(owner_id);
+    CREATE INDEX IF NOT EXISTS idx_uploaded_files_created_at ON uploaded_files(created_at);
+  `);
+  return db;
+}
+
+function saveUploadRecord(record: UploadedFileRecord) {
+  getUploadDb()
+    .prepare(
+      `
+        INSERT INTO uploaded_files
+          (id, owner_id, name, mime_type, extension, size, stored_path, text_preview, summary, metadata_json, created_at, data_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          owner_id = excluded.owner_id,
+          name = excluded.name,
+          mime_type = excluded.mime_type,
+          extension = excluded.extension,
+          size = excluded.size,
+          stored_path = excluded.stored_path,
+          text_preview = excluded.text_preview,
+          summary = excluded.summary,
+          metadata_json = excluded.metadata_json,
+          data_json = excluded.data_json
+      `
+    )
+    .run(
+      record.id,
+      record.ownerId ?? null,
+      record.name,
+      record.mimeType,
+      record.extension,
+      record.size,
+      record.storedPath,
+      record.textPreview,
+      record.summary,
+      JSON.stringify(record.metadata),
+      record.createdAt,
+      JSON.stringify(record)
+    );
+}
+
+export function getUploadedFileRecord(fileId: string, ownerId?: string) {
+  const db = getUploadDb();
+  const normalizedId = fileId.trim();
+  if (!normalizedId) return undefined;
+
+  const row = ownerId
+    ? (db
+        .prepare("SELECT data_json FROM uploaded_files WHERE id = ? AND owner_id = ?")
+        .get(normalizedId, ownerId) as { data_json: string } | undefined)
+    : (db
+        .prepare("SELECT data_json FROM uploaded_files WHERE id = ?")
+        .get(normalizedId) as { data_json: string } | undefined);
+
+  return row ? (JSON.parse(row.data_json) as UploadedFileRecord) : undefined;
+}
+
+export function listUploadedFileRecords(ownerId: string | undefined, fileIds: string[]) {
+  const uniqueIds = Array.from(
+    new Set(fileIds.map((fileId) => fileId.trim()).filter(Boolean))
+  ).slice(0, 500);
+
+  return uniqueIds
+    .map((fileId) => getUploadedFileRecord(fileId, ownerId))
+    .filter((record): record is UploadedFileRecord => Boolean(record));
 }
 
 function sanitizeFilename(value: string) {
@@ -687,6 +780,7 @@ function summarizeText(name: string, text: string, metadata: Record<string, stri
 }
 
 export async function analyzeStoredFile(input: {
+  id?: string;
   name: string;
   mimeType: string;
   size: number;
@@ -747,7 +841,7 @@ export async function analyzeStoredFile(input: {
 
   const textPreview = normalizeText(text);
   return {
-    id: createId("file"),
+    id: input.id ?? createId("file"),
     name: input.name,
     mimeType: input.mimeType || "application/octet-stream",
     extension: extension || "unknown",
@@ -773,6 +867,7 @@ export async function saveUploadedFile(file: File, ownerId?: string) {
   await writeFile(storedPath, buffer);
 
   return {
+    id,
     name: safeName,
     mimeType: file.type || "application/octet-stream",
     size,
@@ -782,5 +877,12 @@ export async function saveUploadedFile(file: File, ownerId?: string) {
 
 export async function saveAndAnalyzeUpload(file: File, ownerId?: string) {
   const stored = await saveUploadedFile(file, ownerId);
-  return analyzeStoredFile(stored);
+  const summary = await analyzeStoredFile(stored);
+  saveUploadRecord({
+    ...summary,
+    ownerId,
+    storedPath: stored.storedPath,
+    createdAt: new Date().toISOString()
+  });
+  return summary;
 }

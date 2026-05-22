@@ -57,7 +57,8 @@ const suggestions = [
   "整理一个 SaaS 产品竞品分析，给出定价和定位建议",
   "把一个复杂需求拆成 PRD、技术方案和任务清单",
   "用 Python 分析 AI Agent 产品 MVP 需求，并生成报告、表格、PPT、PDF 和 ZIP",
-  "用 Shell 检查任务 workspace 目录和文件结构，并输出 ZIP 归档"
+  "用 Shell 检查任务 workspace 目录和文件结构，并输出 ZIP 归档",
+  "规划东京、京都、大阪 5 日旅行路线，并生成地图式网页"
 ];
 
 const defaultSkills: AgentSkill[] = [
@@ -82,11 +83,51 @@ const defaultSkills: AgentSkill[] = [
     validationStatus: "allowed"
   },
   {
+    id: "builtin-documents",
+    name: "documents",
+    description: "处理 DOCX/Word 文档解析、改写、摘要、批注建议和结构化报告。",
+    triggers: ["docx", "word", "文档", "合同", "简历", "改写", "批注"],
+    toolsRequired: ["file_reader", "artifact_writer"],
+    source: "builtin",
+    enabled: true,
+    validationStatus: "allowed"
+  },
+  {
+    id: "builtin-presentations",
+    name: "presentations",
+    description: "把调研、数据分析和方案整理成 PPT/PPTX 大纲、讲稿与演示交付物。",
+    triggers: ["ppt", "pptx", "幻灯片", "路演", "汇报", "演示"],
+    toolsRequired: ["file_reader", "data_analysis", "artifact_writer"],
+    source: "builtin",
+    enabled: true,
+    validationStatus: "allowed"
+  },
+  {
     id: "builtin-batch-files",
     name: "batch-files",
     description: "为图片、文档和表格生成批量重命名、分类、移动 dry-run 清单。",
     triggers: ["批量", "重命名", "分类", "图片", "文件整理"],
     toolsRequired: ["batch_file_ops", "file_workspace"],
+    source: "builtin",
+    enabled: true,
+    validationStatus: "allowed"
+  },
+  {
+    id: "builtin-image-tools",
+    name: "image-tools",
+    description: "处理上传图片的压缩、缩放、格式转换和 OCR 文字识别。",
+    triggers: ["图片", "照片", "压缩", "缩放", "OCR", "文字识别", "发票", "名片"],
+    toolsRequired: ["batch_image_process", "image_ocr", "file_reader"],
+    source: "builtin",
+    enabled: true,
+    validationStatus: "allowed"
+  },
+  {
+    id: "builtin-maps",
+    name: "maps",
+    description: "生成地点顺序、路线段、OpenStreetMap 链接和可下载地图式 HTML/JSON 交付物。",
+    triggers: ["地图", "路线", "行程", "旅行", "旅游", "地址", "附近", "周边", "map", "route"],
+    toolsRequired: ["map_planner", "web_research", "artifact_writer"],
     source: "builtin",
     enabled: true,
     validationStatus: "allowed"
@@ -148,6 +189,17 @@ interface SandboxSelfTestResult {
   };
 }
 
+interface OcrStatus {
+  engine: "tesseract";
+  available: boolean;
+  version?: string;
+  languages: string[];
+  missingLanguages: string[];
+  recommendedLanguages: string[];
+  installHint: string;
+  reason?: string;
+}
+
 function formatTime(value: string) {
   return new Intl.DateTimeFormat("zh-CN", {
     hour: "2-digit",
@@ -183,6 +235,10 @@ function formatPercent(value: number) {
 
 function formatUsd(value: number) {
   return `$${value.toFixed(value < 0.01 ? 4 : 2)}`;
+}
+
+function formatCny(value: number) {
+  return `¥${value.toFixed(value < 0.1 ? 4 : 2)}`;
 }
 
 async function readJson<T>(response: Response, fallback?: T): Promise<T> {
@@ -348,6 +404,7 @@ export function AgentWorkspace() {
   const [billingSummary, setBillingSummary] = useState<BillingSummary | null>(null);
   const [sandboxStatus, setSandboxStatus] = useState<SandboxStatus | null>(null);
   const [sandboxSelfTest, setSandboxSelfTest] = useState<SandboxSelfTestResult | null>(null);
+  const [ocrStatus, setOcrStatus] = useState<OcrStatus | null>(null);
   const [templateRun, setTemplateRun] = useState<{
     template: TaskTemplate;
     variables: string[];
@@ -357,6 +414,7 @@ export function AgentWorkspace() {
   const [isUploadingFile, setIsUploadingFile] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [taskQuery, setTaskQuery] = useState("");
+  const [templateTagFilter, setTemplateTagFilter] = useState("all");
   const [settingsDraft, setSettingsDraft] = useState({
     apiKey: "",
     model: "deepseek-v4-flash",
@@ -409,6 +467,16 @@ export function AgentWorkspace() {
     );
   }, [taskQuery, tasks]);
 
+  const templateTags = useMemo(
+    () => Array.from(new Set(templates.flatMap((template) => template.tags))).sort(),
+    [templates]
+  );
+
+  const visibleTemplates = useMemo(() => {
+    if (templateTagFilter === "all") return templates;
+    return templates.filter((template) => template.tags.includes(templateTagFilter));
+  }, [templateTagFilter, templates]);
+
   const closeStream = useCallback(() => {
     eventSourceRef.current?.close();
     eventSourceRef.current = null;
@@ -460,6 +528,16 @@ export function AgentWorkspace() {
       setSandboxStatus(await readJson<SandboxStatus>(response));
     } catch {
       setSandboxStatus(null);
+    }
+  }, []);
+
+  const refreshOcrStatus = useCallback(async () => {
+    try {
+      const response = await fetch("/api/ocr/status", { cache: "no-store" });
+      if (!response.ok) return;
+      setOcrStatus(await readJson<OcrStatus>(response));
+    } catch {
+      setOcrStatus(null);
     }
   }, []);
 
@@ -577,6 +655,7 @@ export function AgentWorkspace() {
         void refreshMcpServers();
         void refreshBilling();
         void refreshSandboxStatus();
+        void refreshOcrStatus();
       });
       void fetch("/api/config", { cache: "no-store" })
         .then((response) => (response.ok ? readJson<ConfigResponse>(response) : null))
@@ -610,6 +689,7 @@ export function AgentWorkspace() {
     refreshAuthUser,
     refreshBilling,
     refreshMcpServers,
+    refreshOcrStatus,
     refreshSandboxStatus,
     resumePendingTasks,
     refreshSkills,
@@ -707,7 +787,11 @@ export function AgentWorkspace() {
       const response = await fetch("/api/tasks", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: trimmed, model: config?.model })
+        body: JSON.stringify({
+          prompt: trimmed,
+          model: config?.model,
+          fileIds: uploadedFiles.map((file) => file.id)
+        })
       });
 
       if (!response.ok) {
@@ -1127,7 +1211,10 @@ export function AgentWorkspace() {
     return (
       <>
         <TemplateList
-          templates={templates}
+          templates={visibleTemplates}
+          allTags={templateTags}
+          activeTag={templateTagFilter}
+          onTagChange={setTemplateTagFilter}
           canSave={activeTask?.status === "completed"}
           onSave={() => void saveActiveTaskAsTemplate()}
           onUse={useTemplate}
@@ -1364,6 +1451,14 @@ export function AgentWorkspace() {
 
           <section className="section-panel">
             <div className="panel-title">
+              <FileText size={14} />
+              OCR
+            </div>
+            {renderOcrPanel()}
+          </section>
+
+          <section className="section-panel">
+            <div className="panel-title">
               <Brain size={14} />
               Skills
             </div>
@@ -1496,6 +1591,60 @@ export function AgentWorkspace() {
               : sandboxSelfTest.resourceError?.message ?? sandboxSelfTest.error ?? "沙盒自检失败。"}
           </p>
         ) : null}
+      </div>
+    );
+  }
+
+  function renderOcrPanel() {
+    const statusLabel = ocrStatus ? (ocrStatus.available ? "ready" : "missing") : "loading";
+    const languageLabel = ocrStatus
+      ? ocrStatus.languages.length > 0
+        ? ocrStatus.languages.slice(0, 6).join(" / ")
+        : "no language data"
+      : "检查中";
+    const missingLabel =
+      ocrStatus && ocrStatus.missingLanguages.length > 0
+        ? `缺少 ${ocrStatus.missingLanguages.join(" / ")}`
+        : "推荐语言已就绪";
+
+    return (
+      <div className="sandbox-panel">
+        <div className="metric-list compact">
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">引擎</span>
+              <span className="metric-meta">{ocrStatus?.version ?? ocrStatus?.reason ?? "检查中"}</span>
+            </div>
+            <strong>{statusLabel}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">语言包</span>
+              <span className="metric-meta">{languageLabel}</span>
+            </div>
+            <strong>{ocrStatus?.missingLanguages.length ? "todo" : "ok"}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">建议</span>
+              <span className="metric-meta">
+                {ocrStatus?.available ? missingLabel : (ocrStatus?.installHint ?? "检查中")}
+              </span>
+            </div>
+            <strong>{ocrStatus?.available ? "识别" : "报告"}</strong>
+          </div>
+        </div>
+        <div className="panel-actions">
+          <button type="button" className="secondary-button" onClick={() => void refreshOcrStatus()}>
+            <RefreshCw size={15} />
+            刷新 OCR
+          </button>
+        </div>
+        <p className={`muted-note ${ocrStatus && !ocrStatus.available ? "error-note" : ""}`}>
+          {ocrStatus?.available
+            ? "上传图片任务会尝试真实 OCR，并把识别文本写入报告包。"
+            : "未安装 OCR 引擎时，任务会生成诊断报告和安装提示，不会中断主流程。"}
+        </p>
       </div>
     );
   }
@@ -2025,12 +2174,18 @@ function ArtifactList({ artifacts }: { artifacts: Artifact[] }) {
 
 function TemplateList({
   templates,
+  allTags,
+  activeTag,
+  onTagChange,
   canSave,
   onSave,
   onUse,
   onDelete
 }: {
   templates: TaskTemplate[];
+  allTags: string[];
+  activeTag: string;
+  onTagChange: (tag: string) => void;
   canSave: boolean;
   onSave: () => void;
   onUse: (template: TaskTemplate) => void;
@@ -2042,6 +2197,25 @@ function TemplateList({
         <BookmarkPlus size={15} />
         保存当前任务
       </button>
+      {allTags.length > 0 && (
+        <div className="template-tags" aria-label="模板标签筛选">
+          <button
+            className={activeTag === "all" ? "template-tag active" : "template-tag"}
+            onClick={() => onTagChange("all")}
+          >
+            全部
+          </button>
+          {allTags.slice(0, 10).map((tag) => (
+            <button
+              key={tag}
+              className={activeTag === tag ? "template-tag active" : "template-tag"}
+              onClick={() => onTagChange(tag)}
+            >
+              {tag}
+            </button>
+          ))}
+        </div>
+      )}
       {templates.length === 0 ? (
         <p className="muted-note">还没有模板。</p>
       ) : (
@@ -2051,16 +2225,25 @@ function TemplateList({
               <button className="template-main" onClick={() => onUse(template)}>
                 <span className="template-name">{template.name}</span>
                 <span className="template-meta">
-                  {template.tags.length > 0 ? template.tags.join(" · ") : "prompt template"}
+                  {[
+                    template.isPublic ? "公共" : "个人",
+                    template.tags.length > 0 ? template.tags.join(" · ") : "prompt template"
+                  ].join(" · ")}
                 </span>
               </button>
-              <button
-                className="icon-button"
-                aria-label={`删除模板 ${template.name}`}
-                onClick={() => onDelete(template.id)}
-              >
-                <Trash2 size={14} />
-              </button>
+              {template.isPublic ? (
+                <span className="template-lock" aria-label="公共模板不可删除">
+                  公
+                </span>
+              ) : (
+                <button
+                  className="icon-button"
+                  aria-label={`删除模板 ${template.name}`}
+                  onClick={() => onDelete(template.id)}
+                >
+                  <Trash2 size={14} />
+                </button>
+              )}
             </div>
           ))}
         </div>
@@ -2319,7 +2502,7 @@ function BillingPanel({ summary }: { summary: BillingSummary | null }) {
       <div className="library-stats">
         <div className="stat-box">
           <div className="stat-value">{formatUsd(summary.estimatedCostUsd)}</div>
-          <div className="stat-label">{summary.month}</div>
+          <div className="stat-label">{summary.month} · {formatCny(summary.estimatedCostCny)}</div>
         </div>
         <div className="stat-box">
           <div className="stat-value">{formatNumber(summary.totalTokens)}</div>
@@ -2351,6 +2534,19 @@ function BillingPanel({ summary }: { summary: BillingSummary | null }) {
               <span className="metric-meta">{formatNumber(model.totalTokens)} tokens</span>
             </div>
             <strong>{formatUsd(model.estimatedCostUsd)}</strong>
+          </div>
+        ))}
+      </div>
+      <div className="metric-list compact">
+        {summary.byDay.slice(-7).map((day) => (
+          <div key={day.name} className="metric-item">
+            <div>
+              <span className="metric-name">{day.name}</span>
+              <span className="metric-meta">
+                {day.totalCalls} calls · {formatNumber(day.totalTokens)} tokens
+              </span>
+            </div>
+            <strong>{formatUsd(day.estimatedCostUsd)}</strong>
           </div>
         ))}
       </div>

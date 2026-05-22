@@ -16,9 +16,13 @@ const allowedSkillTools = new Set([
   "file_reader",
   "file_workspace",
   "batch_file_ops",
+  "batch_image_process",
+  "image_ocr",
+  "skill_runner",
   "python_execute",
   "shell_execute",
   "data_analysis",
+  "map_planner",
   "chart_generator",
   "artifact_writer"
 ]);
@@ -57,6 +61,24 @@ const builtinSkills: AgentSkill[] = [
     enabled: true
   },
   {
+    id: "builtin-documents",
+    name: "documents",
+    description: "处理 DOCX/Word 文档解析、改写、摘要、批注建议和结构化报告。",
+    triggers: ["docx", "word", "文档", "合同", "简历", "改写", "批注"],
+    toolsRequired: ["file_reader", "artifact_writer"],
+    source: "builtin",
+    enabled: true
+  },
+  {
+    id: "builtin-presentations",
+    name: "presentations",
+    description: "把调研、数据分析和方案整理成 PPT/PPTX 大纲、讲稿与演示交付物。",
+    triggers: ["ppt", "pptx", "幻灯片", "路演", "汇报", "演示"],
+    toolsRequired: ["file_reader", "data_analysis", "artifact_writer"],
+    source: "builtin",
+    enabled: true
+  },
+  {
     id: "builtin-batch-files",
     name: "batch-files",
     description: "为图片、文档和表格生成批量重命名、分类、移动 dry-run 清单。",
@@ -64,8 +86,28 @@ const builtinSkills: AgentSkill[] = [
     toolsRequired: ["batch_file_ops", "file_workspace"],
     source: "builtin",
     enabled: true
+  },
+  {
+    id: "builtin-image-tools",
+    name: "image-tools",
+    description: "处理上传图片的压缩、缩放、格式转换和 OCR 文字识别。",
+    triggers: ["图片", "照片", "压缩", "缩放", "OCR", "文字识别", "发票", "名片"],
+    toolsRequired: ["batch_image_process", "image_ocr", "file_reader"],
+    source: "builtin",
+    enabled: true
+  },
+  {
+    id: "builtin-maps",
+    name: "maps",
+    description: "生成地点顺序、路线段、OpenStreetMap 链接和可下载地图式 HTML/JSON 交付物。",
+    triggers: ["地图", "路线", "行程", "旅行", "旅游", "地址", "附近", "周边", "map", "route"],
+    toolsRequired: ["map_planner", "web_research", "artifact_writer"],
+    source: "builtin",
+    enabled: true
   }
 ];
+
+const executableSkillScripts = ["main.py", "run.py", "skill.py", "handler.py"];
 
 function openSkillsDb() {
   const db = getManusDb();
@@ -333,4 +375,37 @@ export function selectSkillsForPrompt(prompt: string, ownerId?: string) {
     })
     .filter((skill) => skill.matched)
     .slice(0, 5);
+}
+
+function findExecutableSkillScript(skillRoot: string) {
+  return executableSkillScripts.find((filename) => existsSync(join(skillRoot, filename)));
+}
+
+export interface ExecutableSkill extends AgentSkill {
+  rootPath: string;
+  scriptName: string;
+}
+
+export function selectExecutableSkillsForPrompt(prompt: string, ownerId?: string): ExecutableSkill[] {
+  const matchedSkills = selectSkillsForPrompt(prompt, ownerId).filter((skill) => skill.source === "local");
+  const root = localSkillsRoot(ownerId);
+
+  return matchedSkills.flatMap((skill) => {
+    const skillFolder = skill.id.replace(/^local-/, "");
+    const rootPath = join(root, skillFolder);
+    const scriptName = findExecutableSkillScript(rootPath);
+    if (!scriptName) return [];
+
+    return [
+      {
+        ...skill,
+        rootPath,
+        scriptName
+      }
+    ];
+  });
+}
+
+export function hasExecutableSkillForPrompt(prompt: string, ownerId?: string) {
+  return selectExecutableSkillsForPrompt(prompt, ownerId).length > 0;
 }

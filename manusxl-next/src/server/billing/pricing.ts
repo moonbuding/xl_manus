@@ -18,10 +18,20 @@ const defaultPrice: ModelPrice = {
 };
 
 const priceTable: Record<string, ModelPrice> = {
+  "deepseek-v4-pro": {
+    inputUsdPerMillion: Number(process.env.MANUSXL_DEEPSEEK_PRO_INPUT_USD_PER_1M ?? 1),
+    outputUsdPerMillion: Number(process.env.MANUSXL_DEEPSEEK_PRO_OUTPUT_USD_PER_1M ?? 3),
+    cacheReadUsdPerMillion: Number(process.env.MANUSXL_DEEPSEEK_PRO_CACHE_USD_PER_1M ?? 0.2)
+  },
   "deepseek-v4-flash": {
     inputUsdPerMillion: Number(process.env.MANUSXL_DEEPSEEK_INPUT_USD_PER_1M ?? 0.07),
     outputUsdPerMillion: Number(process.env.MANUSXL_DEEPSEEK_OUTPUT_USD_PER_1M ?? 0.27),
     cacheReadUsdPerMillion: Number(process.env.MANUSXL_DEEPSEEK_CACHE_USD_PER_1M ?? 0.014)
+  },
+  "deepseek-v4-mini": {
+    inputUsdPerMillion: Number(process.env.MANUSXL_DEEPSEEK_MINI_INPUT_USD_PER_1M ?? 0.03),
+    outputUsdPerMillion: Number(process.env.MANUSXL_DEEPSEEK_MINI_OUTPUT_USD_PER_1M ?? 0.12),
+    cacheReadUsdPerMillion: Number(process.env.MANUSXL_DEEPSEEK_MINI_CACHE_USD_PER_1M ?? 0.006)
   },
   "deepseek-chat": {
     inputUsdPerMillion: Number(process.env.MANUSXL_DEEPSEEK_INPUT_USD_PER_1M ?? 0.07),

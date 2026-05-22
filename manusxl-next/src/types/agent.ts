@@ -22,6 +22,7 @@ export type ArtifactType =
   | "xlsx"
   | "pptx"
   | "pdf"
+  | "png"
   | "html"
   | "zip"
   | "txt"
@@ -76,6 +77,7 @@ export interface Task {
   id: string;
   ownerId?: string;
   prompt: string;
+  uploadedFileIds?: string[];
   status: TaskStatus;
   model: string;
   createdAt: string;
@@ -89,6 +91,7 @@ export interface Task {
 export interface CreateTaskRequest {
   prompt: string;
   model?: string;
+  fileIds?: string[];
 }
 
 export interface CreateTaskResponse {
@@ -144,6 +147,11 @@ export interface ContextMetricsSummary {
   averageCacheHitRate: number;
   estimatedCostUsd: number;
   estimatedCostCny: number;
+  estimatedNoCacheCostUsd: number;
+  estimatedNoCacheCostCny: number;
+  estimatedCacheSavingsUsd: number;
+  estimatedCacheSavingsCny: number;
+  estimatedCacheSavingsRate: number;
   stablePrefixHits: number;
   prefixInvalidations: number;
   latest?: ContextMetric;
@@ -203,6 +211,7 @@ export interface ConfigResponse {
 export interface TaskTemplate {
   id: string;
   ownerId?: string;
+  isPublic?: boolean;
   name: string;
   description: string;
   promptTemplate: string;
@@ -218,6 +227,7 @@ export interface CreateTemplateRequest {
   promptTemplate: string;
   defaultModel?: string;
   tags?: string[];
+  isPublic?: boolean;
 }
 
 export interface AgentSkill {

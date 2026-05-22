@@ -1,13 +1,13 @@
+import sharp from "sharp";
+
 const baseUrl = process.env.MANUSXL_E2E_BASE_URL ?? "http://localhost:3001";
 const timeoutMs = Number(process.env.MANUSXL_E2E_TIMEOUT_MS ?? 180000);
 const phone = process.env.MANUSXL_E2E_PHONE ?? "18800000001";
-
+const minAccuracy = Number(process.env.MANUSXL_E2E_OCR_MIN_ACCURACY ?? 0.8);
 const cookieJar = new Map();
 
 function assert(condition, message) {
-  if (!condition) {
-    throw new Error(message);
-  }
+  if (!condition) throw new Error(message);
 }
 
 function url(pathname) {
@@ -28,7 +28,6 @@ function mergeHeaders(headers = {}) {
 function rememberCookies(headers) {
   const raw = headers.get("set-cookie");
   if (!raw) return;
-
   raw
     .split(/,\s*(?=[^;]+=)/)
     .map((cookie) => cookie.split(";")[0])
@@ -60,46 +59,6 @@ async function fetchBuffer(pathname) {
   return body;
 }
 
-function findEndOfCentralDirectory(buffer) {
-  const minimumOffset = Math.max(0, buffer.length - 65557);
-  for (let offset = buffer.length - 22; offset >= minimumOffset; offset -= 1) {
-    if (buffer.readUInt32LE(offset) === 0x06054b50) {
-      return offset;
-    }
-  }
-  throw new Error("ZIP 结构不完整：未找到 central directory");
-}
-
-function readZipEntries(buffer) {
-  const endOffset = findEndOfCentralDirectory(buffer);
-  const entryCount = buffer.readUInt16LE(endOffset + 10);
-  let centralOffset = buffer.readUInt32LE(endOffset + 16);
-  const entries = [];
-
-  for (let index = 0; index < entryCount; index += 1) {
-    assert(buffer.readUInt32LE(centralOffset) === 0x02014b50, "ZIP central directory 损坏");
-
-    const compressedSize = buffer.readUInt32LE(centralOffset + 20);
-    const nameLength = buffer.readUInt16LE(centralOffset + 28);
-    const extraLength = buffer.readUInt16LE(centralOffset + 30);
-    const commentLength = buffer.readUInt16LE(centralOffset + 32);
-    const localOffset = buffer.readUInt32LE(centralOffset + 42);
-    const name = buffer
-      .subarray(centralOffset + 46, centralOffset + 46 + nameLength)
-      .toString("utf8");
-
-    const localNameLength = buffer.readUInt16LE(localOffset + 26);
-    const localExtraLength = buffer.readUInt16LE(localOffset + 28);
-    const dataOffset = localOffset + 30 + localNameLength + localExtraLength;
-    const data = buffer.subarray(dataOffset, dataOffset + compressedSize);
-
-    entries.push({ name, data });
-    centralOffset += 46 + nameLength + extraLength + commentLength;
-  }
-
-  return entries;
-}
-
 async function loginForE2E() {
   const requested = await fetchJson("/api/auth/phone/request", {
     method: "POST",
@@ -117,16 +76,29 @@ async function loginForE2E() {
   console.log(`已登录 E2E 用户：${verified.user.phone ?? phone}`);
 }
 
+async function renderMixedLanguageImage() {
+  const fontStack = "Songti SC, Heiti SC, serif";
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520">
+      <rect width="100%" height="100%" fill="white"/>
+      <text x="60" y="120" font-family="${fontStack}" font-size="72" fill="black">INVOICE 2026</text>
+      <text x="60" y="250" font-family="${fontStack}" font-size="72" fill="black">发票 金额 12800</text>
+      <text x="60" y="380" font-family="${fontStack}" font-size="72" fill="black">供应商 星河科技</text>
+    </svg>
+  `;
+  return sharp(Buffer.from(svg)).png().toBuffer();
+}
+
 async function analyzeUpload(name, content, type) {
   const formData = new FormData();
   formData.set("file", new File([content], name, { type }));
-
   const uploaded = await fetchJson("/api/files/analyze", {
     method: "POST",
     body: formData
   });
-  assert(uploaded.file?.summary, `${name} 没有返回解析摘要`);
-  console.log(`上传解析通过：${uploaded.file.name}`);
+  assert(uploaded.file?.id, `${name} 没有返回文件 ID`);
+  assert(uploaded.file?.metadata?.format === "image", `${name} 没有识别为图片`);
+  console.log(`上传图片解析通过：${uploaded.file.name}`);
   return uploaded.file;
 }
 
@@ -147,7 +119,6 @@ async function waitForTask(taskId) {
     signal: controller.signal
   });
   rememberCookies(response.headers);
-
   assert(response.ok, `SSE 连接失败：${response.status}`);
   assert(response.body, "当前 Node 版本不支持读取 SSE stream");
 
@@ -160,7 +131,6 @@ async function waitForTask(taskId) {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-
       buffer += decoder.decode(value, { stream: true });
       let boundary = buffer.indexOf("\n\n");
       while (boundary >= 0) {
@@ -171,17 +141,13 @@ async function waitForTask(taskId) {
           .filter((line) => line.startsWith("data: "))
           .map((line) => line.slice(6))
           .join("\n");
-
         if (data) {
           const event = JSON.parse(data);
           events.push(event);
           process.stdout.write(`· ${event.type}: ${event.title ?? "Agent event"}\n`);
           if (event.type === "finished") return events;
-          if (event.type === "failed") {
-            throw new Error(`任务失败：${event.content ?? "unknown error"}`);
-          }
+          if (event.type === "failed") throw new Error(`任务失败：${event.content ?? "unknown error"}`);
         }
-
         boundary = buffer.indexOf("\n\n");
       }
     }
@@ -199,81 +165,75 @@ function artifactByName(task, name) {
   return artifact;
 }
 
+function normalizeForTokenMatch(value) {
+  return value.toLowerCase().replace(/\s+/g, "");
+}
+
+function calculateAccuracy(text, expectedTokens) {
+  const normalizedText = normalizeForTokenMatch(text);
+  const hits = expectedTokens.filter((token) =>
+    normalizedText.includes(normalizeForTokenMatch(token))
+  );
+  return {
+    hits,
+    accuracy: hits.length / expectedTokens.length
+  };
+}
+
 async function main() {
-  console.log(`ManusXL batch files E2E base URL: ${baseUrl}`);
+  console.log(`ManusXL OCR accuracy E2E base URL: ${baseUrl}`);
   await loginForE2E();
 
-  const files = await Promise.all([
-    analyzeUpload(
-      "invoice-notes.txt",
-      "供应商：星河科技\n日期：2026-05-22\n金额：12800\n用途：云服务采购",
-      "text/plain"
-    ),
-    analyzeUpload(
-      "sales-ranking.csv",
-      "公司,类别,金额\n比亚迪,新能源车,120\n吉利银河,新能源车,86",
-      "text/csv"
-    )
-  ]);
+  const ocrStatus = await fetchJson("/api/ocr/status");
+  assert(ocrStatus.available, `OCR 引擎不可用：${ocrStatus.reason ?? "unknown"}`);
+  assert(ocrStatus.languages?.includes("eng"), "缺少 eng OCR 语言包");
+  assert(ocrStatus.languages?.includes("chi_sim"), "缺少 chi_sim OCR 语言包");
 
+  const image = await analyzeUpload(
+    "ocr-mixed-language.png",
+    await renderMixedLanguageImage(),
+    "image/png"
+  );
   const config = await fetchJson("/api/config");
-  const taskPrompt = [
-    "请批量重命名并按类别分类我上传的文件，输出 dry-run 清单和可下载批处理包。",
+  const prompt = [
+    "请 OCR 识别我上传图片里的中英文文字，并输出 OCR 报告和 ZIP 包。",
     "",
     "[上传文件摘要]",
-    files.map(uploadedFileBlock).join("\n")
+    uploadedFileBlock(image)
   ].join("\n");
 
   const created = await fetchJson("/api/tasks", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt: taskPrompt, model: config.model, fileIds: files.map((file) => file.id) })
+    body: JSON.stringify({ prompt, model: config.model, fileIds: [image.id] })
   });
   assert(created.taskId, "创建任务没有返回 taskId");
   console.log(`任务已创建：${created.taskId}`);
 
   const events = await waitForTask(created.taskId);
+  assert(
+    events.some((event) => event.type === "tool_call" && event.payload?.toolName === "image_ocr"),
+    "任务没有调用 image_ocr"
+  );
+
   const task = await fetchJson(`/api/tasks/${created.taskId}`);
   assert(task.status === "completed", `任务状态不是 completed：${task.status}`);
+  const report = JSON.parse(
+    (await fetchBuffer(artifactByName(task, "image-ocr-report.json").url)).toString("utf8")
+  );
+  const operation = report.operations?.[0];
+  assert(operation?.status === "extracted", `OCR 未成功提取文本：${operation?.status}`);
+
+  const expectedTokens = ["INVOICE", "2026", "发票", "金额", "12800", "供应商", "星河科技"];
+  const { hits, accuracy } = calculateAccuracy(operation.textPreview ?? "", expectedTokens);
   assert(
-    events.some((event) => event.type === "tool_call" && event.payload?.toolName === "batch_file_ops"),
-    "任务没有调用 batch_file_ops"
-  );
-  const fileReaderEvent = events.find(
-    (event) => event.type === "tool_result" && event.title === "file_reader 结果"
-  );
-  assert(fileReaderEvent?.payload?.files?.length === 2, "上传文件没有挂载到任务工作区");
-  assert(
-    fileReaderEvent.payload.files.every((file) => file.relativePath?.startsWith("tmp/uploads/")),
-    "上传文件缺少任务工作区相对路径"
+    accuracy >= minAccuracy,
+    `OCR 准确率 ${(accuracy * 100).toFixed(1)}%，低于 ${(minAccuracy * 100).toFixed(0)}%。命中：${hits.join(", ")}；识别文本：${operation.textPreview}`
   );
 
-  const planJson = JSON.parse((await fetchBuffer(artifactByName(task, "batch-file-ops-plan.json").url)).toString("utf8"));
-  assert(planJson.operations?.length === 2, "批量操作清单数量不正确");
-  assert(
-    planJson.operations.every((operation) => operation.dryRun === true),
-    "批量操作清单必须默认 dry-run"
+  console.log(
+    `OCR 中英文准确率 E2E 通过：命中 ${hits.length}/${expectedTokens.length}，准确率 ${(accuracy * 100).toFixed(1)}%。`
   );
-  assert(
-    planJson.operations.some((operation) => operation.target.includes("documents/")) &&
-      planJson.operations.some((operation) => operation.target.includes("spreadsheets/")),
-    "批量分类结果缺少 documents/spreadsheets 目标目录"
-  );
-
-  const csv = (await fetchBuffer(artifactByName(task, "batch-file-ops-plan.csv").url)).toString("utf8");
-  assert(csv.includes("operation,source,target,category,dryRun"), "CSV 清单表头不正确");
-
-  const shell = (await fetchBuffer(artifactByName(task, "apply-batch-file-ops.sh").url)).toString("utf8");
-  assert(shell.includes("DRY_RUN=${DRY_RUN:-1}"), "批处理脚本没有默认 dry-run");
-
-  const zipEntries = readZipEntries(await fetchBuffer(artifactByName(task, "batch-file-ops-package.zip").url)).map(
-    (entry) => entry.name
-  );
-  ["README.md", "batch-plan.json", "batch-plan.csv", "apply-batch-ops.sh"].forEach((name) => {
-    assert(zipEntries.includes(name), `批处理 ZIP 缺少 ${name}`);
-  });
-
-  console.log("批量文件 E2E 通过：上传解析、Agent 调用、dry-run JSON/CSV/脚本/ZIP 均已检查。");
 }
 
 main().catch((error) => {

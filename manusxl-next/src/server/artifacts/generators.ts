@@ -1,3 +1,4 @@
+import { deflateSync } from "node:zlib";
 import type { ArtifactType } from "@/types/agent";
 
 export interface GeneratedArtifact {
@@ -57,6 +58,124 @@ function dosDateTime(date = new Date()) {
     (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2);
   const dosDate = ((year - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate();
   return { dosDate, dosTime };
+}
+
+function pngChunk(type: string, data: Buffer) {
+  const typeBuffer = Buffer.from(type);
+  const chunk = Buffer.concat([typeBuffer, data]);
+  const output = Buffer.alloc(12 + data.length);
+  output.writeUInt32BE(data.length, 0);
+  typeBuffer.copy(output, 4);
+  data.copy(output, 8);
+  output.writeUInt32BE(crc32(chunk), 8 + data.length);
+  return output;
+}
+
+function makePng(
+  width: number,
+  height: number,
+  draw: (canvas: {
+    fillRect: (x: number, y: number, w: number, h: number, color: [number, number, number]) => void;
+    drawLine: (
+      x1: number,
+      y1: number,
+      x2: number,
+      y2: number,
+      color: [number, number, number],
+      thickness?: number
+    ) => void;
+    fillCircle: (cx: number, cy: number, radius: number, color: [number, number, number]) => void;
+    fillPieSlice: (
+      cx: number,
+      cy: number,
+      radius: number,
+      start: number,
+      end: number,
+      color: [number, number, number]
+    ) => void;
+  }) => void
+) {
+  const raw = Buffer.alloc((width * 4 + 1) * height);
+  const setPixel = (x: number, y: number, color: [number, number, number]) => {
+    const px = Math.round(x);
+    const py = Math.round(y);
+    if (px < 0 || py < 0 || px >= width || py >= height) return;
+    const offset = py * (width * 4 + 1) + 1 + px * 4;
+    raw[offset] = color[0];
+    raw[offset + 1] = color[1];
+    raw[offset + 2] = color[2];
+    raw[offset + 3] = 255;
+  };
+  const fillRect = (x: number, y: number, w: number, h: number, color: [number, number, number]) => {
+    const x1 = Math.max(0, Math.floor(x));
+    const y1 = Math.max(0, Math.floor(y));
+    const x2 = Math.min(width, Math.ceil(x + w));
+    const y2 = Math.min(height, Math.ceil(y + h));
+    for (let py = y1; py < y2; py += 1) {
+      for (let px = x1; px < x2; px += 1) setPixel(px, py, color);
+    }
+  };
+  const drawLine = (
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    color: [number, number, number],
+    thickness = 2
+  ) => {
+    const steps = Math.max(Math.abs(x2 - x1), Math.abs(y2 - y1), 1);
+    for (let step = 0; step <= steps; step += 1) {
+      const x = x1 + ((x2 - x1) * step) / steps;
+      const y = y1 + ((y2 - y1) * step) / steps;
+      fillRect(x - thickness / 2, y - thickness / 2, thickness, thickness, color);
+    }
+  };
+  const fillCircle = (cx: number, cy: number, radius: number, color: [number, number, number]) => {
+    const r2 = radius * radius;
+    for (let y = Math.floor(cy - radius); y <= Math.ceil(cy + radius); y += 1) {
+      for (let x = Math.floor(cx - radius); x <= Math.ceil(cx + radius); x += 1) {
+        if ((x - cx) ** 2 + (y - cy) ** 2 <= r2) setPixel(x, y, color);
+      }
+    }
+  };
+  const fillPieSlice = (
+    cx: number,
+    cy: number,
+    radius: number,
+    start: number,
+    end: number,
+    color: [number, number, number]
+  ) => {
+    const r2 = radius * radius;
+    for (let y = Math.floor(cy - radius); y <= Math.ceil(cy + radius); y += 1) {
+      for (let x = Math.floor(cx - radius); x <= Math.ceil(cx + radius); x += 1) {
+        const dx = x - cx;
+        const dy = y - cy;
+        if (dx * dx + dy * dy > r2) continue;
+        const angle = (Math.atan2(dy, dx) + Math.PI * 2) % (Math.PI * 2);
+        if (angle >= start && angle < end) setPixel(x, y, color);
+      }
+    }
+  };
+
+  fillRect(0, 0, width, height, [251, 252, 248]);
+  draw({ fillRect, drawLine, fillCircle, fillPieSlice });
+
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 6;
+  ihdr[10] = 0;
+  ihdr[11] = 0;
+  ihdr[12] = 0;
+
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", deflateSync(raw)),
+    pngChunk("IEND", Buffer.alloc(0))
+  ]);
 }
 
 export function makeZip(entries: ZipEntry[]) {
@@ -577,6 +696,128 @@ function chartGalleryReport(prompt: string, rows: CellValue[][]) {
 </html>`;
 }
 
+function chartData(rows: CellValue[][]) {
+  return rows.slice(1, 11).map((row, index) => ({
+    label: `S${index + 1}`,
+    value: typeof row[4] === "number" ? row[4] : (index + 1) * 10,
+    effort: typeof row[3] === "number" ? row[3] : index + 1
+  }));
+}
+
+function chartPngArtifacts(rows: CellValue[][]): GeneratedArtifact[] {
+  const data = chartData(rows);
+  const maxValue = Math.max(...data.map((item) => item.value), 1);
+  const accent: [number, number, number] = [29, 111, 95];
+  const gold: [number, number, number] = [185, 135, 39];
+  const purple: [number, number, number] = [138, 79, 125];
+  const blue: [number, number, number] = [61, 109, 152];
+  const olive: [number, number, number] = [121, 131, 79];
+  const line: [number, number, number] = [211, 222, 210];
+  const ink: [number, number, number] = [32, 35, 31];
+  const colors = [accent, gold, purple, blue, olive];
+  const width = 720;
+  const height = 420;
+  const chartTop = 52;
+  const chartLeft = 58;
+  const chartRight = 674;
+  const chartBottom = 360;
+
+  const pointFor = (index: number, value: number) => {
+    const x = chartLeft + (index / Math.max(data.length - 1, 1)) * (chartRight - chartLeft);
+    const y = chartBottom - (value / maxValue) * (chartBottom - chartTop);
+    return { x, y };
+  };
+
+  const linePng = makePng(width, height, (canvas) => {
+    canvas.drawLine(chartLeft, chartBottom, chartRight, chartBottom, line, 3);
+    canvas.drawLine(chartLeft, chartTop, chartLeft, chartBottom, line, 3);
+    data.forEach((item, index) => {
+      const current = pointFor(index, item.value);
+      if (index > 0) {
+        const previous = pointFor(index - 1, data[index - 1].value);
+        canvas.drawLine(previous.x, previous.y, current.x, current.y, accent, 5);
+      }
+      canvas.fillCircle(current.x, current.y, 8, gold);
+    });
+  });
+
+  const barPng = makePng(width, height, (canvas) => {
+    canvas.drawLine(chartLeft, chartBottom, chartRight, chartBottom, line, 3);
+    const gap = 8;
+    const barWidth = (chartRight - chartLeft - gap * (data.length - 1)) / data.length;
+    data.forEach((item, index) => {
+      const barHeight = (item.value / maxValue) * (chartBottom - chartTop);
+      canvas.fillRect(
+        chartLeft + index * (barWidth + gap),
+        chartBottom - barHeight,
+        barWidth,
+        barHeight,
+        colors[index % colors.length]
+      );
+    });
+  });
+
+  const piePng = makePng(width, height, (canvas) => {
+    const items = data.slice(0, 5);
+    const sum = Math.max(
+      items.reduce((total, item) => total + item.value, 0),
+      1
+    );
+    let start = 0;
+    items.forEach((item, index) => {
+      const end = start + (item.value / sum) * Math.PI * 2;
+      canvas.fillPieSlice(260, 210, 140, start, end, colors[index % colors.length]);
+      start = end;
+    });
+    canvas.fillCircle(260, 210, 54, [251, 252, 248]);
+    items.forEach((item, index) => {
+      canvas.fillRect(462, 114 + index * 34, 22, 22, colors[index % colors.length]);
+      canvas.fillRect(494, 121 + index * 34, Math.max(24, item.value * 2), 8, line);
+    });
+  });
+
+  const scatterPng = makePng(width, height, (canvas) => {
+    canvas.drawLine(chartLeft, chartBottom, chartRight, chartBottom, line, 3);
+    canvas.drawLine(chartLeft, chartTop, chartLeft, chartBottom, line, 3);
+    data.forEach((item, index) => {
+      const point = pointFor(index, item.value);
+      canvas.fillCircle(point.x, point.y, 6 + Math.min(10, item.effort), colors[index % colors.length]);
+    });
+  });
+
+  const heatmapPng = makePng(width, height, (canvas) => {
+    const cellSize = 92;
+    const startX = 214;
+    const startY = 72;
+    data.slice(0, 9).forEach((item, index) => {
+      const intensity = item.value / maxValue;
+      const color: [number, number, number] = [
+        Math.round(224 - 170 * intensity),
+        Math.round(236 - 90 * intensity),
+        Math.round(224 - 118 * intensity)
+      ];
+      const x = startX + (index % 3) * (cellSize + 12);
+      const y = startY + Math.floor(index / 3) * (cellSize + 12);
+      canvas.fillRect(x, y, cellSize, cellSize, color);
+      canvas.fillRect(x + 12, y + cellSize - 22, cellSize - 24, 8, ink);
+    });
+  });
+
+  return [
+    { name: "chart-line.png", content: linePng },
+    { name: "chart-bar.png", content: barPng },
+    { name: "chart-pie.png", content: piePng },
+    { name: "chart-scatter.png", content: scatterPng },
+    { name: "chart-heatmap.png", content: heatmapPng }
+  ].map((artifact) => ({
+    name: artifact.name,
+    type: "png",
+    mimeType: "image/png",
+    content: base64(artifact.content),
+    contentEncoding: "base64"
+  }));
+}
+
 export function generateDeliverables(prompt: string, plan: string[], finalAnswer: string) {
   const planRows = Array.from({ length: 10 }, (_, index) => {
     const step = plan[index % Math.max(plan.length, 1)] ?? "整理任务结论";
@@ -605,6 +846,7 @@ export function generateDeliverables(prompt: string, plan: string[], finalAnswer
   const html = htmlReport(prompt, finalAnswer);
   const dashboard = dashboardReport(prompt, plan, finalAnswer, rows);
   const chartGallery = chartGalleryReport(prompt, rows);
+  const chartPngs = chartPngArtifacts(rows);
   const xlsx = makeXlsx(rows);
   const pptx = makePptx(prompt, plan, finalAnswer, rows);
   const pdf = makePdf(finalAnswer);
@@ -635,7 +877,8 @@ export function generateDeliverables(prompt: string, plan: string[], finalAnswer
     },
     { name: "summary.html", type: "html", mimeType: "text/html; charset=utf-8", content: html },
     { name: "dashboard.html", type: "html", mimeType: "text/html; charset=utf-8", content: dashboard },
-    { name: "chart-gallery.html", type: "html", mimeType: "text/html; charset=utf-8", content: chartGallery }
+    { name: "chart-gallery.html", type: "html", mimeType: "text/html; charset=utf-8", content: chartGallery },
+    ...chartPngs
   ];
 
   const bundle = makeZip(
