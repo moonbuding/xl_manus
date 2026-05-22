@@ -699,7 +699,10 @@ As a 想给 Agent 加自定义工作流的用户，I want 写一个 SKILL.md 文
 - 新增 `/api/skills/upload`，可上传 ZIP Skill 包；导入时解析 `SKILL.md`，并校验 `tools_required` 是否在 allowlist 中。
 - 权限不通过的 Skill 会被标记为 blocked，UI 展示友好原因且禁止启用。
 - Skill 启用状态和上传目录已按当前用户隔离，任务 prompt 匹配时只使用当前用户可见 Skill。
-- 待补：社区 skill 执行沙盒、更多文件类型策略和真实 Anthropic skill 套件回归。
+- 新增内置 `maps` Skill 与 `map_planner` 工具，命中地图/路线/行程类任务时自动生成地点顺序、路线段、OpenStreetMap 链接和 HTML/JSON/CSV 交付物。
+- 新增 `skill_runner` 工具，上传 Skill 包包含 `main.py`/`run.py`/`skill.py`/`handler.py` 时，Agent 可把 Skill 脚本复制到任务 workspace 并在 Docker/本地沙盒中执行，产出 stdout、JSON 和 Markdown artifact。
+- 新增 `npm run e2e:skill`，自动上传一个临时 Skill 包并验证 Agent 调用 `skill_runner`、生成脚本执行交付物。
+- 待补：更多文件类型策略和真实 Anthropic skill 套件回归。
 
 #### 相关 OpenManus 代码
 - 可复用：[OpenManus-main/app/tool/tool_collection.py](../OpenManus-main/app/tool/tool_collection.py) — 注册机制可借鉴

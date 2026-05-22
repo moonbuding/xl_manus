@@ -19,6 +19,7 @@ import {
 } from "@/server/agent/tools";
 import { chatWithDeepSeek, getDeepSeekConfig, type ChatMessage } from "@/server/llm/deepseek";
 import { routeModel } from "@/server/llm/model-router";
+import { hasExecutableSkillForPrompt } from "@/server/skills/skill-registry";
 import {
   formatContextMetricForEvent,
   getContextMetricsSummary,
@@ -173,11 +174,32 @@ function ensureBatchFileOpsStep(prompt: string, plan: string[]) {
   return ["生成上传文件的批量重命名和分类 dry-run 清单", ...plan].slice(0, 6);
 }
 
+function ensureMapStep(prompt: string, plan: string[]) {
+  if (!/地图|路线|行程|旅行|旅游|门店|地址|附近|周边|导航|map|route|itinerary|location/i.test(prompt)) {
+    return plan;
+  }
+  if (plan.some((step) => /地图|路线|行程|地点|map_planner|route|itinerary/i.test(step))) {
+    return plan;
+  }
+
+  return ["生成地点顺序、路线段和地图式 HTML 交付物", ...plan].slice(0, 6);
+}
+
+function ensureSkillRunnerStep(prompt: string, ownerId: string | undefined, plan: string[]) {
+  if (!hasExecutableSkillForPrompt(prompt, ownerId)) return plan;
+  if (plan.some((step) => /skill_runner|Skill 脚本|本地 Skill|自定义 Skill/i.test(step))) {
+    return plan;
+  }
+
+  return ["执行匹配到的本地 Skill 脚本并读取沙盒结果", ...plan].slice(0, 6);
+}
+
 async function generatePlan(
   taskId: string,
   prompt: string,
   model: string,
   messages: ChatMessage[],
+  ownerId?: string,
   signal?: AbortSignal
 ) {
   const fallback = JSON.stringify(DEFAULT_PLAN);
@@ -193,9 +215,16 @@ async function generatePlan(
     messages
   });
 
-  return ensureMcpStep(
+  return ensureSkillRunnerStep(
     prompt,
-    ensureBatchFileOpsStep(prompt, ensureFileReadingStep(prompt, parsePlan(raw, config.maxSteps)))
+    ownerId,
+    ensureMapStep(
+      prompt,
+      ensureMcpStep(
+        prompt,
+        ensureBatchFileOpsStep(prompt, ensureFileReadingStep(prompt, parsePlan(raw, config.maxSteps)))
+      )
+    )
   );
 }
 
@@ -333,7 +362,7 @@ export async function runAgentTask(taskId: string, options: { resumed?: boolean 
 
     updateTaskStatus(taskId, "running");
     const memoryPath = await ensureTaskMemory(taskId, task.prompt, task.ownerId);
-    let enabledTools = selectToolsForPrompt(task.prompt);
+    let enabledTools = selectToolsForPrompt(task.prompt, task.ownerId);
     const planningRoute = routeModel("planning", task.prompt);
     const executionRoute = routeModel("execution", task.prompt);
     const finalRoute = routeModel("final_answer", task.prompt);
@@ -397,6 +426,7 @@ export async function runAgentTask(taskId: string, options: { resumed?: boolean 
       task.prompt,
       planningRoute.model,
       planningMessages,
+      task.ownerId,
       timeoutController.signal
     );
     if (shouldStopTask(taskId, startedAt, timeoutMs, 4)) return;

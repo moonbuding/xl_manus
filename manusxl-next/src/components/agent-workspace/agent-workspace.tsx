@@ -57,7 +57,8 @@ const suggestions = [
   "整理一个 SaaS 产品竞品分析，给出定价和定位建议",
   "把一个复杂需求拆成 PRD、技术方案和任务清单",
   "用 Python 分析 AI Agent 产品 MVP 需求，并生成报告、表格、PPT、PDF 和 ZIP",
-  "用 Shell 检查任务 workspace 目录和文件结构，并输出 ZIP 归档"
+  "用 Shell 检查任务 workspace 目录和文件结构，并输出 ZIP 归档",
+  "规划东京、京都、大阪 5 日旅行路线，并生成地图式网页"
 ];
 
 const defaultSkills: AgentSkill[] = [
@@ -87,6 +88,16 @@ const defaultSkills: AgentSkill[] = [
     description: "为图片、文档和表格生成批量重命名、分类、移动 dry-run 清单。",
     triggers: ["批量", "重命名", "分类", "图片", "文件整理"],
     toolsRequired: ["batch_file_ops", "file_workspace"],
+    source: "builtin",
+    enabled: true,
+    validationStatus: "allowed"
+  },
+  {
+    id: "builtin-maps",
+    name: "maps",
+    description: "生成地点顺序、路线段、OpenStreetMap 链接和可下载地图式 HTML/JSON 交付物。",
+    triggers: ["地图", "路线", "行程", "旅行", "旅游", "地址", "附近", "周边", "map", "route"],
+    toolsRequired: ["map_planner", "web_research", "artifact_writer"],
     source: "builtin",
     enabled: true,
     validationStatus: "allowed"

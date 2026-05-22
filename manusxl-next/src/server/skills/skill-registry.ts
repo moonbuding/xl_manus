@@ -16,9 +16,11 @@ const allowedSkillTools = new Set([
   "file_reader",
   "file_workspace",
   "batch_file_ops",
+  "skill_runner",
   "python_execute",
   "shell_execute",
   "data_analysis",
+  "map_planner",
   "chart_generator",
   "artifact_writer"
 ]);
@@ -64,8 +66,19 @@ const builtinSkills: AgentSkill[] = [
     toolsRequired: ["batch_file_ops", "file_workspace"],
     source: "builtin",
     enabled: true
+  },
+  {
+    id: "builtin-maps",
+    name: "maps",
+    description: "生成地点顺序、路线段、OpenStreetMap 链接和可下载地图式 HTML/JSON 交付物。",
+    triggers: ["地图", "路线", "行程", "旅行", "旅游", "地址", "附近", "周边", "map", "route"],
+    toolsRequired: ["map_planner", "web_research", "artifact_writer"],
+    source: "builtin",
+    enabled: true
   }
 ];
+
+const executableSkillScripts = ["main.py", "run.py", "skill.py", "handler.py"];
 
 function openSkillsDb() {
   const db = getManusDb();
@@ -333,4 +346,37 @@ export function selectSkillsForPrompt(prompt: string, ownerId?: string) {
     })
     .filter((skill) => skill.matched)
     .slice(0, 5);
+}
+
+function findExecutableSkillScript(skillRoot: string) {
+  return executableSkillScripts.find((filename) => existsSync(join(skillRoot, filename)));
+}
+
+export interface ExecutableSkill extends AgentSkill {
+  rootPath: string;
+  scriptName: string;
+}
+
+export function selectExecutableSkillsForPrompt(prompt: string, ownerId?: string): ExecutableSkill[] {
+  const matchedSkills = selectSkillsForPrompt(prompt, ownerId).filter((skill) => skill.source === "local");
+  const root = localSkillsRoot(ownerId);
+
+  return matchedSkills.flatMap((skill) => {
+    const skillFolder = skill.id.replace(/^local-/, "");
+    const rootPath = join(root, skillFolder);
+    const scriptName = findExecutableSkillScript(rootPath);
+    if (!scriptName) return [];
+
+    return [
+      {
+        ...skill,
+        rootPath,
+        scriptName
+      }
+    ];
+  });
+}
+
+export function hasExecutableSkillForPrompt(prompt: string, ownerId?: string) {
+  return selectExecutableSkillsForPrompt(prompt, ownerId).length > 0;
 }

@@ -1,7 +1,11 @@
-import { appendFile, mkdir, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { appendFile, cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { basename, join, resolve } from "node:path";
 import { makeZip } from "@/server/artifacts/generators";
 import { runSandboxedCommand } from "@/server/sandbox/docker-sandbox";
+import {
+  hasExecutableSkillForPrompt,
+  selectExecutableSkillsForPrompt
+} from "@/server/skills/skill-registry";
 import { callMcpServerTool, enabledMcpTools, listEnabledMcpServers } from "@/server/mcp/mcp-registry";
 import { ensureTaskWorkspace } from "@/server/workspace/task-workspace";
 
@@ -119,10 +123,12 @@ export type AgentToolName =
   | "file_reader"
   | "file_workspace"
   | "batch_file_ops"
+  | "skill_runner"
   | "python_execute"
   | "shell_execute"
   | "mcp_call"
   | "data_analysis"
+  | "map_planner"
   | "chart_generator"
   | "artifact_writer";
 
@@ -199,6 +205,12 @@ export const TOOL_METADATA: AgentToolMetadata[] = [
     fallbackTools: ["file_reader", "file_workspace", "data_analysis"]
   },
   {
+    name: "skill_runner",
+    namespace: "core",
+    description: "在任务沙盒中执行用户上传 Skill 包内的 Python 脚本。",
+    fallbackTools: ["python_execute", "data_analysis", "artifact_writer"]
+  },
+  {
     name: "python_execute",
     namespace: "code",
     description: "在任务工作区执行受控 Python 分析脚本。",
@@ -223,6 +235,12 @@ export const TOOL_METADATA: AgentToolMetadata[] = [
     fallbackTools: ["task_planner"]
   },
   {
+    name: "map_planner",
+    namespace: "data",
+    description: "为地图、路线、行程和地点调研生成可下载的地图式 HTML/JSON 交付物。",
+    fallbackTools: ["web_research", "data_analysis", "artifact_writer"]
+  },
+  {
     name: "chart_generator",
     namespace: "artifact",
     description: "生成 line/bar/pie/scatter/heatmap 图表规格，用于 Dashboard 交付物。",
@@ -242,7 +260,7 @@ function uniqueTools(tools: AgentToolName[]) {
   return Array.from(new Set(tools));
 }
 
-export function selectToolsForPrompt(prompt: string): AgentToolName[] {
+export function selectToolsForPrompt(prompt: string, ownerId?: string): AgentToolName[] {
   const lower = prompt.toLowerCase();
   const selected: AgentToolName[] = ["task_planner", "data_analysis", "artifact_writer"];
 
@@ -258,6 +276,9 @@ export function selectToolsForPrompt(prompt: string): AgentToolName[] {
   if (/批量|重命名|分类|移动|查重|压缩|缩放|图片|image|ocr|rename|classify/.test(lower)) {
     selected.push("batch_file_ops", "file_reader", "file_workspace");
   }
+  if (/skill|技能|工作流|自定义/.test(lower) || hasExecutableSkillForPrompt(prompt, ownerId)) {
+    selected.push("skill_runner", "file_workspace");
+  }
   if (/python|脚本|代码|计算|统计|shell|bash|命令|终端|目录|workspace/.test(lower)) {
     selected.push("python_execute", "shell_execute", "file_workspace");
   }
@@ -266,6 +287,9 @@ export function selectToolsForPrompt(prompt: string): AgentToolName[] {
   }
   if (/图表|chart|dashboard|看板|趋势|柱状|折线|饼图|散点|热力/.test(lower)) {
     selected.push("chart_generator", "artifact_writer", "data_analysis");
+  }
+  if (/地图|路线|行程|旅行|旅游|门店|地址|附近|周边|导航|map|route|itinerary|location/.test(lower)) {
+    selected.push("map_planner", "web_research", "artifact_writer", "data_analysis");
   }
 
   return uniqueTools(selected);
@@ -295,8 +319,14 @@ export function inferToolsForStep(step: string): AgentToolName[] {
   if (/批量|重命名|分类|移动|查重|图片|image|ocr|rename|classify/.test(lower)) {
     candidates.push("batch_file_ops");
   }
+  if (/skill|技能|工作流|自定义|执行.*脚本/.test(lower)) {
+    candidates.push("skill_runner");
+  }
   if (/图表|chart|dashboard|看板|趋势|柱状|折线|饼图|散点|热力/.test(lower)) {
     candidates.push("chart_generator");
+  }
+  if (/地图|路线|行程|旅行|旅游|门店|地址|附近|周边|导航|map|route|itinerary|location/.test(lower)) {
+    candidates.push("map_planner");
   }
   if (
     /(生成|输出|创建|制作|导出|准备|打包).*(报告|总结|网页|html|ppt|pptx|pdf|excel|xlsx|csv|zip|dashboard|看板|图表|交付物)|报告|交付物/.test(
@@ -327,6 +357,14 @@ function stripHtml(value: string) {
     .replace(/&gt;/g, ">")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function htmlEscape(value: string) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
 }
 
 function decodeDuckDuckGoUrl(value: string) {
@@ -767,6 +805,218 @@ async function runBatchFileOps(input: AgentToolInput): Promise<AgentToolResult> 
   };
 }
 
+function safeSkillWorkspaceName(value: string) {
+  return value.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "skill";
+}
+
+function truncateSkillOutput(value: string) {
+  return value.trim().slice(0, 6000);
+}
+
+async function readOptionalTextFile(path: string) {
+  try {
+    return await readFile(path, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+function parseSkillOutput(value: string) {
+  if (!value.trim()) return {};
+  try {
+    return JSON.parse(value) as {
+      observation?: unknown;
+      markdown?: unknown;
+      artifacts?: unknown;
+    };
+  } catch {
+    return {
+      observation: value
+    };
+  }
+}
+
+function normalizeSkillArtifacts(
+  skillName: string,
+  parsedOutput: ReturnType<typeof parseSkillOutput>,
+  stdout: string,
+  outputJson: string
+) {
+  const artifacts: Array<{
+    name: string;
+    type: string;
+    mimeType: string;
+    content: string;
+    contentEncoding?: "text" | "base64";
+  }> = [
+    {
+      name: `${safeSkillWorkspaceName(skillName)}-skill-output.json`,
+      type: "json",
+      mimeType: "application/json; charset=utf-8",
+      content: outputJson || JSON.stringify(parsedOutput, null, 2)
+    },
+    {
+      name: `${safeSkillWorkspaceName(skillName)}-skill-stdout.txt`,
+      type: "txt",
+      mimeType: "text/plain; charset=utf-8",
+      content: stdout || "Skill 脚本没有标准输出。"
+    }
+  ];
+
+  if (typeof parsedOutput.markdown === "string" && parsedOutput.markdown.trim()) {
+    artifacts.push({
+      name: `${safeSkillWorkspaceName(skillName)}-skill-result.md`,
+      type: "md",
+      mimeType: "text/markdown; charset=utf-8",
+      content: parsedOutput.markdown
+    });
+  }
+
+  if (Array.isArray(parsedOutput.artifacts)) {
+    for (const artifact of parsedOutput.artifacts.slice(0, 5)) {
+      const candidate = artifact as {
+        name?: unknown;
+        type?: unknown;
+        mimeType?: unknown;
+        content?: unknown;
+        contentEncoding?: unknown;
+      };
+      if (
+        typeof candidate.name === "string" &&
+        typeof candidate.type === "string" &&
+        typeof candidate.mimeType === "string" &&
+        typeof candidate.content === "string"
+      ) {
+        artifacts.push({
+          name: candidate.name,
+          type: candidate.type,
+          mimeType: candidate.mimeType,
+          content: candidate.content,
+          contentEncoding:
+            candidate.contentEncoding === "base64" || candidate.contentEncoding === "text"
+              ? candidate.contentEncoding
+              : undefined
+        });
+      }
+    }
+  }
+
+  return artifacts;
+}
+
+async function runSkillRunner(input: AgentToolInput): Promise<AgentToolResult> {
+  const executableSkills = selectExecutableSkillsForPrompt(input.prompt, input.ownerId);
+  const skill = executableSkills[0];
+
+  if (!skill) {
+    return {
+      toolName: "skill_runner",
+      ok: false,
+      observation: "没有找到与当前任务匹配且包含 Python 执行脚本的本地 Skill。",
+      payload: {
+        executableSkills: []
+      }
+    };
+  }
+
+  const { root, tmp } = await ensureTaskWorkspace(input.taskId, input.ownerId);
+  const rootPath = resolve(root);
+  const skillWorkspaceName = safeSkillWorkspaceName(skill.id);
+  const skillWorkDir = join(resolve(tmp), "skills", skillWorkspaceName);
+  const inputPath = join(skillWorkDir, "skill-input.json");
+  const outputPath = join(skillWorkDir, "skill-output.json");
+  const relativeScript = `tmp/skills/${skillWorkspaceName}/${basename(skill.scriptName)}`;
+  const relativeInput = `tmp/skills/${skillWorkspaceName}/skill-input.json`;
+  const relativeOutput = `tmp/skills/${skillWorkspaceName}/skill-output.json`;
+  const inputJson = JSON.stringify(
+    {
+      taskId: input.taskId,
+      prompt: input.prompt,
+      step: input.step,
+      stepIndex: input.stepIndex,
+      plan: input.plan,
+      skill: {
+        id: skill.id,
+        name: skill.name,
+        description: skill.description,
+        triggers: skill.triggers,
+        toolsRequired: skill.toolsRequired
+      }
+    },
+    null,
+    2
+  );
+
+  await mkdir(skillWorkDir, { recursive: true });
+  await cp(skill.rootPath, skillWorkDir, {
+    recursive: true,
+    force: true,
+    errorOnExist: false,
+    dereference: false
+  });
+  await writeFile(inputPath, inputJson);
+
+  try {
+    const limits = getToolExecutionLimits();
+    const { stdout, stderr, sandbox } = await runSandboxedCommand({
+      workspaceRoot: rootPath,
+      dockerCommand: "python3",
+      dockerArgs: [relativeScript, relativeInput, relativeOutput],
+      localCommand: "python3",
+      localArgs: [join(skillWorkDir, skill.scriptName), inputPath, outputPath],
+      localCwd: rootPath,
+      timeoutMs: limits.timeoutMs,
+      maxBufferBytes: limits.maxBufferBytes
+    });
+    const outputJson = await readOptionalTextFile(outputPath);
+    const parsedOutput = parseSkillOutput(outputJson || stdout);
+    const observation =
+      typeof parsedOutput.observation === "string" && parsedOutput.observation.trim()
+        ? parsedOutput.observation.trim()
+        : `已执行本地 Skill「${skill.name}」脚本 ${skill.scriptName}。`;
+
+    return {
+      toolName: "skill_runner",
+      ok: true,
+      observation,
+      payload: {
+        skill: {
+          id: skill.id,
+          name: skill.name,
+          scriptName: skill.scriptName
+        },
+        scriptPath: join(skillWorkDir, skill.scriptName),
+        inputPath,
+        outputPath,
+        stdout: truncateSkillOutput(stdout),
+        stderr: truncateSkillOutput(stderr),
+        parsedOutput,
+        sandbox,
+        generatedArtifacts: normalizeSkillArtifacts(skill.name, parsedOutput, stdout, outputJson)
+      }
+    };
+  } catch (error) {
+    const summary = summarizeProcessError(error, `Skill「${skill.name}」`);
+    return {
+      toolName: "skill_runner",
+      ok: false,
+      observation: summary.message,
+      payload: {
+        skill: {
+          id: skill.id,
+          name: skill.name,
+          scriptName: skill.scriptName
+        },
+        scriptPath: join(skillWorkDir, skill.scriptName),
+        inputPath,
+        outputPath,
+        errorKind: summary.kind,
+        ...processErrorPayload(error)
+      }
+    };
+  }
+}
+
 async function runPythonExecute(input: AgentToolInput): Promise<AgentToolResult> {
   const { root, tmp } = await ensureTaskWorkspace(input.taskId, input.ownerId);
   const rootPath = resolve(root);
@@ -962,6 +1212,366 @@ async function runMcpCall(input: AgentToolInput): Promise<AgentToolResult> {
   }
 }
 
+interface KnownMapPlace {
+  names: string[];
+  lat: number;
+  lon: number;
+  region: string;
+}
+
+interface MapPlace {
+  name: string;
+  lat?: number;
+  lon?: number;
+  region?: string;
+  osmUrl: string;
+  note: string;
+  source: "known" | "prompt";
+}
+
+const KNOWN_MAP_PLACES: KnownMapPlace[] = [
+  { names: ["北京", "北京市", "beijing"], lat: 39.9042, lon: 116.4074, region: "中国" },
+  { names: ["上海", "上海市", "shanghai"], lat: 31.2304, lon: 121.4737, region: "中国" },
+  { names: ["广州", "广州市", "guangzhou"], lat: 23.1291, lon: 113.2644, region: "中国" },
+  { names: ["深圳", "深圳市", "shenzhen"], lat: 22.5431, lon: 114.0579, region: "中国" },
+  { names: ["杭州", "杭州市", "hangzhou"], lat: 30.2741, lon: 120.1551, region: "中国" },
+  { names: ["成都", "成都市", "chengdu"], lat: 30.5728, lon: 104.0668, region: "中国" },
+  { names: ["重庆", "重庆市", "chongqing"], lat: 29.563, lon: 106.5516, region: "中国" },
+  { names: ["西安", "西安市", "xian", "xi'an"], lat: 34.3416, lon: 108.9398, region: "中国" },
+  { names: ["南京", "南京市", "nanjing"], lat: 32.0603, lon: 118.7969, region: "中国" },
+  { names: ["苏州", "苏州市", "suzhou"], lat: 31.2989, lon: 120.5853, region: "中国" },
+  { names: ["武汉", "武汉市", "wuhan"], lat: 30.5928, lon: 114.3055, region: "中国" },
+  { names: ["天津", "天津市", "tianjin"], lat: 39.3434, lon: 117.3616, region: "中国" },
+  { names: ["东京", "tokyo"], lat: 35.6762, lon: 139.6503, region: "日本" },
+  { names: ["大阪", "osaka"], lat: 34.6937, lon: 135.5023, region: "日本" },
+  { names: ["京都", "kyoto"], lat: 35.0116, lon: 135.7681, region: "日本" },
+  { names: ["奈良", "nara"], lat: 34.6851, lon: 135.8048, region: "日本" },
+  { names: ["首尔", "seoul"], lat: 37.5665, lon: 126.978, region: "韩国" },
+  { names: ["新加坡", "singapore"], lat: 1.3521, lon: 103.8198, region: "新加坡" },
+  { names: ["纽约", "new york"], lat: 40.7128, lon: -74.006, region: "美国" },
+  { names: ["西雅图", "seattle"], lat: 47.6062, lon: -122.3321, region: "美国" },
+  { names: ["旧金山", "san francisco"], lat: 37.7749, lon: -122.4194, region: "美国" },
+  { names: ["伦敦", "london"], lat: 51.5072, lon: -0.1276, region: "英国" },
+  { names: ["巴黎", "paris"], lat: 48.8566, lon: 2.3522, region: "法国" }
+];
+
+const MAP_CANDIDATE_STOPWORDS = new Set([
+  "请",
+  "帮我",
+  "规划",
+  "生成",
+  "输出",
+  "地图",
+  "路线",
+  "行程",
+  "旅行",
+  "旅游",
+  "攻略",
+  "地址",
+  "附近",
+  "周边",
+  "导航",
+  "报告",
+  "建议",
+  "对比",
+  "分析",
+  "map",
+  "route",
+  "itinerary",
+  "location"
+]);
+
+function openStreetMapUrl(place: { name: string; lat?: number; lon?: number }) {
+  if (typeof place.lat === "number" && typeof place.lon === "number") {
+    return `https://www.openstreetmap.org/?mlat=${place.lat}&mlon=${place.lon}#map=12/${place.lat}/${place.lon}`;
+  }
+  return `https://www.openstreetmap.org/search?query=${encodeURIComponent(place.name)}`;
+}
+
+function cleanMapCandidate(value: string) {
+  return value
+    .replace(/\[[\s\S]*$/, "")
+    .replace(/[“”"「」『』（）()【】[\]{}]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^(从|自|到|至|去|经过|途经|在|给我|帮我|请|规划|生成|输出)+/, "")
+    .replace(/(地图|路线|行程|旅行|旅游|攻略|地址|附近|周边|导航|报告|建议|对比|分析)+$/, "")
+    .trim();
+}
+
+function isUsefulMapCandidate(value: string) {
+  const normalized = value.toLowerCase();
+  if (normalized.length < 2 || normalized.length > 28) return false;
+  if (MAP_CANDIDATE_STOPWORDS.has(normalized)) return false;
+  if (!/[\p{Script=Han}A-Za-z0-9]/u.test(value)) return false;
+  if (/^(一个|一份|可下载|自包含|html|json|csv)$/i.test(value)) return false;
+  return true;
+}
+
+function extractMapPlaces(prompt: string, step: string): MapPlace[] {
+  const text = `${prompt}\n${step}`;
+  const lower = text.toLowerCase();
+  const knownMatches = KNOWN_MAP_PLACES.flatMap((place) => {
+    const matchedName = place.names.find((name) => lower.includes(name.toLowerCase()));
+    if (!matchedName) return [];
+    return [
+      {
+        name: place.names[0],
+        lat: place.lat,
+        lon: place.lon,
+        region: place.region,
+        osmUrl: openStreetMapUrl({ name: place.names[0], lat: place.lat, lon: place.lon }),
+        note: `已匹配内置地理坐标：${place.region}`,
+        source: "known" as const,
+        index: lower.indexOf(matchedName.toLowerCase())
+      }
+    ];
+  }).sort((a, b) => a.index - b.index);
+
+  const guessed = text
+    .replace(/\[上传文件摘要\][\s\S]*/g, " ")
+    .replace(/(从|自|起点|终点|经过|途经|去|到|至|路线|地图|行程|旅行|旅游|攻略|门店|地址|附近|周边|导航)/g, "、")
+    .split(/[、，,;；/|｜\n\r\t]+/)
+    .map(cleanMapCandidate)
+    .filter(isUsefulMapCandidate)
+    .map((name) => ({
+      name,
+      osmUrl: openStreetMapUrl({ name }),
+      note: "从任务描述中提取，等待后续接入地理编码精确定位。",
+      source: "prompt" as const
+    }));
+
+  const seen = new Set<string>();
+  const places = [...knownMatches, ...guessed]
+    .filter((place) => {
+      const key = place.name.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 8)
+    .map((place) => ({
+      name: place.name,
+      lat: "lat" in place ? place.lat : undefined,
+      lon: "lon" in place ? place.lon : undefined,
+      region: "region" in place ? place.region : undefined,
+      osmUrl: place.osmUrl,
+      note: place.note,
+      source: place.source
+    }));
+
+  if (places.length > 0) return places;
+
+  return ["起点待定", "核心地点待定", "目的地待定"].map((name) => ({
+    name,
+    osmUrl: openStreetMapUrl({ name }),
+    note: "任务中没有明确地点，已保留占位节点。",
+    source: "prompt" as const
+  }));
+}
+
+function mapCsv(places: MapPlace[]) {
+  const headers = ["index", "name", "region", "latitude", "longitude", "source", "openstreetmap"];
+  return [
+    headers.join(","),
+    ...places.map((place, index) =>
+      [
+        String(index + 1),
+        place.name,
+        place.region ?? "",
+        place.lat === undefined ? "" : String(place.lat),
+        place.lon === undefined ? "" : String(place.lon),
+        place.source,
+        place.osmUrl
+      ].map(csvEscape).join(",")
+    )
+  ].join("\n");
+}
+
+function mapGeoJson(places: MapPlace[]) {
+  return {
+    type: "FeatureCollection",
+    features: places
+      .filter((place) => typeof place.lat === "number" && typeof place.lon === "number")
+      .map((place, index) => ({
+        type: "Feature",
+        properties: {
+          index: index + 1,
+          name: place.name,
+          region: place.region ?? "",
+          source: place.source
+        },
+        geometry: {
+          type: "Point",
+          coordinates: [place.lon, place.lat]
+        }
+      }))
+  };
+}
+
+function coordinateText(place: MapPlace) {
+  if (typeof place.lat !== "number" || typeof place.lon !== "number") return "待地理编码";
+  return `${place.lat.toFixed(4)}, ${place.lon.toFixed(4)}`;
+}
+
+function mapPlannerHtml(prompt: string, step: string, places: MapPlace[]) {
+  const legs = places.slice(1).map((place, index) => ({
+    from: places[index].name,
+    to: place.name
+  }));
+
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ManusXL Map Planner</title>
+  <style>
+    :root{--ink:#20231f;--muted:#667062;--line:#dce4da;--paper:#fbfcf8;--bg:#eef2ef;--accent:#1d6f5f;--gold:#b98727;--red:#ad4c43}
+    body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    main{max-width:1080px;margin:0 auto;padding:38px 22px 54px}
+    h1{font-size:34px;line-height:1.12;margin:0 0 10px}
+    h2{font-size:18px;margin:0 0 14px}
+    p{line-height:1.7;color:var(--muted)}
+    .grid{display:grid;grid-template-columns:1.15fr .85fr;gap:14px;margin-top:22px}
+    section{background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:18px}
+    .route{display:grid;gap:10px}
+    .stop{display:grid;grid-template-columns:36px 1fr auto;gap:12px;align-items:start;border:1px solid var(--line);border-radius:8px;background:#fff;padding:12px}
+    .badge{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;background:var(--accent);color:#fff;font-weight:800}
+    .stop strong{display:block;font-size:16px}.stop small{display:block;margin-top:4px;color:var(--muted)}
+    .stop a{color:var(--accent);text-decoration:none;font-weight:700;font-size:12px}
+    .legs{display:grid;gap:9px}.leg{display:flex;align-items:center;gap:8px;border:1px dashed var(--line);border-radius:8px;padding:10px;background:#fff}
+    .line{height:2px;flex:1;background:linear-gradient(90deg,var(--accent),var(--gold))}
+    .mini-map{min-height:280px;display:grid;align-items:end;grid-template-columns:repeat(${Math.max(places.length, 1)},1fr);gap:10px;border:1px solid var(--line);border-radius:8px;background:linear-gradient(180deg,#f7faf5,#e6eee8);padding:16px;overflow:hidden}
+    .pin{display:grid;justify-items:center;gap:8px;align-self:end}.dot{width:18px;height:18px;border-radius:50%;background:var(--red);box-shadow:0 0 0 7px rgba(173,76,67,.14)}
+    .pin span{max-width:92px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:var(--ink)}
+    pre{white-space:pre-wrap;line-height:1.7;color:var(--ink);margin:0}
+    @media(max-width:760px){.grid{grid-template-columns:1fr}.stop{grid-template-columns:32px 1fr}.stop a{grid-column:2}.mini-map{grid-template-columns:1fr;align-items:start}.pin{justify-items:start;grid-template-columns:24px 1fr}.dot{width:14px;height:14px}}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>ManusXL Map Planner</h1>
+    <p>${htmlEscape(prompt)}</p>
+    <div class="grid">
+      <section>
+        <h2>地点顺序</h2>
+        <div class="route">
+          ${places
+            .map(
+              (place, index) => `<article class="stop"><div class="badge">${index + 1}</div><div><strong>${htmlEscape(place.name)}</strong><small>${htmlEscape(place.note)} · ${coordinateText(place)}</small></div><a href="${htmlEscape(place.osmUrl)}">OpenStreetMap</a></article>`
+            )
+            .join("")}
+        </div>
+      </section>
+      <section>
+        <h2>路线段</h2>
+        <div class="legs">
+          ${
+            legs.length > 0
+              ? legs
+                  .map(
+                    (leg) => `<div class="leg"><strong>${htmlEscape(leg.from)}</strong><span class="line"></span><strong>${htmlEscape(leg.to)}</strong></div>`
+                  )
+                  .join("")
+              : "<p>当前只有一个地点，适合做周边探索或单城行程。</p>"
+          }
+        </div>
+      </section>
+      <section>
+        <h2>地图草图</h2>
+        <div class="mini-map">
+          ${places
+            .map((place) => `<div class="pin"><i class="dot"></i><span>${htmlEscape(place.name)}</span></div>`)
+            .join("")}
+        </div>
+      </section>
+      <section>
+        <h2>执行说明</h2>
+        <pre>${htmlEscape(step)}</pre>
+      </section>
+    </div>
+  </main>
+</body>
+</html>`;
+}
+
+async function runMapPlanner(input: AgentToolInput): Promise<AgentToolResult> {
+  const places = extractMapPlaces(input.prompt, input.step);
+  const legs = places.slice(1).map((place, index) => ({
+    from: places[index].name,
+    to: place.name
+  }));
+  const geojson = mapGeoJson(places);
+  const planJson = JSON.stringify(
+    {
+      taskId: input.taskId,
+      prompt: input.prompt,
+      step: input.step,
+      generatedAt: new Date().toISOString(),
+      places,
+      legs,
+      notes: [
+        "当前版本使用内置地点坐标和 OpenStreetMap 链接生成地图式交付物。",
+        "未命中内置坐标的地点会保留为待地理编码节点，后续可接入真实地图 API。"
+      ]
+    },
+    null,
+    2
+  );
+  const csv = mapCsv(places);
+  const html = mapPlannerHtml(input.prompt, input.step, places);
+  const geoJsonContent = JSON.stringify(geojson, null, 2);
+  const { tmp } = await ensureTaskWorkspace(input.taskId, input.ownerId);
+
+  await writeFile(join(tmp, "map-plan.json"), planJson);
+  await writeFile(join(tmp, "map-places.csv"), csv);
+  await writeFile(join(tmp, "map-itinerary.html"), html);
+  if (geojson.features.length > 0) {
+    await writeFile(join(tmp, "map-places.geojson"), geoJsonContent);
+  }
+
+  return {
+    toolName: "map_planner",
+    ok: true,
+    observation: `已生成地图路线规划：识别 ${places.length} 个地点、${legs.length} 段路线，并准备 HTML/JSON/CSV 交付物。`,
+    payload: {
+      places,
+      legs,
+      generatedArtifacts: [
+        {
+          name: "map-itinerary.html",
+          type: "html",
+          mimeType: "text/html; charset=utf-8",
+          content: html
+        },
+        {
+          name: "map-plan.json",
+          type: "json",
+          mimeType: "application/json; charset=utf-8",
+          content: planJson
+        },
+        {
+          name: "map-places.csv",
+          type: "csv",
+          mimeType: "text/csv; charset=utf-8",
+          content: csv
+        },
+        ...(geojson.features.length > 0
+          ? [
+              {
+                name: "map-places.geojson",
+                type: "json",
+                mimeType: "application/geo+json; charset=utf-8",
+                content: geoJsonContent
+              }
+            ]
+          : [])
+      ]
+    }
+  };
+}
+
 async function runDataAnalysis(input: AgentToolInput): Promise<AgentToolResult> {
   const dimensions = ["目标", "资料", "分析", "交付", "风险"];
   return {
@@ -1043,6 +1653,8 @@ export async function executeAgentTool(
       return runFileWorkspace(input);
     case "batch_file_ops":
       return runBatchFileOps(input);
+    case "skill_runner":
+      return runSkillRunner(input);
     case "python_execute":
       return runPythonExecute(input);
     case "shell_execute":
@@ -1051,6 +1663,8 @@ export async function executeAgentTool(
       return runMcpCall(input);
     case "data_analysis":
       return runDataAnalysis(input);
+    case "map_planner":
+      return runMapPlanner(input);
     case "chart_generator":
       return runChartGenerator(input);
     case "artifact_writer":
