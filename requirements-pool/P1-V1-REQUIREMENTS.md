@@ -719,8 +719,14 @@ As a 已经登录了 The Information / Bloomberg / 知网的用户，I want Agen
 - CDP endpoint 已做 localhost/127.0.0.1 限制，避免把检测接口变成任意内网探测入口。
 - Settings 新增"本地浏览器"面板，可配置 CDP 地址并显示 Chrome/CDP 连接状态和可读取标签页数量。
 - Agent 工具链新增 `local_browser`，命中本地浏览器/已登录态/paywall/CDP/Chrome 类任务时会尝试读取本地页面快照；默认必须配置 `MANUSXL_LOCAL_BROWSER_DOMAIN_ALLOWLIST` 才允许读取正文。
-- 新增 `npm run e2e:local-browser`，覆盖未登录保护、非 localhost 地址拦截、CDP 状态、标签页列表和 snapshot 返回。
-- 待补：Chrome 扩展/本地 helper 配对、Settings 域名 allowlist 管理、CDP 截图和点击输入动作。
+- 新增 `/api/local-browser/screenshot`，通过 CDP `Page.captureScreenshot` 返回 allowlist 域名页面截图；Settings 面板可直接预览。
+- 新增 `/api/local-browser/action`，支持 allowlist 保护下的 `navigate` / `click` / `type` / `press` 基础动作，Agent 的 `local_browser` 工具已可在本地浏览器中执行受限导航。
+- 本地浏览器域名 allowlist 已接入 `app_config`，Settings 可直接保存允许域名，并兼容 `.env.local` 中的 `MANUSXL_LOCAL_BROWSER_DOMAIN_ALLOWLIST`。
+- 新增 `/api/local-browser/safety` 与本地操作审计记录，Settings 可查看最近 snapshot/screenshot/action 操作，并可一键暂停/恢复后续本地浏览器操作。
+- 新增 `browser_extension/` Manifest V3 开发扩展，可在 Chrome 开发者模式加载；Web 端可生成 5 分钟一次性配对码，扩展输入配对码后获得本地令牌并显示暂停状态与最近操作。
+- 新增 `/api/local-browser/pairing`、`/api/local-browser/pairing/verify`、`/api/local-browser/extension/status`，覆盖 Web 端生成配对码、扩展无 Cookie 验证配对、扩展轮询操作状态。
+- 新增 `npm run e2e:local-browser`，覆盖未登录保护、非 localhost 地址拦截、CDP 状态、标签页列表、extension pairing、allowlist 保存、pause guard、snapshot、screenshot 和 action guard。
+- 待补：扩展侧操作确认弹窗/一键中止、真实付费站点/验证码场景验收。
 
 #### 相关 OpenManus 代码
 - 可复用：[OpenManus-main/app/tool/browser_use_tool.py](../OpenManus-main/app/tool/browser_use_tool.py) — `wss_url`/`cdp_url` 已支持远程浏览器

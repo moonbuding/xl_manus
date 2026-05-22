@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "ManusXL Local Browser",
+  "version": "0.1.0",
+  "description": "Pair a local Chrome session with ManusXL and show recent Agent browser operations.",
+  "permissions": ["storage"],
+  "host_permissions": ["http://localhost:3001/*", "http://127.0.0.1:3001/*"],
+  "action": {
+    "default_title": "ManusXL",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}

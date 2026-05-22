@@ -22,6 +22,8 @@ export interface StoredAppConfig {
   executionModel?: string;
   finalModel?: string;
   promptCacheEnabled?: boolean;
+  localBrowserDomainAllowlist?: string[];
+  localBrowserPaused?: boolean;
 }
 
 const secretFile = dataPath("config-secret");
@@ -198,12 +200,45 @@ function decryptSecret(value: string | undefined) {
   }
 }
 
+function normalizeDomainAllowlist(value: string | string[] | undefined) {
+  const values = Array.isArray(value) ? value : (value ?? "").split(/[\n,]/);
+  const domains = values
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean)
+    .map((item) => {
+      try {
+        if (/^https?:\/\//.test(item)) return new URL(item).hostname.toLowerCase();
+      } catch {
+        return item;
+      }
+      return item;
+    })
+    .map((item) => item.replace(/^\*\./, "").replace(/^\.+/, "").replace(/\.+$/, ""))
+    .filter((item) => /^[a-z0-9-]+(\.[a-z0-9-]+)*$/i.test(item));
+  return Array.from(new Set(domains)).slice(0, 80);
+}
+
+function readStoredDomainAllowlist(value: string | undefined) {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (Array.isArray(parsed)) return normalizeDomainAllowlist(parsed.map(String));
+  } catch {
+    return normalizeDomainAllowlist(value);
+  }
+  return normalizeDomainAllowlist(value);
+}
+
 export function getStoredAppConfig(): StoredAppConfig {
   const store = getConfigStore();
   const temperature = Number(store.get("runtime.temperature"));
   const maxSteps = Number(store.get("runtime.maxSteps"));
   const taskBudgetUsd = Number(store.get("runtime.taskBudgetUsd"));
   const promptCacheEnabled = store.get("runtime.promptCacheEnabled");
+  const localBrowserPaused = store.get("localBrowser.paused");
+  const localBrowserDomainAllowlist = readStoredDomainAllowlist(
+    store.get("localBrowser.domainAllowlist")
+  );
   return {
     apiKey: decryptSecret(store.get("deepseek.apiKey")),
     model: store.get("deepseek.model"),
@@ -215,12 +250,17 @@ export function getStoredAppConfig(): StoredAppConfig {
     executionModel: store.get("modelRouter.executionModel"),
     finalModel: store.get("modelRouter.finalModel"),
     promptCacheEnabled:
-      promptCacheEnabled === undefined ? undefined : promptCacheEnabled === "true"
+      promptCacheEnabled === undefined ? undefined : promptCacheEnabled === "true",
+    localBrowserDomainAllowlist,
+    localBrowserPaused: localBrowserPaused === undefined ? undefined : localBrowserPaused === "true"
   };
 }
 
 export function getAppConfig() {
   const stored = getStoredAppConfig();
+  const envLocalBrowserDomainAllowlist = normalizeDomainAllowlist(
+    process.env.MANUSXL_LOCAL_BROWSER_DOMAIN_ALLOWLIST
+  );
   return {
     apiKey: stored.apiKey || process.env.DEEPSEEK_API_KEY,
     model: stored.model || process.env.DEEPSEEK_MODEL || "deepseek-v4-flash",
@@ -235,8 +275,21 @@ export function getAppConfig() {
     finalModel:
       stored.finalModel || process.env.MANUSXL_FINAL_MODEL || stored.model || process.env.DEEPSEEK_MODEL || "deepseek-v4-flash",
     promptCacheEnabled:
-      stored.promptCacheEnabled ?? process.env.MANUSXL_PROMPT_CACHE_ENABLED !== "false"
+      stored.promptCacheEnabled ?? process.env.MANUSXL_PROMPT_CACHE_ENABLED !== "false",
+    localBrowserDomainAllowlist:
+      stored.localBrowserDomainAllowlist && stored.localBrowserDomainAllowlist.length > 0
+        ? stored.localBrowserDomainAllowlist
+        : envLocalBrowserDomainAllowlist,
+    localBrowserPaused: stored.localBrowserPaused ?? process.env.MANUSXL_LOCAL_BROWSER_PAUSED === "true"
   };
+}
+
+export function getLocalBrowserDomainAllowlist() {
+  return getAppConfig().localBrowserDomainAllowlist;
+}
+
+export function isLocalBrowserPaused() {
+  return getAppConfig().localBrowserPaused;
 }
 
 export function updateAppConfig(config: StoredAppConfig) {
@@ -273,6 +326,15 @@ export function updateAppConfig(config: StoredAppConfig) {
   }
   if (config.promptCacheEnabled !== undefined) {
     store.set("runtime.promptCacheEnabled", String(config.promptCacheEnabled));
+  }
+  if (config.localBrowserDomainAllowlist !== undefined) {
+    store.set(
+      "localBrowser.domainAllowlist",
+      JSON.stringify(normalizeDomainAllowlist(config.localBrowserDomainAllowlist))
+    );
+  }
+  if (config.localBrowserPaused !== undefined) {
+    store.set("localBrowser.paused", String(config.localBrowserPaused));
   }
   return getAppConfig();
 }

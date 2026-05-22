@@ -5,7 +5,11 @@ import { promisify } from "node:util";
 import { makeZip } from "@/server/artifacts/generators";
 import { listUploadedFileRecords, type UploadedFileRecord } from "@/server/files/readers";
 import { getOcrStatus } from "@/server/ocr/status";
-import { snapshotLocalBrowserTab } from "@/server/local-browser/cdp";
+import {
+  runLocalBrowserAction,
+  screenshotLocalBrowserTab,
+  snapshotLocalBrowserTab
+} from "@/server/local-browser/cdp";
 import { runSandboxedCommand } from "@/server/sandbox/docker-sandbox";
 import {
   hasExecutableSkillForPrompt,
@@ -207,7 +211,7 @@ export const TOOL_METADATA: AgentToolMetadata[] = [
   {
     name: "local_browser",
     namespace: "web",
-    description: "读取用户本地 Chrome 当前标签页的已登录页面快照，受域名 allowlist 限制。",
+    description: "读取用户本地 Chrome 当前标签页的已登录页面快照，支持截图和基础导航，受域名 allowlist 限制。",
     fallbackTools: ["web_fetch", "web_research", "data_analysis"]
   },
   {
@@ -639,7 +643,62 @@ async function runWebFetch(input: AgentToolInput): Promise<AgentToolResult> {
 }
 
 async function runLocalBrowser(input: AgentToolInput): Promise<AgentToolResult> {
-  const snapshot = await snapshotLocalBrowserTab({ maxChars: 5000 });
+  const joinedPrompt = `${input.step} ${input.prompt}`;
+  const requestedUrl = extractUrl(joinedPrompt);
+  if (requestedUrl && /本地浏览器|已登录态|登录态|chrome|paywall|captcha|打开|访问|navigate/i.test(joinedPrompt)) {
+    const action = await runLocalBrowserAction({
+      action: "navigate",
+      url: requestedUrl,
+      waitMs: 900,
+      ownerId: input.ownerId,
+      source: "agent"
+    });
+    if (!action.ok) {
+      return {
+        toolName: "local_browser",
+        ok: false,
+        observation: `本地浏览器导航未完成：${action.error ?? "无法操作 Chrome"}。`,
+        payload: action as unknown as Record<string, unknown>
+      };
+    }
+    return {
+      toolName: "local_browser",
+      ok: true,
+      observation: `已通过本地浏览器访问 ${action.url ?? requestedUrl}，并读取页面快照。`,
+      payload: action as unknown as Record<string, unknown>
+    };
+  }
+
+  if (/截图|screenshot|屏幕|视觉/.test(joinedPrompt)) {
+    const screenshot = await screenshotLocalBrowserTab({
+      quality: 70,
+      ownerId: input.ownerId,
+      source: "agent"
+    });
+    if (!screenshot.ok) {
+      return {
+        toolName: "local_browser",
+        ok: false,
+        observation: `本地浏览器截图未完成：${screenshot.error ?? "无法截取 Chrome 页面"}。`,
+        payload: screenshot as unknown as Record<string, unknown>
+      };
+    }
+    return {
+      toolName: "local_browser",
+      ok: true,
+      observation: `已截取本地浏览器当前标签页：${screenshot.title ?? screenshot.url ?? "未命名页面"}。`,
+      payload: {
+        ...screenshot,
+        imageBytesApprox: screenshot.dataUrl ? Math.round((screenshot.dataUrl.length * 3) / 4) : 0
+      } as unknown as Record<string, unknown>
+    };
+  }
+
+  const snapshot = await snapshotLocalBrowserTab({
+    maxChars: 5000,
+    ownerId: input.ownerId,
+    source: "agent"
+  });
   if (!snapshot.ok) {
     return {
       toolName: "local_browser",

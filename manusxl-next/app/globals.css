@@ -211,6 +211,7 @@ a {
 .task-list-button,
 .icon-button,
 .primary-button,
+.danger-button,
 .secondary-button,
 .ghost-button {
   cursor: pointer;
@@ -251,6 +252,7 @@ a {
 }
 
 .primary-button:disabled,
+.danger-button:disabled,
 .secondary-button:disabled,
 .ghost-button:disabled {
   cursor: not-allowed;
@@ -267,6 +269,18 @@ a {
   background: var(--surface);
   color: var(--ink);
   border: 1px solid var(--line);
+}
+
+.danger-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 8px 11px;
+  border-radius: 7px;
+  background: #fff1f0;
+  color: #9f2a22;
+  border: 1px solid #efc6c0;
 }
 
 .ghost-button {
@@ -1140,6 +1154,114 @@ a {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.browser-action-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.browser-coordinate-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.browser-preview {
+  display: grid;
+  gap: 5px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  padding: 7px;
+}
+
+.browser-preview img {
+  width: 100%;
+  max-height: 180px;
+  object-fit: contain;
+  border-radius: 6px;
+  background: white;
+}
+
+.browser-preview span {
+  color: var(--muted);
+  font-size: 10px;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+.pairing-code-panel {
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  padding: 10px;
+}
+
+.pairing-code-panel strong {
+  color: var(--ink);
+  font-size: 24px;
+  letter-spacing: 0.12em;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+.pairing-code-panel span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.browser-operation-list {
+  display: grid;
+  gap: 6px;
+}
+
+.browser-operation-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  padding: 8px 9px;
+}
+
+.browser-operation-item > div {
+  min-width: 0;
+}
+
+.browser-operation-item span {
+  display: block;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.browser-operation-item small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.operation-status {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 10px;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+.operation-status.is-completed {
+  color: var(--sage);
+}
+
+.operation-status.is-blocked,
+.operation-status.is-failed {
+  color: #9f2a22;
 }
 
 .skill-list,

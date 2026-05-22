@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import {
   Archive,
   BookmarkPlus,
@@ -19,6 +20,7 @@ import {
   Gauge,
   Globe,
   Home,
+  Camera,
   Loader2,
   PanelRight,
   Paperclip,
@@ -48,6 +50,10 @@ import type {
   ContextMetricsSummary,
   CreateTaskResponse,
   DatabaseStatus,
+  LocalBrowserActionResult,
+  LocalBrowserPairingStatus,
+  LocalBrowserSafetyState,
+  LocalBrowserScreenshot,
   LocalBrowserTab,
   LocalBrowserStatus,
   McpCatalogItem,
@@ -263,6 +269,27 @@ function getErrorMessage(caught: unknown, fallback: string) {
   return fallback;
 }
 
+function parseDomainAllowlist(value: string) {
+  return Array.from(
+    new Set(
+      value
+        .split(/[\n,]/)
+        .map((item) => item.trim().toLowerCase())
+        .filter(Boolean)
+        .map((item) => {
+          try {
+            if (/^https?:\/\//.test(item)) return new URL(item).hostname.toLowerCase();
+          } catch {
+            return item;
+          }
+          return item;
+        })
+        .map((item) => item.replace(/^\*\./, "").replace(/^\.+/, "").replace(/\.+$/, ""))
+        .filter((item) => /^[a-z0-9-]+(\.[a-z0-9-]+)*$/i.test(item))
+    )
+  );
+}
+
 function createOptimisticTask(taskId: string, prompt: string, model: string, status: TaskStatus): Task {
   const now = new Date().toISOString();
   return {
@@ -416,6 +443,10 @@ export function AgentWorkspace() {
   const [databaseStatus, setDatabaseStatus] = useState<DatabaseStatus | null>(null);
   const [localBrowserStatus, setLocalBrowserStatus] = useState<LocalBrowserStatus | null>(null);
   const [localBrowserTabs, setLocalBrowserTabs] = useState<LocalBrowserTab[]>([]);
+  const [localBrowserScreenshot, setLocalBrowserScreenshot] = useState<LocalBrowserScreenshot | null>(null);
+  const [localBrowserActionResult, setLocalBrowserActionResult] = useState<LocalBrowserActionResult | null>(null);
+  const [localBrowserSafety, setLocalBrowserSafety] = useState<LocalBrowserSafetyState | null>(null);
+  const [localBrowserPairing, setLocalBrowserPairing] = useState<LocalBrowserPairingStatus | null>(null);
   const [ocrStatus, setOcrStatus] = useState<OcrStatus | null>(null);
   const [templateRun, setTemplateRun] = useState<{
     template: TaskTemplate;
@@ -437,14 +468,28 @@ export function AgentWorkspace() {
     planningModel: "deepseek-v4-flash",
     executionModel: "deepseek-v4-flash",
     finalModel: "deepseek-v4-flash",
-    promptCacheEnabled: true
+    promptCacheEnabled: true,
+    localBrowserDomainAllowlist: ""
   });
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [isUploadingSkill, setIsUploadingSkill] = useState(false);
   const [isRunningSandboxTest, setIsRunningSandboxTest] = useState(false);
   const [isCheckingDatabase, setIsCheckingDatabase] = useState(false);
   const [isCheckingLocalBrowser, setIsCheckingLocalBrowser] = useState(false);
+  const [isCapturingLocalBrowser, setIsCapturingLocalBrowser] = useState(false);
+  const [isRunningLocalBrowserAction, setIsRunningLocalBrowserAction] = useState(false);
+  const [isSavingLocalBrowserAllowlist, setIsSavingLocalBrowserAllowlist] = useState(false);
+  const [isTogglingLocalBrowserPause, setIsTogglingLocalBrowserPause] = useState(false);
+  const [isCreatingLocalBrowserPairing, setIsCreatingLocalBrowserPairing] = useState(false);
   const [localBrowserEndpoint, setLocalBrowserEndpoint] = useState("http://127.0.0.1:9222");
+  const [localBrowserActionDraft, setLocalBrowserActionDraft] = useState({
+    action: "navigate" as "navigate" | "click" | "type" | "press",
+    url: "",
+    x: "",
+    y: "",
+    text: "",
+    key: "Enter"
+  });
   const [isAddingMcp, setIsAddingMcp] = useState(false);
   const [mcpError, setMcpError] = useState<string | null>(null);
   const [mcpDraft, setMcpDraft] = useState({
@@ -574,11 +619,139 @@ export function AgentWorkspace() {
       setLocalBrowserStatus(data.status);
       setLocalBrowserTabs(data.tabs);
       setLocalBrowserEndpoint(data.status.endpoint);
+      setLocalBrowserSafety({
+        paused: Boolean(data.status.paused),
+        recentOperations: data.status.recentOperations ?? []
+      });
     } catch {
       setLocalBrowserStatus(null);
       setLocalBrowserTabs([]);
     } finally {
       setIsCheckingLocalBrowser(false);
+    }
+  }, []);
+
+  const refreshLocalBrowserSafety = useCallback(async () => {
+    try {
+      const response = await fetch("/api/local-browser/safety", { cache: "no-store" });
+      if (!response.ok) return;
+      setLocalBrowserSafety(await readJson<LocalBrowserSafetyState>(response));
+    } catch {
+      setLocalBrowserSafety(null);
+    }
+  }, []);
+
+  const refreshLocalBrowserPairing = useCallback(async () => {
+    try {
+      const response = await fetch("/api/local-browser/pairing", { cache: "no-store" });
+      if (!response.ok) return;
+      setLocalBrowserPairing(await readJson<LocalBrowserPairingStatus>(response));
+    } catch {
+      setLocalBrowserPairing(null);
+    }
+  }, []);
+
+  const createLocalBrowserPairing = useCallback(async () => {
+    setIsCreatingLocalBrowserPairing(true);
+    try {
+      const response = await fetch("/api/local-browser/pairing", { method: "POST" });
+      setLocalBrowserPairing(await readJson<LocalBrowserPairingStatus>(response));
+    } catch (caught: unknown) {
+      setError(getErrorMessage(caught, "生成本地浏览器配对码失败"));
+    } finally {
+      setIsCreatingLocalBrowserPairing(false);
+    }
+  }, []);
+
+  const captureLocalBrowserScreenshot = useCallback(async () => {
+    setIsCapturingLocalBrowser(true);
+    setLocalBrowserActionResult(null);
+    try {
+      const response = await fetch("/api/local-browser/screenshot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          endpoint: localBrowserEndpoint,
+          tabId: localBrowserTabs[0]?.id,
+          format: "jpeg",
+          quality: 70
+        })
+      });
+      const data = await readJson<LocalBrowserScreenshot>(response);
+      setLocalBrowserScreenshot(data);
+      if (!data.ok) setError(data.error ?? "本地浏览器截图失败");
+      await refreshLocalBrowserSafety();
+    } catch (caught: unknown) {
+      setError(getErrorMessage(caught, "本地浏览器截图失败"));
+    } finally {
+      setIsCapturingLocalBrowser(false);
+    }
+  }, [localBrowserEndpoint, localBrowserTabs, refreshLocalBrowserSafety]);
+
+  const runLocalBrowserControlAction = useCallback(async () => {
+    setIsRunningLocalBrowserAction(true);
+    try {
+      const body = {
+        endpoint: localBrowserEndpoint,
+        tabId: localBrowserTabs[0]?.id,
+        action: localBrowserActionDraft.action,
+        url: localBrowserActionDraft.url,
+        x: localBrowserActionDraft.x ? Number(localBrowserActionDraft.x) : undefined,
+        y: localBrowserActionDraft.y ? Number(localBrowserActionDraft.y) : undefined,
+        text: localBrowserActionDraft.text,
+        key: localBrowserActionDraft.key,
+        waitMs: 900
+      };
+      const response = await fetch("/api/local-browser/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      const data = await readJson<LocalBrowserActionResult>(response);
+      setLocalBrowserActionResult(data);
+      if (!data.ok) {
+        setError(data.error ?? "本地浏览器动作失败");
+        await refreshLocalBrowserSafety();
+        return;
+      }
+      await refreshLocalBrowserStatus(localBrowserEndpoint);
+      await refreshLocalBrowserSafety();
+    } catch (caught: unknown) {
+      setError(getErrorMessage(caught, "本地浏览器动作失败"));
+    } finally {
+      setIsRunningLocalBrowserAction(false);
+    }
+  }, [
+    localBrowserActionDraft,
+    localBrowserEndpoint,
+    localBrowserTabs,
+    refreshLocalBrowserSafety,
+    refreshLocalBrowserStatus
+  ]);
+
+  const toggleLocalBrowserPause = useCallback(async (paused: boolean) => {
+    setIsTogglingLocalBrowserPause(true);
+    try {
+      const response = await fetch("/api/local-browser/safety", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paused })
+      });
+      const data = await readJson<LocalBrowserSafetyState>(response);
+      setLocalBrowserSafety(data);
+      setLocalBrowserStatus((current) =>
+        current
+          ? {
+              ...current,
+              paused: data.paused,
+              recentOperations: data.recentOperations
+            }
+          : current
+      );
+    } catch (caught: unknown) {
+      setError(getErrorMessage(caught, "切换本地浏览器安全开关失败"));
+    } finally {
+      setIsTogglingLocalBrowserPause(false);
     }
   }, []);
 
@@ -720,6 +893,8 @@ export function AgentWorkspace() {
         void refreshSandboxStatus();
         void refreshDatabaseStatus();
         void refreshLocalBrowserStatus();
+        void refreshLocalBrowserSafety();
+        void refreshLocalBrowserPairing();
         void refreshOcrStatus();
       });
       void fetch("/api/config", { cache: "no-store" })
@@ -737,7 +912,8 @@ export function AgentWorkspace() {
             planningModel: data.planningModel,
             executionModel: data.executionModel,
             finalModel: data.finalModel,
-            promptCacheEnabled: data.promptCacheEnabled
+            promptCacheEnabled: data.promptCacheEnabled,
+            localBrowserDomainAllowlist: data.localBrowserDomainAllowlist.join("\n")
           }));
         })
         .catch((caught: unknown) => {
@@ -754,6 +930,8 @@ export function AgentWorkspace() {
     refreshAuthUser,
     refreshBilling,
     refreshDatabaseStatus,
+    refreshLocalBrowserSafety,
+    refreshLocalBrowserPairing,
     refreshLocalBrowserStatus,
     refreshMcpCatalog,
     refreshMcpServers,
@@ -1035,14 +1213,43 @@ export function AgentWorkspace() {
           planningModel: settingsDraft.planningModel,
           executionModel: settingsDraft.executionModel,
           finalModel: settingsDraft.finalModel,
-          promptCacheEnabled: settingsDraft.promptCacheEnabled
+          promptCacheEnabled: settingsDraft.promptCacheEnabled,
+          localBrowserDomainAllowlist: parseDomainAllowlist(settingsDraft.localBrowserDomainAllowlist)
         })
       });
       const data = await readJson<ConfigResponse>(response);
       setConfig(data);
-      setSettingsDraft((current) => ({ ...current, apiKey: "" }));
+      setSettingsDraft((current) => ({
+        ...current,
+        apiKey: "",
+        localBrowserDomainAllowlist: data.localBrowserDomainAllowlist.join("\n")
+      }));
     } finally {
       setIsSavingSettings(false);
+    }
+  }
+
+  async function saveLocalBrowserAllowlist() {
+    setIsSavingLocalBrowserAllowlist(true);
+    try {
+      const response = await fetch("/api/config", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          localBrowserDomainAllowlist: parseDomainAllowlist(settingsDraft.localBrowserDomainAllowlist)
+        })
+      });
+      const data = await readJson<ConfigResponse>(response);
+      setConfig(data);
+      setSettingsDraft((current) => ({
+        ...current,
+        localBrowserDomainAllowlist: data.localBrowserDomainAllowlist.join("\n")
+      }));
+      await refreshLocalBrowserStatus(localBrowserEndpoint);
+    } catch (caught: unknown) {
+      setError(getErrorMessage(caught, "保存本地浏览器域名失败"));
+    } finally {
+      setIsSavingLocalBrowserAllowlist(false);
     }
   }
 
@@ -1822,6 +2029,10 @@ export function AgentWorkspace() {
         ? `${localBrowserStatus.browser ?? "Chrome"} · CDP ${localBrowserStatus.protocolVersion ?? "unknown"}`
         : localBrowserStatus.error ?? "未检测到本地 Chrome CDP"
       : "尚未检测";
+    const browserPaused = Boolean(localBrowserSafety?.paused ?? localBrowserStatus?.paused);
+    const recentOperations =
+      localBrowserSafety?.recentOperations ?? localBrowserStatus?.recentOperations ?? [];
+    const pairedDeviceCount = localBrowserPairing?.pairedDevices.length ?? 0;
 
     return (
       <div className="sandbox-panel">
@@ -1849,6 +2060,39 @@ export function AgentWorkspace() {
             </div>
             <strong>{localBrowserTabs.length}</strong>
           </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">Allowlist</span>
+              <span className="metric-meta">
+                {config?.localBrowserDomainAllowlist.length
+                  ? config.localBrowserDomainAllowlist.slice(0, 3).join(" / ")
+                  : "empty"}
+              </span>
+            </div>
+            <strong>{config?.localBrowserDomainAllowlist.length ? "on" : "off"}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">安全开关</span>
+              <span className="metric-meta">
+                {browserPaused ? "已暂停所有本地浏览器动作" : "允许已授权域名动作"}
+              </span>
+            </div>
+            <strong>{browserPaused ? "paused" : "active"}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">扩展配对</span>
+              <span className="metric-meta">
+                {localBrowserPairing?.activeCode
+                  ? `配对码 ${localBrowserPairing.activeCode.code}`
+                  : pairedDeviceCount > 0
+                    ? `${pairedDeviceCount} 个扩展已配对`
+                    : "尚未配对扩展"}
+              </span>
+            </div>
+            <strong>{pairedDeviceCount > 0 ? "paired" : localBrowserPairing?.activeCode ? "code" : "none"}</strong>
+          </div>
         </div>
         <label className="settings-field">
           <span>Chrome DevTools 地址</span>
@@ -1856,6 +2100,19 @@ export function AgentWorkspace() {
             value={localBrowserEndpoint}
             onChange={(event) => setLocalBrowserEndpoint(event.target.value)}
             placeholder="http://127.0.0.1:9222"
+          />
+        </label>
+        <label className="settings-field">
+          <span>允许域名</span>
+          <textarea
+            value={settingsDraft.localBrowserDomainAllowlist}
+            onChange={(event) =>
+              setSettingsDraft((current) => ({
+                ...current,
+                localBrowserDomainAllowlist: event.target.value
+              }))
+            }
+            placeholder={"example.com\nnews.example.com"}
           />
         </label>
         <div className="panel-actions">
@@ -1868,7 +2125,192 @@ export function AgentWorkspace() {
             {isCheckingLocalBrowser ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />}
             检测连接
           </button>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isCapturingLocalBrowser}
+            onClick={() => void captureLocalBrowserScreenshot()}
+          >
+            {isCapturingLocalBrowser ? <Loader2 size={15} className="spin" /> : <Camera size={15} />}
+            截图
+          </button>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isSavingLocalBrowserAllowlist}
+            onClick={() => void saveLocalBrowserAllowlist()}
+          >
+            {isSavingLocalBrowserAllowlist ? <Loader2 size={15} className="spin" /> : <CheckCircle2 size={15} />}
+            保存域名
+          </button>
+          <button
+            type="button"
+            className={browserPaused ? "secondary-button" : "danger-button"}
+            disabled={isTogglingLocalBrowserPause}
+            onClick={() => void toggleLocalBrowserPause(!browserPaused)}
+          >
+            {isTogglingLocalBrowserPause ? (
+              <Loader2 size={15} className="spin" />
+            ) : browserPaused ? (
+              <Play size={15} />
+            ) : (
+              <CircleStop size={15} />
+            )}
+            {browserPaused ? "恢复操作" : "暂停操作"}
+          </button>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isCreatingLocalBrowserPairing}
+            onClick={() => void createLocalBrowserPairing()}
+          >
+            {isCreatingLocalBrowserPairing ? <Loader2 size={15} className="spin" /> : <Globe size={15} />}
+            生成配对码
+          </button>
         </div>
+        {localBrowserPairing?.activeCode ? (
+          <div className="pairing-code-panel">
+            <strong>{localBrowserPairing.activeCode.code}</strong>
+            <span>在 Chrome 扩展里输入此码，5 分钟内有效。</span>
+          </div>
+        ) : null}
+        {localBrowserPairing?.pairedDevices.length ? (
+          <div className="browser-operation-list">
+            {localBrowserPairing.pairedDevices.slice(0, 3).map((device) => (
+              <div className="browser-operation-item" key={device.id}>
+                <div>
+                  <span>{device.name}</span>
+                  <small>last seen {new Date(device.lastSeenAt).toLocaleTimeString()}</small>
+                </div>
+                <strong className="operation-status is-completed">paired</strong>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {recentOperations.length > 0 ? (
+          <div className="browser-operation-list">
+            {recentOperations.slice(0, 5).map((operation) => (
+              <div className="browser-operation-item" key={operation.id}>
+                <div>
+                  <span>{operation.action}</span>
+                  <small>{operation.title || operation.url || operation.error || operation.id}</small>
+                </div>
+                <strong className={`operation-status is-${operation.status}`}>{operation.status}</strong>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {localBrowserScreenshot?.dataUrl ? (
+          <div className="browser-preview">
+            <Image
+              src={localBrowserScreenshot.dataUrl}
+              alt="本地浏览器截图预览"
+              width={localBrowserScreenshot.width ?? 960}
+              height={localBrowserScreenshot.height ?? 540}
+              unoptimized
+            />
+            <span>
+              {localBrowserScreenshot.width ?? "-"} x {localBrowserScreenshot.height ?? "-"}
+            </span>
+          </div>
+        ) : null}
+        <div className="browser-action-grid">
+          <label className="settings-field">
+            <span>动作</span>
+            <select
+              value={localBrowserActionDraft.action}
+              onChange={(event) =>
+                setLocalBrowserActionDraft((current) => ({
+                  ...current,
+                  action: event.target.value as "navigate" | "click" | "type" | "press"
+                }))
+              }
+            >
+              <option value="navigate">navigate</option>
+              <option value="click">click</option>
+              <option value="type">type</option>
+              <option value="press">press</option>
+            </select>
+          </label>
+          {localBrowserActionDraft.action === "navigate" ? (
+            <label className="settings-field">
+              <span>URL</span>
+              <input
+                value={localBrowserActionDraft.url}
+                onChange={(event) =>
+                  setLocalBrowserActionDraft((current) => ({ ...current, url: event.target.value }))
+                }
+                placeholder="https://example.com"
+              />
+            </label>
+          ) : null}
+          {localBrowserActionDraft.action === "click" ? (
+            <div className="browser-coordinate-row">
+              <label className="settings-field">
+                <span>X</span>
+                <input
+                  value={localBrowserActionDraft.x}
+                  onChange={(event) =>
+                    setLocalBrowserActionDraft((current) => ({ ...current, x: event.target.value }))
+                  }
+                  inputMode="numeric"
+                  placeholder="320"
+                />
+              </label>
+              <label className="settings-field">
+                <span>Y</span>
+                <input
+                  value={localBrowserActionDraft.y}
+                  onChange={(event) =>
+                    setLocalBrowserActionDraft((current) => ({ ...current, y: event.target.value }))
+                  }
+                  inputMode="numeric"
+                  placeholder="240"
+                />
+              </label>
+            </div>
+          ) : null}
+          {localBrowserActionDraft.action === "type" ? (
+            <label className="settings-field">
+              <span>文本</span>
+              <input
+                value={localBrowserActionDraft.text}
+                onChange={(event) =>
+                  setLocalBrowserActionDraft((current) => ({ ...current, text: event.target.value }))
+                }
+                placeholder="输入文本"
+              />
+            </label>
+          ) : null}
+          {localBrowserActionDraft.action === "press" ? (
+            <label className="settings-field">
+              <span>Key</span>
+              <input
+                value={localBrowserActionDraft.key}
+                onChange={(event) =>
+                  setLocalBrowserActionDraft((current) => ({ ...current, key: event.target.value }))
+                }
+                placeholder="Enter"
+              />
+            </label>
+          ) : null}
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isRunningLocalBrowserAction}
+            onClick={() => void runLocalBrowserControlAction()}
+          >
+            {isRunningLocalBrowserAction ? <Loader2 size={15} className="spin" /> : <Play size={15} />}
+            执行动作
+          </button>
+        </div>
+        {localBrowserActionResult ? (
+          <p className={`muted-note ${localBrowserActionResult.ok ? "" : "error-note"}`}>
+            {localBrowserActionResult.ok
+              ? `${localBrowserActionResult.action} 已完成：${localBrowserActionResult.title ?? localBrowserActionResult.url ?? "当前页面"}`
+              : localBrowserActionResult.error ?? "本地浏览器动作失败。"}
+          </p>
+        ) : null}
       </div>
     );
   }

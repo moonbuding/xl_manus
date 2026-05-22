@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAuth } from "@/server/auth/http";
-import { snapshotLocalBrowserTab } from "@/server/local-browser/cdp";
+import { screenshotLocalBrowserTab } from "@/server/local-browser/cdp";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,12 +11,13 @@ export async function POST(request: Request) {
   const body = (await request.json().catch(() => ({}))) as {
     endpoint?: string;
     tabId?: string;
-    maxChars?: number;
+    format?: "jpeg" | "png";
+    quality?: number;
   };
-  const snapshot = await snapshotLocalBrowserTab({
+  const screenshot = await screenshotLocalBrowserTab({
     ...body,
     ownerId: user.id,
     source: "settings"
   });
-  return NextResponse.json(snapshot, { status: snapshot.ok ? 200 : 409 });
+  return NextResponse.json(screenshot, { status: screenshot.ok ? 200 : 409 });
 }

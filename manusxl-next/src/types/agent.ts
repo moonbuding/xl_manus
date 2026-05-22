@@ -207,6 +207,7 @@ export interface ConfigResponse {
   executionModel: string;
   finalModel: string;
   promptCacheEnabled: boolean;
+  localBrowserDomainAllowlist: string[];
   hasApiKey: boolean;
 }
 
@@ -248,6 +249,9 @@ export interface LocalBrowserStatus {
   endpoint: string;
   connected: boolean;
   checkedAt: string;
+  allowlistConfigured?: boolean;
+  paused?: boolean;
+  recentOperations?: LocalBrowserOperation[];
   browser?: string;
   protocolVersion?: string;
   webSocketDebuggerUrl?: string;
@@ -270,6 +274,83 @@ export interface LocalBrowserSnapshot {
   text?: string;
   allowed: boolean;
   ok: boolean;
+  error?: string;
+}
+
+export interface LocalBrowserScreenshot {
+  endpoint: string;
+  tabId?: string;
+  title?: string;
+  url?: string;
+  mimeType?: "image/jpeg" | "image/png";
+  dataUrl?: string;
+  width?: number;
+  height?: number;
+  allowed: boolean;
+  ok: boolean;
+  error?: string;
+}
+
+export type LocalBrowserActionType = "navigate" | "click" | "type" | "press";
+
+export type LocalBrowserOperationStatus = "started" | "completed" | "blocked" | "failed";
+
+export interface LocalBrowserOperation {
+  id: string;
+  ownerId?: string;
+  source: "agent" | "settings" | "api";
+  action: LocalBrowserActionType | "snapshot" | "screenshot" | "status" | "unknown";
+  status: LocalBrowserOperationStatus;
+  title?: string;
+  url?: string;
+  tabId?: string;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LocalBrowserSafetyState {
+  paused: boolean;
+  recentOperations: LocalBrowserOperation[];
+}
+
+export interface LocalBrowserPairedDevice {
+  id: string;
+  ownerId: string;
+  name: string;
+  extensionId?: string;
+  createdAt: string;
+  lastSeenAt: string;
+}
+
+export interface LocalBrowserPairingCode {
+  code: string;
+  expiresAt: string;
+}
+
+export interface LocalBrowserPairingStatus {
+  activeCode?: LocalBrowserPairingCode;
+  pairedDevices: LocalBrowserPairedDevice[];
+}
+
+export interface LocalBrowserPairingVerifyResponse {
+  paired: boolean;
+  token?: string;
+  device?: LocalBrowserPairedDevice;
+  safety?: LocalBrowserSafetyState;
+  error?: string;
+}
+
+export interface LocalBrowserActionResult {
+  endpoint: string;
+  tabId?: string;
+  title?: string;
+  url?: string;
+  action: LocalBrowserActionType | "unknown";
+  allowed: boolean;
+  ok: boolean;
+  message?: string;
+  snapshot?: LocalBrowserSnapshot;
   error?: string;
 }
 

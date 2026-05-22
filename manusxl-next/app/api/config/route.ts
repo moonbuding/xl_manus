@@ -18,6 +18,7 @@ export function GET() {
     executionModel: config.executionModel,
     finalModel: config.finalModel,
     promptCacheEnabled: config.promptCacheEnabled,
+    localBrowserDomainAllowlist: config.localBrowserDomainAllowlist,
     hasApiKey: Boolean(config.apiKey)
   });
 }
@@ -37,6 +38,7 @@ export async function PATCH(request: Request) {
     executionModel?: string;
     finalModel?: string;
     promptCacheEnabled?: boolean;
+    localBrowserDomainAllowlist?: string[];
   };
   const config = updateAppConfig({
     apiKey: body.apiKey,
@@ -48,7 +50,8 @@ export async function PATCH(request: Request) {
     planningModel: body.planningModel,
     executionModel: body.executionModel,
     finalModel: body.finalModel,
-    promptCacheEnabled: body.promptCacheEnabled
+    promptCacheEnabled: body.promptCacheEnabled,
+    localBrowserDomainAllowlist: body.localBrowserDomainAllowlist
   });
 
   return NextResponse.json({
@@ -61,6 +64,7 @@ export async function PATCH(request: Request) {
     executionModel: config.executionModel,
     finalModel: config.finalModel,
     promptCacheEnabled: config.promptCacheEnabled,
+    localBrowserDomainAllowlist: config.localBrowserDomainAllowlist,
     hasApiKey: Boolean(config.apiKey)
   });
 }
