@@ -73,6 +73,9 @@ import type {
   MyComputerStatus,
   NotificationLog,
   NotificationSettings,
+  Organization,
+  OrganizationMembership,
+  OrganizationRole,
   ScheduledTask,
   ScheduledTaskRunLog,
   ScheduledTaskKind,
@@ -181,6 +184,13 @@ const statusText: Record<TaskStatus, string> = {
   failed: "失败",
   cancelled: "已取消",
   timeout: "已超时"
+};
+
+const organizationRoleText: Record<OrganizationRole, string> = {
+  owner: "Owner",
+  admin: "Admin",
+  member: "Member",
+  viewer: "Viewer"
 };
 
 type NavigationView = "workspace" | "agent" | "library" | "settings";
@@ -475,6 +485,10 @@ export function AgentWorkspace() {
   const [scheduledTasks, setScheduledTasks] = useState<ScheduledTask[]>([]);
   const [scheduledLogs, setScheduledLogs] = useState<ScheduledTaskRunLog[]>([]);
   const [scheduledMailbox, setScheduledMailbox] = useState("");
+  const [organizations, setOrganizations] = useState<Organization[]>([]);
+  const [activeOrgId, setActiveOrgId] = useState("");
+  const [orgTasks, setOrgTasks] = useState<Task[]>([]);
+  const [orgMembers, setOrgMembers] = useState<OrganizationMembership[]>([]);
   const [authDraft, setAuthDraft] = useState({
     phone: "",
     email: "",
@@ -552,12 +566,20 @@ export function AgentWorkspace() {
     intervalMinutes: "60",
     cronExpression: "0 9 * * 1"
   });
+  const [orgDraft, setOrgDraft] = useState({
+    name: "",
+    taskQuota: "25",
+    invitePhone: "",
+    inviteRole: "member" as Exclude<OrganizationRole, "owner">
+  });
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [isApplyingRouterPolicy, setIsApplyingRouterPolicy] = useState(false);
   const [isSavingNotifications, setIsSavingNotifications] = useState(false);
   const [isTestingNotifications, setIsTestingNotifications] = useState(false);
   const [isCreatingScheduledTask, setIsCreatingScheduledTask] = useState(false);
   const [isRunningScheduledTask, setIsRunningScheduledTask] = useState(false);
+  const [isCreatingOrg, setIsCreatingOrg] = useState(false);
+  const [isInvitingOrgMember, setIsInvitingOrgMember] = useState(false);
   const [isUploadingSkill, setIsUploadingSkill] = useState(false);
   const [isRunningSandboxTest, setIsRunningSandboxTest] = useState(false);
   const [isCheckingDatabase, setIsCheckingDatabase] = useState(false);
@@ -628,6 +650,11 @@ export function AgentWorkspace() {
     () => tasks.filter((task) => task.status === "completed").length,
     [tasks]
   );
+  const activeOrganization = useMemo(
+    () => organizations.find((organization) => organization.id === activeOrgId) ?? null,
+    [activeOrgId, organizations]
+  );
+  const selectedOrgCanCreateTask = !activeOrganization || activeOrganization.role !== "viewer";
   const showComposer = activeNav === "workspace" || activeNav === "agent";
 
   const visibleTasks = useMemo(() => {
@@ -752,6 +779,45 @@ export function AgentWorkspace() {
       setScheduledLogs([]);
     }
   }, []);
+
+  const refreshOrganizations = useCallback(async () => {
+    try {
+      const response = await fetch("/api/orgs", { cache: "no-store" });
+      if (!response.ok) return;
+      const data = await readJson<{ organizations: Organization[] }>(response, { organizations: [] });
+      setOrganizations(data.organizations);
+      setActiveOrgId((current) =>
+        current && !data.organizations.some((organization) => organization.id === current) ? "" : current
+      );
+    } catch {
+      setOrganizations([]);
+    }
+  }, []);
+
+  const refreshOrganizationWorkspace = useCallback(async (orgId = activeOrgId) => {
+    if (!orgId) {
+      setOrgTasks([]);
+      setOrgMembers([]);
+      return;
+    }
+    try {
+      const [tasksResponse, membersResponse] = await Promise.all([
+        fetch(`/api/orgs/${orgId}/tasks`, { cache: "no-store" }),
+        fetch(`/api/orgs/${orgId}/members`, { cache: "no-store" })
+      ]);
+      if (tasksResponse.ok) {
+        const data = await readJson<{ tasks: Task[] }>(tasksResponse, { tasks: [] });
+        setOrgTasks(data.tasks);
+      }
+      if (membersResponse.ok) {
+        const data = await readJson<{ members: OrganizationMembership[] }>(membersResponse, { members: [] });
+        setOrgMembers(data.members);
+      }
+    } catch {
+      setOrgTasks([]);
+      setOrgMembers([]);
+    }
+  }, [activeOrgId]);
 
   const refreshContextMetrics = useCallback(async (taskId?: string) => {
     try {
@@ -1322,6 +1388,7 @@ export function AgentWorkspace() {
         void refreshAudit();
         void refreshNotifications();
         void refreshScheduledTasks();
+        void refreshOrganizations();
         void refreshTemplates();
         void refreshMarketplaceTemplates();
         void refreshSkills();
@@ -1389,6 +1456,7 @@ export function AgentWorkspace() {
     refreshMcpServers,
     refreshOcrStatus,
     refreshNotifications,
+    refreshOrganizations,
     refreshScheduledTasks,
     refreshRouterOptimizer,
     refreshSandboxStatus,
@@ -1405,6 +1473,14 @@ export function AgentWorkspace() {
     }, 0);
     return () => window.clearTimeout(timer);
   }, [authUser, marketplaceSort, refreshMarketplaceTemplates]);
+
+  useEffect(() => {
+    if (!authUser) return;
+    const timer = window.setTimeout(() => {
+      void refreshOrganizationWorkspace(activeOrgId);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [activeOrgId, authUser, refreshOrganizationWorkspace]);
 
   useEffect(() => {
     if (!authUser || initialTaskParamRef.current) return;
@@ -1509,6 +1585,7 @@ export function AgentWorkspace() {
         await resumePendingTasks();
         await refreshTasks();
         await refreshTemplates();
+        await refreshOrganizations();
         await refreshScheduledTasks();
         await refreshSkills();
         await refreshMcpServers();
@@ -1533,6 +1610,10 @@ export function AgentWorkspace() {
     setScheduledTasks([]);
     setScheduledLogs([]);
     setScheduledMailbox("");
+    setOrganizations([]);
+    setActiveOrgId("");
+    setOrgTasks([]);
+    setOrgMembers([]);
     setBillingSummary(null);
     setSandboxStatus(null);
     setSandboxSelfTest(null);
@@ -1552,7 +1633,9 @@ export function AgentWorkspace() {
         body: JSON.stringify({
           prompt: trimmed,
           model: config?.model,
-          fileIds: uploadedFiles.map((file) => file.id)
+          fileIds: uploadedFiles.map((file) => file.id),
+          orgId: activeOrgId || undefined,
+          visibility: activeOrgId ? "org" : "private"
         })
       });
 
@@ -1584,6 +1667,7 @@ export function AgentWorkspace() {
       setActiveNav("agent");
       setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
       connectStream(task.id);
+      if (activeOrgId) void refreshOrganizationWorkspace(activeOrgId);
       void refreshRouterOptimizer(trimmed);
     } catch (caught) {
       setError(getErrorMessage(caught, "创建任务失败"));
@@ -1821,6 +1905,61 @@ export function AgentWorkspace() {
       setError(getErrorMessage(caught, "创建定时任务失败"));
     } finally {
       setIsCreatingScheduledTask(false);
+    }
+  }
+
+  async function createOrganizationFromDraft() {
+    const name = orgDraft.name.trim();
+    if (!name || isCreatingOrg) return;
+    setIsCreatingOrg(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/orgs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name,
+          taskQuota: Number(orgDraft.taskQuota)
+        })
+      });
+      const data = await readJson<{ organization?: Organization; error?: string }>(response, {});
+      if (!response.ok || !data.organization) {
+        throw new Error(data.error ?? "创建组织失败");
+      }
+      setOrgDraft((current) => ({ ...current, name: "" }));
+      setActiveOrgId(data.organization.id);
+      await refreshOrganizations();
+      await refreshOrganizationWorkspace(data.organization.id);
+    } catch (caught) {
+      setError(getErrorMessage(caught, "创建组织失败"));
+    } finally {
+      setIsCreatingOrg(false);
+    }
+  }
+
+  async function inviteOrganizationMember() {
+    if (!activeOrgId || !orgDraft.invitePhone.trim() || isInvitingOrgMember) return;
+    setIsInvitingOrgMember(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/orgs/${activeOrgId}/invite`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          phone: orgDraft.invitePhone,
+          role: orgDraft.inviteRole
+        })
+      });
+      const data = await readJson<{ invitation?: { token: string }; error?: string }>(response, {});
+      if (!response.ok || !data.invitation) {
+        throw new Error(data.error ?? "邀请成员失败");
+      }
+      setOrgDraft((current) => ({ ...current, invitePhone: "" }));
+      await refreshOrganizationWorkspace(activeOrgId);
+    } catch (caught) {
+      setError(getErrorMessage(caught, "邀请成员失败"));
+    } finally {
+      setIsInvitingOrgMember(false);
     }
   }
 
@@ -2228,6 +2367,160 @@ export function AgentWorkspace() {
     );
   }
 
+  function renderOrganizationPanel() {
+    const manager = activeOrganization?.role === "owner" || activeOrganization?.role === "admin";
+    return (
+      <div className="org-panel">
+        <div className="org-toolbar">
+          <label className="settings-field">
+            <span>当前空间</span>
+            <select
+              value={activeOrgId}
+              onChange={(event) => setActiveOrgId(event.target.value)}
+            >
+              <option value="">个人私有</option>
+              {organizations.map((organization) => (
+                <option key={organization.id} value={organization.id}>
+                  {organization.name} · {organizationRoleText[organization.role ?? "member"]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="settings-field">
+            <span>新组织</span>
+            <input
+              value={orgDraft.name}
+              onChange={(event) => setOrgDraft((current) => ({ ...current, name: event.target.value }))}
+              placeholder="例如：增长团队"
+            />
+          </label>
+          <label className="settings-field">
+            <span>任务配额</span>
+            <input
+              inputMode="numeric"
+              value={orgDraft.taskQuota}
+              onChange={(event) => setOrgDraft((current) => ({ ...current, taskQuota: event.target.value }))}
+            />
+          </label>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={!orgDraft.name.trim() || isCreatingOrg}
+            onClick={() => void createOrganizationFromDraft()}
+          >
+            {isCreatingOrg ? <Loader2 size={15} className="spin" /> : <Plus size={15} />}
+            创建组织
+          </button>
+        </div>
+
+        {activeOrganization ? (
+          <>
+            <div className="library-stats org-stats">
+              <div className="stat-box">
+                <div className="stat-value">{organizationRoleText[activeOrganization.role ?? "member"]}</div>
+                <div className="stat-label">我的角色</div>
+              </div>
+              <div className="stat-box">
+                <div className="stat-value">{activeOrganization.taskCount}/{activeOrganization.taskQuota}</div>
+                <div className="stat-label">任务配额</div>
+              </div>
+              <div className="stat-box">
+                <div className="stat-value">{orgMembers.length}</div>
+                <div className="stat-label">成员</div>
+              </div>
+              <div className="stat-box">
+                <div className="stat-value">{orgTasks.length}</div>
+                <div className="stat-label">共享任务</div>
+              </div>
+            </div>
+
+            {manager ? (
+              <div className="org-toolbar">
+                <label className="settings-field">
+                  <span>邀请手机号</span>
+                  <input
+                    inputMode="tel"
+                    value={orgDraft.invitePhone}
+                    onChange={(event) => setOrgDraft((current) => ({ ...current, invitePhone: event.target.value }))}
+                    placeholder="请输入 11 位手机号"
+                  />
+                </label>
+                <label className="settings-field">
+                  <span>角色</span>
+                  <select
+                    value={orgDraft.inviteRole}
+                    onChange={(event) =>
+                      setOrgDraft((current) => ({
+                        ...current,
+                        inviteRole: event.target.value as Exclude<OrganizationRole, "owner">
+                      }))
+                    }
+                  >
+                    <option value="admin">Admin</option>
+                    <option value="member">Member</option>
+                    <option value="viewer">Viewer</option>
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={!orgDraft.invitePhone.trim() || isInvitingOrgMember}
+                  onClick={() => void inviteOrganizationMember()}
+                >
+                  {isInvitingOrgMember ? <Loader2 size={15} className="spin" /> : <Plus size={15} />}
+                  邀请
+                </button>
+              </div>
+            ) : null}
+
+            <div className="view-grid two-columns">
+              <div className="metric-list compact">
+                {orgMembers.length ? (
+                  orgMembers.slice(0, 8).map((member) => (
+                    <div key={`${member.orgId}-${member.userId}`} className="metric-item">
+                      <div>
+                        <span className="metric-name">{member.user?.displayName ?? member.userId}</span>
+                        <span className="metric-meta">{member.user?.phone ?? member.user?.email ?? member.userId}</span>
+                      </div>
+                      <strong>{organizationRoleText[member.role]}</strong>
+                    </div>
+                  ))
+                ) : (
+                  <p className="muted-note">暂无成员数据。</p>
+                )}
+              </div>
+              <div className="task-library-list">
+                {orgTasks.length ? (
+                  orgTasks.slice(0, 8).map((task) => (
+                    <button
+                      key={task.id}
+                      type="button"
+                      className={`task-library-item ${activeTask?.id === task.id ? "is-active" : ""}`}
+                      onClick={() => {
+                        setActiveNav("agent");
+                        void selectTask(task.id);
+                      }}
+                    >
+                      <span className={`status-dot ${task.status}`} />
+                      <span>
+                        <strong>{task.prompt}</strong>
+                        <small>{statusText[task.status]} · {formatDate(task.createdAt)}</small>
+                      </span>
+                    </button>
+                  ))
+                ) : (
+                  <p className="muted-note">当前组织还没有共享任务。</p>
+                )}
+              </div>
+            </div>
+          </>
+        ) : (
+          <p className="muted-note">选择组织后，新任务会以组织可见性创建；选择“个人私有”则只保存到当前账号。</p>
+        )}
+      </div>
+    );
+  }
+
   function renderSettingsControls() {
     return (
       <div className="settings-grid">
@@ -2520,6 +2813,14 @@ export function AgentWorkspace() {
           </div>
         </div>
 
+        <section className="section-panel">
+          <div className="panel-title">
+            <ShieldCheck size={14} />
+            组织协作
+          </div>
+          {renderOrganizationPanel()}
+        </section>
+
         <div className="view-grid two-columns">
           <section className="section-panel">
             <div className="panel-title">历史任务</div>
@@ -2588,6 +2889,14 @@ export function AgentWorkspace() {
               认证
             </div>
             {renderAuthPanel()}
+          </section>
+
+          <section className="section-panel settings-model-panel">
+            <div className="panel-title">
+              <ShieldCheck size={14} />
+              组织与权限
+            </div>
+            {renderOrganizationPanel()}
           </section>
 
           <section className="section-panel">
@@ -4369,6 +4678,21 @@ export function AgentWorkspace() {
             <Bot size={14} />
             {authUser.displayName}
           </span>
+          <label className="org-context">
+            <ShieldCheck size={14} />
+            <select
+              aria-label="组织空间"
+              value={activeOrgId}
+              onChange={(event) => setActiveOrgId(event.target.value)}
+            >
+              <option value="">个人私有</option>
+              {organizations.map((organization) => (
+                <option key={organization.id} value={organization.id}>
+                  {organization.name}
+                </option>
+              ))}
+            </select>
+          </label>
           <span className="top-spacer" />
           {activeTask && (activeTask.status === "running" || activeTask.status === "queued") ? (
             <button className="secondary-button" onClick={() => void cancelActiveTask()}>
@@ -4454,7 +4778,18 @@ export function AgentWorkspace() {
                 </button>
                 <button
                   className="primary-button"
-                  disabled={isSubmitting || (!prompt.trim() && uploadedFiles.length === 0)}
+                  disabled={
+                    isSubmitting ||
+                    !selectedOrgCanCreateTask ||
+                    (!prompt.trim() && uploadedFiles.length === 0)
+                  }
+                  title={
+                    selectedOrgCanCreateTask
+                      ? activeOrganization
+                        ? `发送到 ${activeOrganization.name}`
+                        : "发送到个人私有任务"
+                      : "Viewer 角色只能查看组织任务"
+                  }
                 >
                   {isSubmitting ? <Loader2 size={17} className="spin" /> : <Send size={17} />}
                   发送
