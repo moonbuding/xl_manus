@@ -39,7 +39,16 @@ import {
   X,
   XCircle
 } from "lucide-react";
-import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ChangeEvent,
+  FormEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 import type {
   AgentEvent,
   AgentSkill,
@@ -393,6 +402,76 @@ function getArtifactIcon(type: Artifact["type"]) {
   return <FileText size={17} />;
 }
 
+function artifactPurpose(artifact: Artifact) {
+  const name = artifact.name.toLowerCase();
+  if (name === "task-report.md") return "完整 Markdown 报告，适合复制、二次编辑和沉淀到知识库。";
+  if (name === "task-data.csv") return "核心结论/数据表，适合导入表格工具继续分析。";
+  if (name === "task-analysis.xlsx") return "Excel 工作簿，适合查看结构化结果和继续加工数据。";
+  if (name === "task-briefing.pptx") return "汇报用 PPT，适合直接做演示或给团队同步。";
+  if (name === "task-summary.pdf") return "便于发送和归档的 PDF 摘要版报告。";
+  if (name === "summary.html") return "单页网页报告，适合在浏览器里快速预览。";
+  if (name === "dashboard.html") return "可视化看板，用来浏览关键指标、结论和图表。";
+  if (name === "chart-gallery.html") return "图表合集页面，集中查看本次任务生成的图片图表。";
+  if (name.includes("deliverables.zip")) return "完整交付包，包含本次任务生成的主要文件。";
+  if (name.includes("wide-research-report")) return "并行调研汇总报告，说明子任务对象、结论和来源。";
+  if (name.includes("wide-research-results.csv")) return "并行调研结果表，适合筛选、排序和二次分析。";
+  if (name.includes("wide-research-results.json")) return "机器可读的调研结构化数据，适合开发或自动化处理。";
+  if (name.includes("wide-research-package")) return "并行调研结果打包文件，包含报告、表格和 JSON。";
+  if (name.includes("agent-trace")) return "技术追踪日志，主要用于排查问题，普通使用通常不需要下载。";
+  if (name.startsWith("chart-") && artifact.type === "png") return "可插入报告或 PPT 的图表图片。";
+  if (artifact.type === "pdf") return "PDF 文件，适合发送、打印或归档。";
+  if (artifact.type === "md") return "Markdown 文档，适合继续编辑。";
+  if (artifact.type === "csv") return "CSV 表格数据，适合导入 Excel 或数据库。";
+  if (artifact.type === "xlsx") return "Excel 表格，适合业务分析。";
+  if (artifact.type === "pptx") return "演示文稿，适合汇报展示。";
+  if (artifact.type === "html") return "网页交付物，可在浏览器打开预览。";
+  if (artifact.type === "zip") return "打包文件，方便一次性下载。";
+  if (artifact.type === "json") return "结构化数据，适合调试或系统集成。";
+  return "任务生成的交付文件，可按需下载查看。";
+}
+
+function artifactPriority(artifact: Artifact) {
+  const name = artifact.name.toLowerCase();
+  if (name === "task-report.md") return 10;
+  if (name === "task-summary.pdf") return 20;
+  if (name === "task-analysis.xlsx") return 30;
+  if (name === "task-briefing.pptx") return 40;
+  if (name === "task-data.csv") return 50;
+  if (name === "summary.html") return 60;
+  if (name === "dashboard.html") return 70;
+  if (name.includes("deliverables.zip")) return 80;
+  if (name.includes("wide-research-report")) return 90;
+  if (name.includes("wide-research-results.csv")) return 100;
+  if (name.includes("wide-research-results.json")) return 110;
+  if (name.includes("wide-research-package")) return 120;
+  if (name.startsWith("chart-")) return 130;
+  if (name.includes("agent-trace")) return 900;
+  return 500;
+}
+
+function isUsefulTimelineEvent(event: AgentEvent) {
+  if (event.type === "artifact") return false;
+  if (event.type === "tool_call") return false;
+  const title = event.title ?? "";
+  if (
+    /任务排队|工具动态启用|模型路由|Context Engineering|Context 指标|Billing|Workspace 清理/.test(
+      title
+    )
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function currentTaskStage(task: Task) {
+  if (task.status === "completed") return "已完成，结果和交付物已生成。";
+  if (task.status === "failed") return "任务失败，请查看执行过程里的失败原因。";
+  if (task.status === "cancelled") return "任务已取消。";
+  if (task.status === "timeout") return "任务已超时。";
+  const latest = [...task.events].reverse().find((event) => event.type !== "artifact");
+  return latest ? latest.title ?? latest.content : "正在准备执行。";
+}
+
 function mergeTaskEvent(task: Task, event: AgentEvent): Task {
   const exists = task.events.some((item) => item.id === event.id);
   const artifact = extractArtifact(event);
@@ -443,6 +522,79 @@ function buildPromptWithFiles(prompt: string, files: UploadedFileSummary[]) {
     .join("\n\n");
 
   return `${basePrompt}\n\n[上传文件摘要]\n${fileContext}`;
+}
+
+const uploadedFileContextMarker = "[上传文件摘要]";
+
+function getUserVisiblePrompt(value: string) {
+  const markerIndex = value.indexOf(uploadedFileContextMarker);
+  const visible = markerIndex >= 0 ? value.slice(0, markerIndex) : value;
+  return visible.replace(/\s+/g, " ").trim() || "未命名任务";
+}
+
+function parsePromptUploadedFiles(value: string) {
+  const markerIndex = value.indexOf(uploadedFileContextMarker);
+  if (markerIndex < 0) return [];
+
+  return value
+    .slice(markerIndex + uploadedFileContextMarker.length)
+    .trim()
+    .split(/\n(?=文件：)/g)
+    .map((block) => {
+      const name = block.match(/^文件：(.+)$/m)?.[1]?.trim() ?? "上传文件";
+      const meta = block.match(/^类型：(.+)$/m)?.[1]?.trim() ?? "";
+      const summaryStart = block.indexOf("摘要：");
+      const previewStart = block.indexOf("\n正文预览：");
+      const summary =
+        summaryStart >= 0
+          ? block.slice(summaryStart + "摘要：".length, previewStart >= 0 ? previewStart : undefined).trim()
+          : "";
+      const preview =
+        previewStart >= 0 ? block.slice(previewStart + "\n正文预览：".length).trim() : "";
+
+      return {
+        name,
+        meta,
+        summary,
+        preview
+      };
+    })
+    .filter((file) => file.name || file.summary || file.preview)
+    .slice(0, 6);
+}
+
+function truncateForUi(value: string, maxLength = 220) {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}...` : normalized;
+}
+
+function sanitizePayloadForUi(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sanitizePayloadForUi);
+  if (!value || typeof value !== "object") {
+    return typeof value === "string" ? truncateForUi(value) : value;
+  }
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, item]) => {
+      const lowerKey = key.toLowerCase();
+      if (lowerKey.includes("prompt")) {
+        if (typeof item === "string") {
+          const visible = getUserVisiblePrompt(item);
+          return [key, item.includes(uploadedFileContextMarker) ? `${visible}（已隐藏上传文件上下文）` : truncateForUi(visible)];
+        }
+        return [key, "已隐藏"];
+      }
+      if (
+        lowerKey === "content" ||
+        lowerKey.includes("preview") ||
+        lowerKey.includes("base64") ||
+        lowerKey.includes("text")
+      ) {
+        return [key, typeof item === "string" ? truncateForUi(item, 160) : "已折叠"];
+      }
+      return [key, sanitizePayloadForUi(item)];
+    })
+  );
 }
 
 function extractTemplateVariables(template: string) {
@@ -689,6 +841,7 @@ export function AgentWorkspace() {
     myComputerStatus?.desktopDevices.some((device) => device.status === "online")
   );
   const showComposer = activeNav === "workspace" || activeNav === "agent";
+  const isHomeView = activeNav === "workspace" && !activeTask;
 
   const visibleTasks = useMemo(() => {
     const normalized = taskQuery.trim().toLowerCase();
@@ -2168,7 +2321,7 @@ export function AgentWorkspace() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          name: task.prompt.slice(0, 48),
+          name: getUserVisiblePrompt(task.prompt).slice(0, 48),
           prompt: task.prompt,
           model: task.model,
           kind: "cron",
@@ -2239,7 +2392,7 @@ export function AgentWorkspace() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        name: activeTask.prompt.slice(0, 36),
+        name: getUserVisiblePrompt(activeTask.prompt).slice(0, 36),
         description: "从历史任务保存",
         promptTemplate: activeTask.prompt,
         defaultModel: activeTask.model,
@@ -2507,7 +2660,7 @@ export function AgentWorkspace() {
           >
             <span className={`status-dot ${task.status}`} />
             <span>
-              <strong>{task.prompt}</strong>
+              <strong>{getUserVisiblePrompt(task.prompt)}</strong>
               <small>
                 {statusText[task.status]} · {task.model} · {formatDate(task.createdAt)}
               </small>
@@ -2811,7 +2964,7 @@ export function AgentWorkspace() {
                     >
                       <span className={`status-dot ${task.status}`} />
                       <span>
-                        <strong>{task.prompt}</strong>
+                        <strong>{getUserVisiblePrompt(task.prompt)}</strong>
                         <small>{statusText[task.status]} · {formatDate(task.createdAt)}</small>
                       </span>
                     </button>
@@ -4765,6 +4918,110 @@ export function AgentWorkspace() {
     );
   }
 
+  function renderComposer(variant: "home" | "footer" = "footer") {
+    const isHomeComposer = variant === "home";
+
+    return (
+      <>
+        <form
+          className={`composer-form ${isHomeComposer ? "home-composer-form" : ""}`}
+          onSubmit={onSubmit}
+        >
+          <div className="composer-input-stack">
+            {uploadedFiles.length > 0 ? (
+              <div className="upload-strip" aria-label="已上传文件">
+                {uploadedFiles.map((file) => (
+                  <span key={file.id} className="upload-chip">
+                    <FileText size={14} />
+                    <span>
+                      <strong>{file.name}</strong>
+                      <small>{formatSize(file.size)}</small>
+                    </span>
+                    <button
+                      type="button"
+                      className="upload-remove"
+                      aria-label={`移除 ${file.name}`}
+                      onClick={() =>
+                        setUploadedFiles((current) => current.filter((item) => item.id !== file.id))
+                      }
+                    >
+                      <X size={13} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            <textarea
+              className="prompt-box"
+              value={prompt}
+              onChange={(event) => setPrompt(event.target.value)}
+              placeholder="输入一个任务，例如：读取我上传的 Excel 并输出分析报告"
+            />
+          </div>
+          <div className="composer-actions">
+            <button
+              type="button"
+              className={`secondary-button compact-button execution-target-button ${
+                executionTarget === "my-computer" ? "is-active" : ""
+              }`}
+              disabled={!hasOnlineDesktop || isSubmitting}
+              title={
+                hasOnlineDesktop
+                  ? executionTarget === "my-computer"
+                    ? "当前任务将派发到 My Computer 桌面端"
+                    : "切换为 My Computer 桌面端执行"
+                  : "需要先在 Settings / My Computer 配对并保持桌面端在线"
+              }
+              onClick={() =>
+                setExecutionTarget((current) => (current === "my-computer" ? "cloud" : "my-computer"))
+              }
+            >
+              <Bot size={15} />
+              {executionTarget === "my-computer" ? "My Computer" : "云端"}
+            </button>
+            <input
+              ref={fileInputRef}
+              className="hidden-file-input"
+              type="file"
+              multiple
+              accept=".txt,.md,.markdown,.json,.csv,.tsv,.html,.htm,.pdf,.docx,.xlsx,.png,.jpg,.jpeg,.webp,.gif,image/png,image/jpeg,image/webp,image/gif"
+              onChange={(event) => void uploadFiles(event)}
+            />
+            <button
+              type="button"
+              className="icon-button attach-button"
+              aria-label="上传文件"
+              title="上传文件"
+              disabled={isUploadingFile || isSubmitting}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              {isUploadingFile ? <Loader2 size={17} className="spin" /> : <Paperclip size={17} />}
+            </button>
+            <button
+              className="primary-button"
+              disabled={
+                isSubmitting ||
+                !selectedOrgCanCreateTask ||
+                (!prompt.trim() && uploadedFiles.length === 0)
+              }
+              title={
+                selectedOrgCanCreateTask
+                  ? activeOrganization
+                    ? `发送到 ${activeOrganization.name}`
+                    : "发送到个人私有任务"
+                  : "Viewer 角色只能查看组织任务"
+              }
+            >
+              {isSubmitting ? <Loader2 size={17} className="spin" /> : <Send size={17} />}
+              发送
+            </button>
+          </div>
+        </form>
+        {error ? <p className="muted-note composer-error">{error}</p> : null}
+      </>
+    );
+  }
+
   function renderMainContent() {
     if (activeNav === "library") return renderLibraryView();
     if (activeNav === "settings") return renderSettingsView();
@@ -4779,7 +5036,11 @@ export function AgentWorkspace() {
         renderAgentEmptyView()
       );
     }
-    return <EmptyState onPick={(value) => void submitTask(value)} />;
+    return (
+      <EmptyState onPick={(value) => void submitTask(value)}>
+        {renderComposer("home")}
+      </EmptyState>
+    );
   }
 
   function renderRightRail() {
@@ -4918,7 +5179,7 @@ export function AgentWorkspace() {
   }
 
   return (
-    <div className="workspace-shell">
+    <div className={`workspace-shell ${isHomeView ? "is-home" : ""}`}>
       <aside className="left-rail">
         <div className="brand">
           <span className="brand-mark" />
@@ -5005,7 +5266,7 @@ export function AgentWorkspace() {
               >
                 <span className={`status-dot ${task.status}`} />
                 <span>
-                  <span className="task-title">{task.prompt}</span>
+                  <span className="task-title">{getUserVisiblePrompt(task.prompt)}</span>
                   <span className="task-meta">
                     {statusText[task.status]} · {formatDate(task.createdAt)}
                   </span>
@@ -5017,26 +5278,30 @@ export function AgentWorkspace() {
       </aside>
 
       <main className="main-column">
-        <header className="top-bar">
-          <span className="model-chip">
-            <Sparkles size={15} />
-            {config?.model ?? "deepseek-v4-flash"}
-          </span>
-          <span className="status-chip">
-            {config?.hasApiKey ? <CheckCircle2 size={14} /> : <Clock3 size={14} />}
-            {config?.hasApiKey ? "API Key 已配置" : "使用本地回退"}
-          </span>
-          {contextMetrics && contextMetrics.totalCalls > 0 ? (
-            <span className="status-chip">
-              <Gauge size={14} />
-              Context {formatPercent(contextMetrics.averageCacheHitRate)}
-            </span>
-          ) : null}
-          {contextMetrics && contextMetrics.totalCalls > 0 ? (
-            <span className="status-chip">
-              <FileSpreadsheet size={14} />
-              Cost {formatUsd(contextMetrics.estimatedCostUsd)}
-            </span>
+        <header className={`top-bar ${isHomeView ? "home-top-bar" : ""}`}>
+          {!isHomeView ? (
+            <>
+              <span className="model-chip">
+                <Sparkles size={15} />
+                {config?.model ?? "deepseek-v4-flash"}
+              </span>
+              <span className="status-chip">
+                {config?.hasApiKey ? <CheckCircle2 size={14} /> : <Clock3 size={14} />}
+                {config?.hasApiKey ? "API Key 已配置" : "使用本地回退"}
+              </span>
+              {contextMetrics && contextMetrics.totalCalls > 0 ? (
+                <span className="status-chip">
+                  <Gauge size={14} />
+                  Context {formatPercent(contextMetrics.averageCacheHitRate)}
+                </span>
+              ) : null}
+              {contextMetrics && contextMetrics.totalCalls > 0 ? (
+                <span className="status-chip">
+                  <FileSpreadsheet size={14} />
+                  Cost {formatUsd(contextMetrics.estimatedCostUsd)}
+                </span>
+              ) : null}
+            </>
           ) : null}
           <span className="status-chip">
             <Bot size={14} />
@@ -5057,7 +5322,7 @@ export function AgentWorkspace() {
               ))}
             </select>
           </label>
-          <span className="top-spacer" />
+          {!isHomeView ? <span className="top-spacer" /> : null}
           {activeTask && (activeTask.status === "running" || activeTask.status === "queued") ? (
             <button className="secondary-button" onClick={() => void cancelActiveTask()}>
               <CircleStop size={15} />
@@ -5087,107 +5352,10 @@ export function AgentWorkspace() {
           {renderMainContent()}
         </section>
 
-        {showComposer ? (
-          <footer className="composer">
-            <form className="composer-form" onSubmit={onSubmit}>
-              <div className="composer-input-stack">
-                {uploadedFiles.length > 0 ? (
-                  <div className="upload-strip" aria-label="已上传文件">
-                    {uploadedFiles.map((file) => (
-                      <span key={file.id} className="upload-chip">
-                        <FileText size={14} />
-                        <span>
-                          <strong>{file.name}</strong>
-                          <small>{formatSize(file.size)}</small>
-                        </span>
-                        <button
-                          type="button"
-                          className="upload-remove"
-                          aria-label={`移除 ${file.name}`}
-                          onClick={() =>
-                            setUploadedFiles((current) => current.filter((item) => item.id !== file.id))
-                          }
-                        >
-                          <X size={13} />
-                        </button>
-                      </span>
-                    ))}
-                  </div>
-                ) : null}
-                <textarea
-                  className="prompt-box"
-                  value={prompt}
-                  onChange={(event) => setPrompt(event.target.value)}
-                  placeholder="输入一个任务，例如：读取我上传的 Excel 并输出分析报告"
-                />
-              </div>
-              <div className="composer-actions">
-                <button
-                  type="button"
-                  className={`secondary-button compact-button execution-target-button ${
-                    executionTarget === "my-computer" ? "is-active" : ""
-                  }`}
-                  disabled={!hasOnlineDesktop || isSubmitting}
-                  title={
-                    hasOnlineDesktop
-                      ? executionTarget === "my-computer"
-                        ? "当前任务将派发到 My Computer 桌面端"
-                        : "切换为 My Computer 桌面端执行"
-                      : "需要先在 Settings / My Computer 配对并保持桌面端在线"
-                  }
-                  onClick={() =>
-                    setExecutionTarget((current) => (current === "my-computer" ? "cloud" : "my-computer"))
-                  }
-                >
-                  <Bot size={15} />
-                  {executionTarget === "my-computer" ? "My Computer" : "云端"}
-                </button>
-                <input
-                  ref={fileInputRef}
-                  className="hidden-file-input"
-                  type="file"
-                  multiple
-                  accept=".txt,.md,.markdown,.json,.csv,.tsv,.html,.htm,.pdf,.docx,.xlsx,.png,.jpg,.jpeg,.webp,.gif,image/png,image/jpeg,image/webp,image/gif"
-                  onChange={(event) => void uploadFiles(event)}
-                />
-                <button
-                  type="button"
-                  className="icon-button attach-button"
-                  aria-label="上传文件"
-                  title="上传文件"
-                  disabled={isUploadingFile || isSubmitting}
-                  onClick={() => fileInputRef.current?.click()}
-                >
-                  {isUploadingFile ? <Loader2 size={17} className="spin" /> : <Paperclip size={17} />}
-                </button>
-                <button
-                  className="primary-button"
-                  disabled={
-                    isSubmitting ||
-                    !selectedOrgCanCreateTask ||
-                    (!prompt.trim() && uploadedFiles.length === 0)
-                  }
-                  title={
-                    selectedOrgCanCreateTask
-                      ? activeOrganization
-                        ? `发送到 ${activeOrganization.name}`
-                        : "发送到个人私有任务"
-                      : "Viewer 角色只能查看组织任务"
-                  }
-                >
-                  {isSubmitting ? <Loader2 size={17} className="spin" /> : <Send size={17} />}
-                  发送
-                </button>
-              </div>
-            </form>
-            {error ? <p className="muted-note">{error}</p> : null}
-          </footer>
-        ) : null}
+        {showComposer && !isHomeView ? <footer className="composer">{renderComposer("footer")}</footer> : null}
       </main>
 
-      <aside className="right-rail">
-        {renderRightRail()}
-      </aside>
+      {!isHomeView ? <aside className="right-rail">{renderRightRail()}</aside> : null}
     </div>
   );
 }
@@ -5325,17 +5493,24 @@ function AuthScreen({
   );
 }
 
-function EmptyState({ onPick }: { onPick: (prompt: string) => void }) {
+function EmptyState({
+  onPick,
+  children
+}: {
+  onPick: (prompt: string) => void;
+  children?: ReactNode;
+}) {
   return (
     <div className="empty-state">
-      <div className="empty-kicker">Agent Workspace</div>
-      <h1 className="empty-title">把任务交给 ManusXL。</h1>
+      <div className="empty-kicker">ManusXL</div>
+      <h1 className="empty-title">我能为你做什么？</h1>
       <p className="empty-copy">
-        输入一个目标，系统会拆解计划、流式展示执行步骤，并把结果沉淀到右侧交付物区域。
+        上传文件或输入目标，ManusXL 会整理执行路径、沉淀结论，并生成可下载交付物。
       </p>
+      {children}
       <div className="suggestion-grid">
         {suggestions.map((item) => (
-          <button key={item} className="suggestion-button" onClick={() => onPick(item)}>
+          <button key={item} type="button" className="suggestion-button" onClick={() => onPick(item)}>
             <span>{item}</span>
             <span className="tiny-chip">
               <Play size={12} />
@@ -5357,49 +5532,134 @@ function TaskDetail({
   isScheduling: boolean;
   onSchedule: (task: Task) => void;
 }) {
+  const visiblePrompt = getUserVisiblePrompt(task.prompt);
+  const uploadedContext = parsePromptUploadedFiles(task.prompt);
+  const usefulEvents = task.events.filter(isUsefulTimelineEvent);
+  const artifactCount = task.artifacts.length;
+  const finalAnswer = task.finalAnswer?.trim();
+
   return (
     <div className="task-detail">
       <div className="task-heading">
         <span className={`status-dot ${task.status}`} />
-        <div>
-          <h1>{task.prompt}</h1>
-          <p>
-            {task.id} · {statusText[task.status]} · {task.model}
-          </p>
+        <div className="task-heading-content">
+          <div className="task-heading-main">
+            <div className="task-heading-title">
+              <h1>{visiblePrompt}</h1>
+              <p>
+                {task.id} · {statusText[task.status]} · {task.model}
+              </p>
+            </div>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={isScheduling}
+              onClick={() => onSchedule(task)}
+            >
+              {isScheduling ? <Loader2 size={15} className="spin" /> : <Clock3 size={15} />}
+              设为定时任务
+            </button>
+          </div>
+
+          {uploadedContext.length > 0 ? (
+            <section className="task-file-context" aria-label="上传文件上下文">
+              <div className="task-file-context-head">
+                <span>
+                  <Paperclip size={14} />
+                  上传文件上下文
+                </span>
+                <small>{uploadedContext.length} 个文件，正文预览已折叠供 Agent 使用</small>
+              </div>
+              <div className="task-file-context-grid">
+                {uploadedContext.map((file, index) => (
+                  <article key={`${file.name}-${index}`} className="task-file-context-item">
+                    <div>
+                      <strong>{file.name}</strong>
+                      {file.meta ? <small>{file.meta}</small> : null}
+                    </div>
+                    {file.summary ? <p>{file.summary}</p> : null}
+                    {file.preview ? <em>{file.preview}</em> : null}
+                  </article>
+                ))}
+              </div>
+            </section>
+          ) : null}
         </div>
-        <button
-          type="button"
-          className="secondary-button"
-          disabled={isScheduling}
-          onClick={() => onSchedule(task)}
-        >
-          {isScheduling ? <Loader2 size={15} className="spin" /> : <Clock3 size={15} />}
-          设为定时任务
-        </button>
       </div>
 
-      <div className="step-timeline">
-        {task.events.length === 0 ? (
-          <div className="step-row">
-            <span className="step-icon">
-              <Loader2 size={16} />
-            </span>
-            <div className="step-body">
-              <div className="step-head">
-                <span className="step-title">等待 Agent 启动</span>
-              </div>
-              <div className="step-content">任务已创建，正在进入执行队列。</div>
-            </div>
+      <section className="task-result-shell">
+        <div className="task-status-strip">
+          <div>
+            <span>当前状态</span>
+            <strong>{statusText[task.status]}</strong>
+            <small>{currentTaskStage(task)}</small>
           </div>
+          <div>
+            <span>交付文件</span>
+            <strong>{artifactCount}</strong>
+            <small>{artifactCount > 0 ? "右侧已按用途说明" : "生成后会出现在右侧"}</small>
+          </div>
+          <div>
+            <span>执行摘要</span>
+            <strong>{usefulEvents.length}</strong>
+            <small>详细过程已折叠</small>
+          </div>
+        </div>
+
+        {finalAnswer ? (
+          <article className="final-answer-card">
+            <div className="result-section-head">
+              <span>
+                <CheckCircle2 size={15} />
+                最终结果
+              </span>
+              <small>{formatDate(task.updatedAt)}</small>
+            </div>
+            <div className="final-answer-content">{finalAnswer}</div>
+          </article>
         ) : (
-          task.events.map((event) => <StepRow key={event.id} event={event} />)
+          <article className="final-answer-card is-pending">
+            <div className="result-section-head">
+              <span>
+                <Loader2 size={15} className={task.status === "running" || task.status === "queued" ? "spin" : ""} />
+                正在处理
+              </span>
+            </div>
+            <p>{currentTaskStage(task)}</p>
+          </article>
         )}
-      </div>
+
+        <details className="execution-details">
+          <summary>
+            <span>查看执行过程</span>
+            <small>仅用于排查和追踪，默认不展示给普通使用流程</small>
+          </summary>
+          <div className="step-timeline">
+            {usefulEvents.length === 0 ? (
+              <div className="step-row">
+                <span className="step-icon">
+                  <Loader2 size={16} />
+                </span>
+                <div className="step-body">
+                  <div className="step-head">
+                    <span className="step-title">等待 Agent 启动</span>
+                  </div>
+                  <div className="step-content">任务已创建，正在进入执行队列。</div>
+                </div>
+              </div>
+            ) : (
+              usefulEvents.map((event) => <StepRow key={event.id} event={event} />)
+            )}
+          </div>
+        </details>
+      </section>
     </div>
   );
 }
 
 function StepRow({ event }: { event: AgentEvent }) {
+  const safePayload = event.type === "tool_call" && event.payload ? sanitizePayloadForUi(event.payload) : null;
+
   return (
     <article className="step-row">
       <span className="step-icon">{getEventIcon(event.type)}</span>
@@ -5410,8 +5670,8 @@ function StepRow({ event }: { event: AgentEvent }) {
           <span className="step-time">{formatTime(event.createdAt)}</span>
         </div>
         {event.content ? <div className="step-content">{event.content}</div> : null}
-        {event.type === "tool_call" && event.payload ? (
-          <pre className="payload-block">{JSON.stringify(event.payload, null, 2)}</pre>
+        {safePayload ? (
+          <pre className="payload-block">{JSON.stringify(safePayload, null, 2)}</pre>
         ) : null}
       </div>
     </article>
@@ -5423,13 +5683,19 @@ function ArtifactList({ artifacts }: { artifacts: Artifact[] }) {
     return <p className="muted-note">当前任务还没有交付物。</p>;
   }
 
+  const sortedArtifacts = [...artifacts].sort((left, right) => {
+    const priority = artifactPriority(left) - artifactPriority(right);
+    return priority || left.name.localeCompare(right.name);
+  });
+
   return (
     <div className="artifact-list">
-      {artifacts.map((artifact) => (
+      {sortedArtifacts.map((artifact) => (
         <a key={artifact.id} className="artifact-item" href={artifact.url}>
           <span className="artifact-icon">{getArtifactIcon(artifact.type)}</span>
           <span>
             <span className="artifact-name">{artifact.name}</span>
+            <span className="artifact-purpose">{artifactPurpose(artifact)}</span>
             <span className="artifact-meta">
               {artifact.type.toUpperCase()} · {formatSize(artifact.size)}
             </span>
@@ -5899,7 +6165,7 @@ function BillingPanel({ summary }: { summary: BillingSummary | null }) {
         {summary.byTask.slice(0, 5).map((task) => (
           <div key={task.taskId} className="metric-item">
             <div>
-              <span className="metric-name">{task.prompt.slice(0, 34)}</span>
+              <span className="metric-name">{getUserVisiblePrompt(task.prompt).slice(0, 34)}</span>
               <span className="metric-meta">
                 {task.model} · {task.totalCalls} calls · {formatNumber(task.totalTokens)} tokens
               </span>
