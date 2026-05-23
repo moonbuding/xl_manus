@@ -5597,13 +5597,18 @@ function MarketplaceTemplateList({
                   <Plus size={13} />
                   Fork
                 </button>
-                <button
-                  type="button"
-                  className="secondary-button compact-button"
-                  onClick={() => onRate(template.id, 5)}
-                >
-                  5 分
-                </button>
+                <div className="rating-control" aria-label={`给模板 ${template.name} 评分`}>
+                  {[1, 2, 3, 4, 5].map((rating) => (
+                    <button
+                      key={rating}
+                      type="button"
+                      className="rating-button"
+                      onClick={() => onRate(template.id, rating)}
+                    >
+                      {rating}
+                    </button>
+                  ))}
+                </div>
               </div>
             </article>
           ))}

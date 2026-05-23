@@ -339,19 +339,99 @@ async function generateFinalAnswer(
   messages: ChatMessage[],
   signal?: AbortSignal
 ) {
-  const fallback = `已完成任务「${prompt}」的首轮 Agent 执行。当前版本已经跑通任务拆解、步骤展示、工具调用事件和交付物生成区域；下一步可以接入真实搜索、浏览器和文件沙盒能力。`;
+  const fallback = localFinalAnswerFallback(prompt, messages);
   const config = getDeepSeekConfig();
+  const needsLongAnswer = /调研|研究|对比|排名|前五|报告|分析|竞品|市场|新能源|NEV|top\s*\d+/i.test(prompt);
 
   return chatWithDeepSeek({
     taskId,
     stage: "final_answer",
     model,
     temperature: config.temperature,
-    maxTokens: 1200,
+    maxTokens: needsLongAnswer ? 2200 : 1400,
     fallback,
     signal,
     messages
   });
+}
+
+function localFinalAnswerFallback(prompt: string, messages: ChatMessage[]) {
+  const context = messages.map((message) => message.content).join("\n\n").slice(0, 9000);
+  const fileBlocks = Array.from(context.matchAll(/文件\s*\d*[：:]\s*([^\n]+)([\s\S]*?)(?=\n\n文件\s*\d*[：:]|\n\n\[工具观察|\n\n请输出|$)/g));
+  const previewMatch = context.match(/正文预览[：:]\s*([\s\S]{80,2200})/);
+  const unreadable = /无法抽取可信正文|没有抽取到可信正文|textReadable["']?\s*:\s*false|unreadable/.test(context);
+
+  if (fileBlocks.length > 0 || previewMatch) {
+    const preview = (previewMatch?.[1] ?? context)
+      .split(/\n+/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .slice(0, 14);
+    const facts = preview.filter((line) => /@|电话|手机|教育|经历|项目|公司|大学|本科|硕士|排名|实习|Agent|产品|Python|SQL/i.test(line));
+    return [
+      "已完成上传文件的首轮解析。",
+      "",
+      unreadable
+        ? "注意：文件存在可读性风险，当前只能基于系统抽取/OCR得到的片段生成初步结论，建议人工复核原文。"
+        : "文件正文已进入 Agent 上下文，以下结论基于已抽取文本生成。",
+      "",
+      "## 关键摘录",
+      ...(facts.length > 0 ? facts : preview).slice(0, 8).map((line) => `- ${line}`),
+      "",
+      "## 初步结论",
+      "- 已从上传文件中提取出可用于报告的主体文本，而不是仅返回文件名或占位说明。",
+      "- 可继续要求 ManusXL 按简历评估、合同风险、论文摘要、表格洞察等方向做二次分析。",
+      "- 若原文件是扫描版 PDF，OCR 结果可能存在错字，需要以原件为准复核关键姓名、日期、数字和联系方式。",
+      "",
+      "## 下一步建议",
+      "- 指定你希望输出的结构，例如：候选人画像、能力标签、经历时间线、风险点、面试问题或改写后的中文简历。"
+    ].join("\n");
+  }
+
+  if (/调研|研究|对比|排名|前五|竞品|市场|新能源|NEV|top\s*\d+/i.test(prompt)) {
+    const sourceMatches = Array.from(
+      context.matchAll(/资料\s*\d+[：:]\s*([^\n]+)\nURL[：:]\s*([^\n]+)(?:\n摘要[：:]\s*([^\n]+))?/g)
+    ).slice(0, 8);
+
+    return [
+      `已完成任务「${taskIntentText(prompt).trim() || prompt}」的首轮调研，但当前最终回答由本地 fallback 生成。`,
+      "",
+      "## 结论",
+      "- 已拿到可用于判断的网页资料线索，但大模型最终总结未返回可用内容，因此系统不会替你编造确定排名或数字。",
+      "- 请检查 Settings 中 API Key、Base URL 和模型名后重跑；重跑后 Agent 会基于下列资料输出排名表、对比结论和建议。",
+      "",
+      "## 已获取资料",
+      ...(sourceMatches.length > 0
+        ? sourceMatches.map((match, index) => {
+            const title = match[1]?.trim() || `资料 ${index + 1}`;
+            const url = match[2]?.trim() || "无 URL";
+            const snippet = match[3]?.trim();
+            return `- ${title}：${url}${snippet ? `；摘要：${snippet.slice(0, 180)}` : ""}`;
+          })
+        : ["- 当前没有可引用资料；联网搜索可能失败或没有返回结果。"]),
+      "",
+      "## 下一步建议",
+      "- 重新执行该任务，或把权威销量口径/链接作为补充资料上传。",
+      "- 对新能源汽车排名类任务，建议明确口径：年度/月度、零售/批发、品牌/集团、国内/全球。"
+    ].join("\n");
+  }
+
+  const observations = messages
+    .filter((message) => message.content.includes("[工具观察"))
+    .map((message) => message.content.replace(/\s+/g, " ").slice(0, 260));
+
+  return [
+    `已完成任务「${taskIntentText(prompt).trim() || prompt}」的首轮执行。`,
+    "",
+    "## 已完成",
+    ...(observations.length > 0
+      ? observations.slice(0, 6).map((item) => `- ${item}`)
+      : ["- 已完成任务拆解、工具调用和交付物生成。"]),
+    "",
+    "## 说明",
+    "- 当前回答由本地 fallback 生成，说明大模型调用未返回可用内容；请检查 Settings 中 API Key、Base URL 和模型名。",
+    "- 为避免误导，fallback 不会伪造外部事实；需要真实调研时请确认模型连接正常后重跑。"
+  ].join("\n");
 }
 
 async function generateRecoveryPlan(

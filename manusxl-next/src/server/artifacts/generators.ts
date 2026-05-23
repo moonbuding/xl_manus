@@ -406,27 +406,67 @@ function makePptx(prompt: string, plan: string[], finalAnswer: string, tableRows
   ]);
 }
 
+function utf16BeHex(value: string) {
+  const bytes: number[] = [];
+  for (const char of value) {
+    const codePoint = char.codePointAt(0) ?? 0x20;
+    if (codePoint > 0xffff) {
+      const offset = codePoint - 0x10000;
+      const high = 0xd800 + (offset >> 10);
+      const low = 0xdc00 + (offset & 0x3ff);
+      bytes.push(high >> 8, high & 0xff, low >> 8, low & 0xff);
+    } else {
+      bytes.push(codePoint >> 8, codePoint & 0xff);
+    }
+  }
+  return Buffer.from(bytes).toString("hex").toUpperCase();
+}
+
+function wrapDisplayLine(value: string, maxWidth = 42) {
+  const lines: string[] = [];
+  let current = "";
+  let width = 0;
+
+  for (const char of value.replace(/\s+/g, " ").trim()) {
+    const charWidth = /[\x00-\x7f]/.test(char) ? 0.55 : 1;
+    if (width + charWidth > maxWidth && current) {
+      lines.push(current);
+      current = "";
+      width = 0;
+    }
+    current += char;
+    width += charWidth;
+  }
+
+  if (current) lines.push(current);
+  return lines.length > 0 ? lines : [""];
+}
+
+function pdfLinesFromText(value: string) {
+  return value
+    .split(/\n+/)
+    .flatMap((line) => wrapDisplayLine(line, 42))
+    .slice(0, 34);
+}
+
 function makePdf(finalAnswer: string) {
   const safeLines = [
     "ManusXL Task Report",
     `Generated: ${new Date().toISOString()}`,
     "",
-    ...finalAnswer
-      .replace(/[^\x20-\x7E\n]/g, " ")
-      .split("\n")
-      .flatMap((line) => line.match(/.{1,86}/g) ?? [line])
-      .slice(0, 32)
+    ...pdfLinesFromText(finalAnswer)
   ];
 
   const textOps = safeLines
-    .map((line, index) => `BT /F1 10 Tf 50 ${760 - index * 18} Td (${line.replace(/[()\\]/g, "\\$&")}) Tj ET`)
+    .map((line, index) => `BT /F1 10 Tf 50 ${760 - index * 18} Td <${utf16BeHex(line)}> Tj ET`)
     .join("\n");
   const objects = [
     "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj",
     "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj",
     "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj",
-    "4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj",
-    `5 0 obj << /Length ${Buffer.byteLength(textOps)} >> stream\n${textOps}\nendstream endobj`
+    "4 0 obj << /Type /Font /Subtype /Type0 /BaseFont /STSong-Light /Encoding /UniGB-UCS2-H /DescendantFonts [6 0 R] >> endobj",
+    `5 0 obj << /Length ${Buffer.byteLength(textOps)} >> stream\n${textOps}\nendstream endobj`,
+    "6 0 obj << /Type /Font /Subtype /CIDFontType0 /BaseFont /STSong-Light /CIDSystemInfo << /Registry (Adobe) /Ordering (GB1) /Supplement 5 >> >> endobj"
   ];
   let pdf = "%PDF-1.4\n";
   const offsets = [0];
@@ -466,6 +506,91 @@ export function markdownReport(prompt: string, plan: string[], finalAnswer: stri
     "- HTML 网页",
     "- ZIP 打包文件"
   ].join("\n");
+}
+
+function extractInsightRows(prompt: string, plan: string[], finalAnswer: string) {
+  const lines = finalAnswer
+    .split(/\n+/)
+    .map((line) => line.replace(/^[-*\d.\s#>]+/, "").trim())
+    .filter((line) => line.length >= 8)
+    .slice(0, 10);
+  const planRows = plan.slice(0, 6).map((step, index) =>
+    [`计划 ${index + 1}`, step, index < 2 ? "P0" : "P1", "已执行", 70 + index * 3] satisfies CellValue[]
+  );
+  const insightRows = lines.map((line, index) =>
+    [
+      index < 4 ? "关键结论" : index < 8 ? "分析依据" : "下一步",
+      line.slice(0, 240),
+      index < 4 ? "P0" : "P1",
+      "来自最终回答",
+      95 - Math.min(index, 8) * 3
+    ] satisfies CellValue[]
+  );
+
+  return [
+    ["任务", prompt.slice(0, 240), "P0", "用户目标", 100] satisfies CellValue[],
+    ...planRows,
+    ...insightRows
+  ].slice(0, 16);
+}
+
+function splitMarkdownTableRow(line: string) {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("|") || !trimmed.endsWith("|")) return [];
+
+  return trimmed
+    .slice(1, -1)
+    .split("|")
+    .map((cell) => cell.replace(/<br\s*\/?>/gi, "；").replace(/\*\*/g, "").trim());
+}
+
+function isMarkdownTableSeparator(line: string) {
+  const cells = splitMarkdownTableRow(line);
+  return cells.length > 1 && cells.every((cell) => /^:?-{3,}:?$/.test(cell.replace(/\s+/g, "")));
+}
+
+function extractFirstMarkdownTable(finalAnswer: string): string[][] {
+  const lines = finalAnswer.split("\n");
+
+  for (let index = 0; index < lines.length - 1; index += 1) {
+    const header = splitMarkdownTableRow(lines[index]);
+    if (header.length < 2 || !isMarkdownTableSeparator(lines[index + 1])) continue;
+
+    const rows = [header];
+    for (let rowIndex = index + 2; rowIndex < lines.length; rowIndex += 1) {
+      const row = splitMarkdownTableRow(lines[rowIndex]);
+      if (row.length < 2) break;
+      rows.push(row);
+    }
+
+    if (rows.length > 1) return rows;
+  }
+
+  return [];
+}
+
+function rowsFromMarkdownTable(finalAnswer: string): CellValue[][] {
+  const table = extractFirstMarkdownTable(finalAnswer);
+  if (table.length < 2) return [];
+
+  return [
+    ["类型", "内容", "关键依据/指标", "建议/风险", "评分"] satisfies CellValue[],
+    ...table.slice(1, 15).map((row, index) => {
+      const cells = row.map((cell) => cell.replace(/\s+/g, " ").trim()).filter(Boolean);
+      const label = cells[0] || `结论 ${index + 1}`;
+      const content = cells[1] || cells.slice(1).join(" / ") || label;
+      const evidence = cells.slice(2, Math.max(3, cells.length - 1)).join(" / ") || "见最终回答";
+      const recommendation = cells.length > 3 ? cells[cells.length - 1] : "见最终回答";
+
+      return [
+        label.slice(0, 120),
+        content.slice(0, 240),
+        evidence.slice(0, 240),
+        recommendation.slice(0, 240),
+        Math.max(72, 98 - index * 4)
+      ] satisfies CellValue[];
+    })
+  ];
 }
 
 function htmlReport(prompt: string, finalAnswer: string) {
@@ -819,21 +944,20 @@ function chartPngArtifacts(rows: CellValue[][]): GeneratedArtifact[] {
 }
 
 export function generateDeliverables(prompt: string, plan: string[], finalAnswer: string) {
-  const planRows = Array.from({ length: 10 }, (_, index) => {
-    const step = plan[index % Math.max(plan.length, 1)] ?? "整理任务结论";
-    return [
-      `步骤 ${index + 1}`,
-      step,
-      index < 3 ? "P0" : index < 7 ? "P1" : "P2",
-      index + 1,
-      (index + 1) * 10
-    ] satisfies CellValue[];
-  });
+  const insightRows = extractInsightRows(prompt, plan, finalAnswer);
+  const tableRows = rowsFromMarkdownTable(finalAnswer);
+  const dataRows = tableRows.length > 0 ? tableRows.slice(1) : insightRows;
   const rows: CellValue[][] = [
-    ["类型", "内容", "优先级", "工作量", "评分"],
-    ...planRows,
-    ["合计", prompt.slice(0, 120), "AUTO", planRows.length, { formula: "SUM(E2:E11)", result: 550 }],
-    ["最终结论", finalAnswer.slice(0, 600), "DONE", 1, 100]
+    tableRows[0] ?? ["类型", "内容", "优先级", "来源", "评分"],
+    ...dataRows,
+    [
+      "汇总",
+      `共整理 ${dataRows.length} 条可交付结论/依据，完整内容见 Markdown、HTML 和 PDF。`,
+      "AUTO",
+      "ManusXL",
+      { formula: `AVERAGE(E2:E${dataRows.length + 1})`, result: 86 }
+    ],
+    ["最终结论", finalAnswer.slice(0, 600), "DONE", "最终回答", 100]
   ];
   const csv = rows
     .map((row) =>

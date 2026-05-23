@@ -692,9 +692,18 @@ async function runWebResearch(input: AgentToolInput): Promise<AgentToolResult> {
     return {
       toolName: "web_research",
       ok: true,
-      observation: `已完成真实网页搜索，返回 ${results.length} 条候选资料：${results
-        .map((item, index) => `${index + 1}. ${item.title}`)
-        .join("；")}`,
+      observation: [
+        `已完成真实网页搜索，返回 ${results.length} 条候选资料。`,
+        ...results.slice(0, 5).map((item, index) =>
+          [
+            `${index + 1}. ${item.title}`,
+            item.snippet ? `摘要：${item.snippet.slice(0, 180)}` : "",
+            item.url ? `来源：${item.url}` : ""
+          ]
+            .filter(Boolean)
+            .join("；")
+        )
+      ].join("\n"),
       payload: { query, results }
     };
   } catch (error) {
@@ -2766,6 +2775,7 @@ interface WideResearchSubAgentResult {
   attempts: number;
   summary: string;
   findings: string[];
+  sources?: SearchResult[];
   confidence: number;
   latencyMs: number;
   error?: string;
@@ -2879,6 +2889,74 @@ function fallbackWideResearchItems(text: string, count: number) {
   return Array.from({ length: count }, (_, index) => `${label} ${String(index + 1).padStart(3, "0")}`);
 }
 
+function knownWideResearchCandidates(text: string) {
+  if (/新能源|新能源汽车|新能源车|NEV|电动车|电动汽车|销量/.test(text)) {
+    return [
+      "比亚迪",
+      "特斯拉中国",
+      "吉利汽车",
+      "长安汽车",
+      "奇瑞汽车",
+      "上汽通用五菱",
+      "广汽埃安",
+      "理想汽车",
+      "蔚来",
+      "小鹏汽车",
+      "零跑汽车",
+      "赛力斯/问界"
+    ];
+  }
+
+  return [];
+}
+
+function inferWideResearchItemsFromSearch(results: SearchResult[], text: string, count: number) {
+  const known = knownWideResearchCandidates(text);
+  if (known.length === 0) return [];
+
+  const haystack = results
+    .map((result) => `${result.title}\n${result.snippet}`)
+    .join("\n")
+    .toLowerCase();
+  const ranked = known
+    .map((item, index) => {
+      const aliases = item.split(/[\/、]/).map((alias) => alias.trim().toLowerCase());
+      const firstHit = aliases
+        .map((alias) => haystack.indexOf(alias))
+        .filter((position) => position >= 0)
+        .sort((a, b) => a - b)[0];
+      return { item, score: firstHit === undefined ? 10000 + index : firstHit };
+    })
+    .sort((a, b) => a.score - b.score)
+    .map((entry) => entry.item);
+
+  return ranked.slice(0, count);
+}
+
+async function resolveWideResearchItems(sourceText: string, requestedCount: number) {
+  const explicitItems = extractExplicitWideResearchItems(sourceText);
+  if (explicitItems.length >= 2) {
+    return { items: explicitItems, source: "explicit_input" };
+  }
+
+  const knownItems = knownWideResearchCandidates(sourceText);
+  if (knownItems.length >= 2) {
+    try {
+      const searchResults = await webSearch(sourceText.slice(0, 180));
+      const inferredItems = inferWideResearchItemsFromSearch(searchResults, sourceText, requestedCount);
+      if (inferredItems.length >= 2) {
+        return { items: inferredItems, source: "search_guided_candidates", seedSources: searchResults };
+      }
+    } catch {
+      // Fall back to domain candidates below.
+    }
+
+    return { items: knownItems.slice(0, requestedCount), source: "domain_candidates" };
+  }
+
+  return { items: fallbackWideResearchItems(sourceText, requestedCount), source: "generated_placeholders" };
+}
+
 function hashText(value: string) {
   let hash = 0;
   for (let index = 0; index < value.length; index += 1) {
@@ -2888,7 +2966,18 @@ function hashText(value: string) {
 }
 
 function wideResearchCsv(results: WideResearchSubAgentResult[]) {
-  const headers = ["id", "item", "status", "attempts", "confidence", "latencyMs", "summary", "findings", "error"];
+  const headers = [
+    "id",
+    "item",
+    "status",
+    "attempts",
+    "confidence",
+    "latencyMs",
+    "summary",
+    "findings",
+    "sources",
+    "error"
+  ];
   return [
     headers.join(","),
     ...results.map((result) =>
@@ -2901,6 +2990,7 @@ function wideResearchCsv(results: WideResearchSubAgentResult[]) {
         result.latencyMs,
         result.summary,
         result.findings.join(" | "),
+        (result.sources ?? []).map((source) => `${source.title} ${source.url}`).join(" | "),
         result.error ?? ""
       ]
         .map((value) => csvEscape(String(value)))
@@ -2944,15 +3034,16 @@ function wideResearchMarkdown(
       : "本轮没有跳过的子 Agent。",
     "",
     "## 子 Agent 结果",
-    "| # | 对象 | 状态 | 置信度 | 摘要 |",
-    "| - | - | - | - | - |",
+    "| # | 对象 | 状态 | 置信度 | 摘要 | 主要依据 |",
+    "| - | - | - | - | - | - |",
     ...results.map((result, index) =>
       [
         String(index + 1),
         markdownTableCell(result.item),
         result.status,
         result.confidence.toFixed(2),
-        markdownTableCell(result.summary)
+        markdownTableCell(result.summary),
+        markdownTableCell((result.sources ?? []).slice(0, 2).map((source) => source.title).join("；") || "待补充")
       ].join(" | ")
     )
   ].join("\n");
@@ -2976,19 +3067,30 @@ async function runVirtualSubAgent(
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 5 + (fingerprint % 12)));
     if (!shouldFail) {
+      const sources = await webSearch(`${item} ${prompt}`.slice(0, 180)).catch(() => []);
+      const topSources = sources.slice(0, 3);
+      const sourceFindings = topSources.map((source, sourceIndex) =>
+        `${item} 依据 ${sourceIndex + 1}：${source.title}${source.snippet ? `；${source.snippet.slice(0, 180)}` : ""}`
+      );
+      const confidenceWithSources = Number(Math.min(0.96, confidence + (topSources.length > 0 ? 0.06 : 0)).toFixed(2));
+
       return {
         id,
         item,
         status: "completed",
         attempts: attempt,
-        confidence,
+        confidence: confidenceWithSources,
         latencyMs: Date.now() - startedAt,
-        summary: `${item} 已完成独立调研草稿：覆盖定位、关键指标、可比维度和下一步核验点。`,
+        summary:
+          topSources.length > 0
+            ? `${item} 已完成资料检索：提取 ${topSources.length} 条来源，可用于横向对比与事实核验。`
+            : `${item} 已完成独立调研草稿：未拿到稳定网页来源，需在最终报告中标注待复核。`,
         findings: [
-          `${item}：已抽取适合横向对比的基础维度。`,
+          ...(sourceFindings.length > 0 ? sourceFindings : [`${item}：未检索到稳定来源，建议补充权威数据。`]),
           `${item}：建议补充最新公开数据、价格/规模口径和风险来源。`,
           `${item}：可进入主 Agent 的 structured_merge 汇总。`
-        ]
+        ],
+        sources: topSources
       };
     }
   }
@@ -3051,9 +3153,8 @@ async function runSpawnSubAgents(input: AgentToolInput): Promise<AgentToolResult
     configuredPositiveNumber("MANUSXL_SUB_AGENT_CONCURRENCY", 8),
     maxSubAgents
   );
-  const explicitItems = extractExplicitWideResearchItems(sourceText);
-  const sourceItems =
-    explicitItems.length >= 2 ? explicitItems : fallbackWideResearchItems(sourceText, requestedCount);
+  const resolvedItems = await resolveWideResearchItems(sourceText, requestedCount);
+  const sourceItems = resolvedItems.items;
   const items = sourceItems.slice(0, maxSubAgents);
   const capped = sourceItems.length > items.length || requestedCount > maxSubAgents;
   const startedAt = Date.now();
@@ -3067,6 +3168,7 @@ async function runSpawnSubAgents(input: AgentToolInput): Promise<AgentToolResult
     payload: {
       tool: "spawn_sub_agents",
       phase: "start",
+      itemSource: resolvedItems.source,
       requestedCount,
       actualCount: items.length,
       concurrencyLimit,
@@ -3118,6 +3220,7 @@ async function runSpawnSubAgents(input: AgentToolInput): Promise<AgentToolResult
       mode: "local_virtual_sub_agents_mvp",
       requestedCount,
       actualCount: results.length,
+      itemSource: resolvedItems.source,
       maxSubAgents,
       concurrencyLimit,
       capped,
@@ -3169,6 +3272,7 @@ async function runSpawnSubAgents(input: AgentToolInput): Promise<AgentToolResult
         mode: "local_virtual_sub_agents_mvp",
         requestedCount,
         actualCount: results.length,
+        itemSource: resolvedItems.source,
         maxSubAgents,
         concurrencyLimit,
         capped,

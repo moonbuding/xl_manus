@@ -1,6 +1,9 @@
+import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { basename, extname, join } from "node:path";
+import { promisify } from "node:util";
 import { inflateRawSync, inflateSync } from "node:zlib";
 import { createId } from "@/lib/id";
 import { dataPath } from "@/server/data-root";
@@ -15,6 +18,8 @@ import type { UploadedFileSummary } from "@/types/agent";
 
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 const TEXT_PREVIEW_LIMIT = 4200;
+const PDF_EXTRACTION_LIMIT = 12000;
+const execFileAsync = promisify(execFile);
 
 interface ZipEntry {
   name: string;
@@ -933,6 +938,111 @@ function isPdfContentStream(stream: PdfStream) {
   return /\bBT\b/.test(stream.content) && /(?:Tj|TJ|')/.test(stream.content);
 }
 
+function findExecutable(candidates: string[]) {
+  return candidates.find((candidate) => existsSync(candidate));
+}
+
+async function runTextCommand(command: string, args: string[], timeoutMs: number) {
+  const { stdout } = await execFileAsync(command, args, {
+    timeout: timeoutMs,
+    maxBuffer: 8 * 1024 * 1024
+  });
+  return normalizeText(String(stdout), PDF_EXTRACTION_LIMIT);
+}
+
+async function readPdfWithPdftotext(filePath: string) {
+  const pdftotext = findExecutable([
+    "/opt/homebrew/bin/pdftotext",
+    "/usr/local/bin/pdftotext",
+    "/usr/bin/pdftotext"
+  ]);
+  if (!pdftotext) return "";
+
+  try {
+    return await runTextCommand(pdftotext, ["-layout", filePath, "-"], 10000);
+  } catch {
+    return "";
+  }
+}
+
+async function readPdfWithPython(filePath: string) {
+  const python = findExecutable([
+    "/opt/anaconda3/bin/python3",
+    "/opt/homebrew/bin/python3",
+    "/usr/local/bin/python3",
+    "/usr/bin/python3"
+  ]);
+  if (!python) return "";
+
+  const script = [
+    "import sys",
+    "path = sys.argv[1]",
+    "text = ''",
+    "try:",
+    "    import pdfplumber",
+    "    with pdfplumber.open(path) as pdf:",
+    "        text = '\\n'.join((page.extract_text() or '') for page in pdf.pages[:20])",
+    "except Exception:",
+    "    try:",
+    "        from pypdf import PdfReader",
+    "        reader = PdfReader(path)",
+    "        text = '\\n'.join((page.extract_text() or '') for page in reader.pages[:20])",
+    "    except Exception:",
+    "        text = ''",
+    "sys.stdout.write(text)"
+  ].join("\n");
+
+  try {
+    return await runTextCommand(python, ["-c", script, filePath], 12000);
+  } catch {
+    return "";
+  }
+}
+
+async function readPdfWithTesseract(filePath: string) {
+  const sips = findExecutable(["/usr/bin/sips"]);
+  const tesseract = findExecutable([
+    "/opt/homebrew/bin/tesseract",
+    "/usr/local/bin/tesseract",
+    "/usr/bin/tesseract"
+  ]);
+  if (!sips || !tesseract) return "";
+
+  const tempDir = await mkdtemp(join(tmpdir(), "manusxl-pdf-ocr-"));
+  const pngPath = join(tempDir, "page.png");
+  try {
+    await execFileAsync(sips, ["-s", "format", "png", filePath, "--out", pngPath], {
+      timeout: 10000,
+      maxBuffer: 1024 * 1024
+    });
+
+    for (const language of ["chi_sim+eng", "eng"]) {
+      try {
+        const text = await runTextCommand(tesseract, [pngPath, "stdout", "-l", language, "--psm", "6"], 25000);
+        if (isReadablePdfText(text)) return text;
+      } catch {
+        // Try the next installed language set.
+      }
+    }
+    return "";
+  } finally {
+    await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+async function readPdfWithExternalTools(filePath: string) {
+  const candidates = [
+    { extraction: "pdftotext", text: await readPdfWithPdftotext(filePath) },
+    { extraction: "python-pdf", text: await readPdfWithPython(filePath) }
+  ];
+  const textCandidate = candidates.find((candidate) => isReadablePdfText(candidate.text));
+  if (textCandidate) return textCandidate;
+
+  const ocrText = await readPdfWithTesseract(filePath);
+  if (isReadablePdfText(ocrText)) return { extraction: "ocr-first-page", text: ocrText };
+  return { extraction: "", text: "" };
+}
+
 function extractPdfTextFromOperators(content: string, fontMaps = new Map<string, Map<number, string>>()) {
   const pieces: string[] = [];
   let activeCMap: Map<number, string> | undefined;
@@ -984,7 +1094,7 @@ function extractPdfTextFromOperators(content: string, fontMaps = new Map<string,
   return cleanupPdfText(pieces.join(""));
 }
 
-function readPdf(buffer: Buffer) {
+async function readPdf(buffer: Buffer, filePath?: string) {
   const raw = buffer.toString("latin1");
   const streams = extractPdfStreams(buffer);
   const fontMaps = buildPdfFontMaps(raw, streams);
@@ -994,7 +1104,16 @@ function readPdf(buffer: Buffer) {
     .join("\n");
   const decodedText = extractPdfTextFromOperators(content, fontMaps);
   const fallbackText = extractPdfTextFromOperators(`${content}\n${raw}`);
-  const text = isReadablePdfText(decodedText) ? decodedText : isReadablePdfText(fallbackText) ? fallbackText : "";
+  let text = isReadablePdfText(decodedText) ? decodedText : isReadablePdfText(fallbackText) ? fallbackText : "";
+  let extraction = text ? (isReadablePdfText(decodedText) ? "to-unicode-cmap" : "operator-fallback") : "";
+
+  if (!text && filePath) {
+    const external = await readPdfWithExternalTools(filePath);
+    if (external.text) {
+      text = external.text;
+      extraction = external.extraction;
+    }
+  }
 
   return {
     text:
@@ -1003,8 +1122,10 @@ function readPdf(buffer: Buffer) {
     metadata: {
       format: "pdf",
       pages: (raw.match(/\/Type\s*\/Page\b/g) ?? []).length,
+      imageObjects: (raw.match(/\/Subtype\s*\/Image\b/g) ?? []).length,
       textReadable: Boolean(text),
-      extraction: text ? "to-unicode-cmap" : "unreadable"
+      ocrApplied: extraction === "ocr-first-page",
+      extraction: extraction || "unreadable"
     }
   };
 }
@@ -1059,7 +1180,7 @@ export async function analyzeStoredFile(input: {
       columns: rows[0]?.length ?? 0
     };
   } else if (extension === ".pdf" || input.mimeType === "application/pdf") {
-    const parsed = readPdf(buffer);
+    const parsed = await readPdf(buffer, input.storedPath);
     text = parsed.text;
     metadata = parsed.metadata;
   } else if (

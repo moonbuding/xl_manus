@@ -121,9 +121,9 @@ app.whenReady().then(() => {
     return status;
   });
   ipcMain.handle("desktop:upload-file", async () => {
-    const selected = await dialog.showOpenDialog(mainWindow ?? undefined, {
-      properties: ["openFile"]
-    });
+    const selected = mainWindow
+      ? await dialog.showOpenDialog(mainWindow, { properties: ["openFile"] })
+      : await dialog.showOpenDialog({ properties: ["openFile"] });
     if (selected.canceled || !selected.filePaths[0]) return desktopClient.status();
     const status = await desktopClient.uploadLocalFile(selected.filePaths[0]);
     mainWindow?.webContents.send("desktop:status", status);
@@ -146,8 +146,7 @@ app.whenReady().then(() => {
   startHeartbeatLoop();
 });
 
-app.on("window-all-closed", (event) => {
-  event.preventDefault();
+app.on("window-all-closed", () => {
   mainWindow?.hide();
 });
 
