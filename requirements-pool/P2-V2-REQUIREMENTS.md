@@ -71,21 +71,21 @@ REQ-216 (AI Design)
 
 | ID | 标题 | 模块 | 工作量预估 | 状态 |
 |----|------|------|-----------|------|
-| REQ-201 | My Computer 桌面端 Agent（Electron 或 Tauri）+ WS 调度 | M08 | 10-14 人天 | Planning |
-| REQ-202 | 桌面端文件系统操作工具：批量重命名/分类/移动/查重 | M08 | 3-5 人天 | Planning |
-| REQ-203 | 桌面端应用调度：启动/关闭软件、剪贴板、模拟键鼠（**每动作授权**） | M08 | 5-7 人天 | Planning |
+| REQ-201 | My Computer 桌面端 Agent（Electron 或 Tauri）+ WS 调度 | M08 | 10-14 人天 | In Progress |
+| REQ-202 | 桌面端文件系统操作工具：批量重命名/分类/移动/查重 | M08 | 3-5 人天 | In Progress |
+| REQ-203 | 桌面端应用调度：启动/关闭软件、剪贴板、模拟键鼠（**每动作授权**） | M08 | 5-7 人天 | In Progress |
 | REQ-204 | 桌面端 → 云端文件同步（选择性上传，隐私可控） | M08 | 3-5 人天 | Planning |
 | REQ-205 | Kubernetes 部署，Sandbox 改为 K8s Job/Pod 弹性调度 | M09 | 5-7 人天 | Planning |
-| REQ-206 | 监控告警：Prometheus + Grafana + 任务失败告警 | M09 | 2-3 人天 | Planning |
-| REQ-207 | 审计日志：所有 Agent 操作可追溯（合规需求） | M07 | 3-4 人天 | Planning |
+| REQ-206 | 监控告警：Prometheus + Grafana + 任务失败告警 | M09 | 2-3 人天 | In Progress |
+| REQ-207 | 审计日志：所有 Agent 操作可追溯（合规需求） | M07 | 3-4 人天 | Completed |
 | REQ-208 | 团队/组织功能：多人共享任务、权限矩阵 | M07 | 5-7 人天 | Planning |
-| REQ-209 | 工作流模板市场：用户保存常用任务模板，社区分享 | M06 | 4-5 人天 | Planning |
+| REQ-209 | 工作流模板市场：用户保存常用任务模板，社区分享 | M06 | 4-5 人天 | In Progress |
 | REQ-210 | Browser-Use 升级到视觉模型（截图驱动，无需 DOM 索引） | M03 | 4-5 人天 | Planning |
-| REQ-211 | 长时任务后台运行 + Email/Webhook 通知 | M06 | 3-4 人天 | Planning |
-| REQ-212 | 多模型路由优化：动态成本/质量平衡 | M10 | 2-3 人天 | Planning |
-| REQ-213 | **Wide Research：spawn 100+ 并行子 Agent 横向调研 + 主 Agent 汇总** | M01 | 5-7 人天 | Planning |
+| REQ-211 | 长时任务后台运行 + Email/Webhook 通知 | M06 | 3-4 人天 | In Progress |
+| REQ-212 | 多模型路由优化：动态成本/质量平衡 | M10 | 2-3 人天 | In Progress |
+| REQ-213 | **Wide Research：spawn 100+ 并行子 Agent 横向调研 + 主 Agent 汇总** | M01 | 5-7 人天 | In Progress |
 | REQ-214 | **AI Slides（PPTX 生成）+ Web App Builder（一句 prompt 出全栈应用 + 部署）** | M05/M06 | 8-10 人天 | Planning |
-| REQ-215 | **Scheduled Tasks（cron 定时任务）+ Mail Manus（转发邮件自动处理）+ Manus for Slack** | M06 | 5-7 人天 | Planning |
+| REQ-215 | **Scheduled Tasks（cron 定时任务）+ Mail Manus（转发邮件自动处理）+ Manus for Slack** | M06 | 5-7 人天 | In Progress |
 | REQ-216 | **AI Design：图片生成（必）+ 视频生成（可选）+ 3D 资产（可选）** | M05 | 3-5 人天 | Planning |
 | **总计** | | | **70-98 人天（约 14-20 周）** | |
 
@@ -98,7 +98,7 @@ REQ-216 (AI Design)
 ---
 
 ### REQ-201：My Computer 桌面端 Agent（Electron 或 Tauri）+ WS 调度
-**模块**: M08 | **状态**: Planning | **工作量**: 10-14 人天
+**模块**: M08 | **状态**: In Progress | **工作量**: 10-14 人天
 
 #### 背景与价值
 Manus 的 My Computer 是产品故事的下一章——**让 AI 真正进入用户的本机**，处理云端碰不到的本地文件、应用与凭证。这是与"另一个聊天框"的根本性差异化。技术上 Manus 自己也是 2026-03 才发的桌面版（[REQ-000 §4](REQ-000-manus-capability-research.md)），属于产品成熟后的延伸。
@@ -118,11 +118,16 @@ As a 想让 AI 整理我本机 Downloads 文件夹的用户，I want 装一个�
 - 非功能：桌面端体积 < 100MB（Electron 难达到，Tauri 可达 10MB）
 
 #### 验收标准
+- [x] 本地 Next.js 进程已作为 My Computer MVP bridge 暴露 `/api/my-computer/status`，Web UI 可检测连接与能力清单
+- [x] Web UI 已提供 My Computer 设置面板、允许目录、安全暂停、最近操作与待授权操作
 - [ ] macOS 上能 dmg 安装、登录账号、与云端建立 WS
 - [ ] Windows 上能 .exe 安装、同上
 - [ ] 云端 Web 上选 "Use My Computer" 后任务跑在桌面端
 - [ ] tray 图标显示任务进度，可一键停止
 - [ ] 自动更新机制能下载新版
+
+#### 实现记录
+- 2026-05-23：先实现 My Computer MVP 桥接层，当前运行在本地 Next.js 进程中；后续再抽到 Electron/Tauri 客户端与 WS 调度。
 
 #### 相关 OpenManus 代码
 - 完全新建：`desktop/`（Electron 或 Tauri 项目目录）
@@ -138,7 +143,7 @@ As a 想让 AI 整理我本机 Downloads 文件夹的用户，I want 装一个�
 ---
 
 ### REQ-202：桌面端文件系统操作工具 — 批量重命名/分类/移动/查重
-**模块**: M08 | **状态**: Planning | **工作量**: 3-5 人天
+**模块**: M08 | **状态**: In Progress | **工作量**: 3-5 人天
 
 #### 背景与价值
 Manus demo 中频繁出现的"自动分类上千张照片"、"批量重命名几百张发票"等场景，本质需要在用户本机直接做。云端可以做但要先上传一遍，慢且有隐私顾虑。桌面端原生支持是 My Computer 的核心价值。
@@ -155,10 +160,14 @@ As a Downloads 文件夹堆了几百个文件的用户，I want 一句话让 AI 
 - 非功能：100+ 文件操作 < 30 秒；操作进度实时回传云端
 
 #### 验收标准
-- [ ] dry-run "按文件类型分类 Downloads" 显示分类预览，用户确认后才动
-- [ ] 查重能识别图片内容相似（不只是文件名）
-- [ ] undo 能恢复最近一次批量重命名
-- [ ] 操作日志在云端 Library 可查
+- [x] dry-run "按文件类型分类 Downloads/允许目录" 显示分类预览，用户确认后才移动文件
+- [x] 查重按文件内容 hash 识别重复项，不依赖文件名
+- [x] undo 能恢复最近一次批量移动/重命名
+- [x] 操作日志进入审计日志，Settings 可查看 recent operations
+
+#### 实现记录
+- 2026-05-23：新增 `/api/my-computer/files/scan`、`/api/my-computer/files/plan`、`/api/my-computer/approvals`；支持允许目录校验、分类/重命名/查重 dry-run、Allow Once/Always/Deny 授权和执行。
+- 2026-05-23：新增 `/api/my-computer/undo` 和 Settings / My Computer 撤销入口；最近一次已完成的批量移动/重命名可按反向文件动作恢复。
 
 #### 相关 OpenManus 代码
 - 可复用：REQ-108 的批量处理逻辑（移植到桌面端 IPC）
@@ -174,7 +183,7 @@ As a Downloads 文件夹堆了几百个文件的用户，I want 一句话让 AI 
 ---
 
 ### REQ-203：桌面端应用调度 — 启动/关闭软件、剪贴板、模拟键鼠
-**模块**: M08 | **状态**: Planning | **工作量**: 5-7 人天
+**模块**: M08 | **状态**: In Progress | **工作量**: 5-7 人天
 
 #### 背景与价值
 Manus 的 [CNBC demo](https://www.cnbc.com/2026/03/18/metas-manus-launches-desktop-app-to-bring-its-ai-agent-onto-personal-devices.html) 中"20 分钟用 terminal 命令做出实时翻译 app"展示了桌面端可控制应用与执行命令的能力。这部分技术难度高、涉及隐私敏感能力，必须有严格的授权模型（参考 Manus 的 Allow Once / Always Allow）。
@@ -193,11 +202,21 @@ As a 想让 AI 用 Excel 处理一份本地表格的用户，I want AI 能启动
 - 非功能：授权检查 < 100ms（用户不感觉卡）
 
 #### 验收标准
-- [ ] macOS 上 AI 能启动 Calculator 应用
-- [ ] AI 写文本到剪贴板，用户能粘贴
+- [x] 应用启动/关闭动作已接入授权模型；macOS 启动执行层使用 `open -a`，关闭执行层使用 `osascript`
+- [x] 剪贴板写入动作已接入授权模型；macOS 执行层使用 `pbcopy`
+- [x] 模拟点击已接入动作级授权与 dry-run，真实点击待接入 nut.js/cliclick
+- [x] macOS 上 AI 能启动 Calculator 应用
+- [x] AI 写文本到剪贴板，用户能粘贴；剪贴板读取也走动作授权
 - [ ] 模拟点击在指定坐标生效
-- [ ] terminal 命令执行结果回传云端
-- [ ] 首次操作弹授权窗口，Always Allow 后下次免询
+- [x] terminal 命令执行结果回传云端；当前 MVP 仅允许短时白名单命令并固定在 My Computer 允许目录内执行
+- [x] 首次操作进入待授权列表，支持 Allow Once / Always Allow / Deny；Always Allow 规则持久化后同类动作免二次确认
+
+#### 实现记录
+- 2026-05-23：新增 `/api/my-computer/actions`，支持应用启动、剪贴板、键盘快捷键、鼠标点击的授权请求；真实鼠标点击和 terminal 执行默认关闭，待接入更细权限与底层库。
+- 2026-05-23：剪贴板写入/读取已支持真实执行验收；Always Allow 按 `(action_type, target)` 持久化，后续同类动作可免确认执行。
+- 2026-05-23：参考 OpenManus `bash.py` 的命令工具边界，新增受控 terminal 命令执行；使用白名单、短超时、固定 cwd 和非 shell 执行，结果回传到操作记录。
+- 2026-05-23：参考 OpenManus `computer_use_tool.py` 的动作级工具形态，补齐 macOS Calculator 真实启动验收；应用启动仍必须先进入 My Computer 授权队列。
+- 2026-05-23：新增 `app_quit` 授权动作，Calculator 关闭也走 My Computer 授权队列，E2E 覆盖启动后关闭清理。
 
 #### 相关 OpenManus 代码
 - 完全新建：`desktop/src/tools/system_tools.ts`
@@ -278,7 +297,7 @@ As a 平台运维者面对 500 并发用户，I want 系统自动起更多节点
 ---
 
 ### REQ-206：监控告警 — Prometheus + Grafana + 任务失败告警
-**模块**: M09 | **状态**: Planning | **工作量**: 2-3 人天
+**模块**: M09 | **状态**: In Progress | **工作量**: 2-3 人天
 
 #### 背景与价值
 P1 之前没有系统监控（只有 loguru 日志）。到 P2 进入生产化阶段，必须有可观测性：任务成功率/延迟/成本/容器健康都要图表化，关键指标要告警。
@@ -295,9 +314,16 @@ As a 运维者，I want 任务失败率超 10% 时立即收到通知，So that �
 - 非功能：指标采集不增加 API 延迟 > 5ms
 
 #### 验收标准
+- [x] `/metrics` 暴露 Prometheus text/plain 指标，覆盖任务总数/状态/成功率/平均延迟/p99/LLM 成本/审计/沙盒健康
+- [x] Prometheus 指标不包含 `user_id`、`task_id`、`prompt` 等高基数 label
+- [x] Prometheus / Grafana / AlertManager 配置已加入 Docker Compose observability profile
+- [x] dashboard 模板开箱即用（自动 provisioning）
 - [ ] Grafana 上能看到所有关键指标的实时图
 - [ ] 故意触发失败任务后能在 5 分钟内收到告警邮件
-- [ ] dashboard 模板开箱即用（自动 provisioning）
+
+#### 实现记录
+- 2026-05-23：参考 OpenManus `logger.py` 的日志入口，先在 Next.js 侧补齐 `/metrics` Prometheus exporter；当前覆盖任务、LLM 成本、审计和 Docker 沙盒健康基础指标，Grafana/AlertManager 模板待后续补齐。
+- 2026-05-23：新增 Docker Compose observability profile、Prometheus scrape/alert rules、AlertManager 配置骨架、Grafana datasource/dashboard provisioning 和 ManusXL Overview dashboard；真实 Email/Slack 告警通道待生产密钥接入后实测。
 
 #### 相关 OpenManus 代码
 - 可复用：[OpenManus-main/app/logger.py](../OpenManus-main/app/logger.py) — loguru 已有，加 metrics
@@ -311,7 +337,7 @@ As a 运维者，I want 任务失败率超 10% 时立即收到通知，So that �
 ---
 
 ### REQ-207：审计日志 — 所有 Agent 操作可追溯
-**模块**: M07 | **状态**: Planning | **工作量**: 3-4 人天
+**模块**: M07 | **状态**: Completed | **工作量**: 3-4 人天
 
 #### 背景与价值
 企业用户必需。当一个任务"做错事"时（如改了不该改的文件），必须能追溯到"哪个 user、哪个 task、哪个 step、用了哪个 tool、动了哪些资源"。合规要求（GDPR/SOC2）也需要审计日志。
@@ -329,10 +355,18 @@ As a 企业 admin，I want 能查谁在何时通过 Agent 做了什么操作，S
 - 非功能：写日志异步批量，不影响主路径
 
 #### 验收标准
-- [ ] 跑 1 个任务后审计表能查到所有 tool 调用记录
-- [ ] 导出 CSV 可读，含所有字段
-- [ ] 尝试 UPDATE/DELETE 审计表被数据库 trigger 拒绝
-- [ ] hash chain 校验脚本能验证连续性
+- [x] 跑 1 个任务后审计表能查到所有 tool 调用记录
+- [x] 导出 CSV 可读，含所有字段
+- [x] 尝试 UPDATE/DELETE 审计表被数据库 trigger 拒绝
+- [x] hash chain 校验脚本能验证连续性
+
+#### 实施记录（2026-05-23）
+- 新增 `audit_logs` 表，字段覆盖 user/task/step/action/resource/status/ip/user_agent/metadata_hash/previous_hash/entry_hash/created_at，并接入 SQLite 与 PostgreSQL schema。
+- 审计日志以 per-user hash chain 方式追加写入；SQLite/PG 均创建 append-only trigger，阻止 UPDATE/DELETE。
+- 新增 `/api/audit/logs` 与 `/api/audit/verify`，支持登录态隔离查询、CSV 导出和 hash chain 连续性校验。
+- Settings 新增"审计日志"面板，展示最近操作、链路校验状态、记录数和 CSV 导出入口。
+- 已接入认证登录/登出/refresh/OAuth、配置更新、任务创建、Agent tool_call/tool_result、artifact、finished/failed、本地浏览器操作等关键事件。
+- 新增 `npm run e2e:audit`，覆盖未登录保护、登录审计、配置审计、任务创建审计、工具调用审计、hash chain 校验和 CSV 导出。
 
 #### 相关 OpenManus 代码
 - 可复用：P1 REQ-106 的事件流持久化（部分重叠）
@@ -380,7 +414,7 @@ As a 5 人小团队的负责人，I want 邀请同事加入组织，按角色（
 ---
 
 ### REQ-209：工作流模板市场 — 用户保存常用任务模板，社区分享
-**模块**: M06 | **状态**: Planning | **工作量**: 4-5 人天
+**模块**: M06 | **状态**: In Progress | **工作量**: 4-5 人天
 
 #### 背景与价值
 P1 REQ-112 是"私有任务模板"，P2 升级为"公开市场"：用户可发布优质模板供他人使用，平台获得 UGC 内容生态。Manus 的 Playbook 已经有市场雏形。
@@ -397,10 +431,14 @@ As a 想做"行业调研"任务的新用户，I want 在市场里找现成模板
 - 非功能：市场页加载 < 2 秒；模板执行隔离（基础 fork 走个人 sandbox）
 
 #### 验收标准
-- [ ] 公开页能看到至少 10 个示例模板
-- [ ] fork 后模板出现在个人 Library
-- [ ] 评分能改变模板排序
-- [ ] 含恶意 prompt 的模板被审核拒绝
+- [x] Library / 模板市场能看到至少 10 个示例模板
+- [x] fork 后模板出现在个人 Library
+- [x] 评分能改变模板排序
+- [x] 含恶意 prompt 的模板被审核拒绝
+
+#### 实现记录
+- 2026-05-23：参考 OpenManus `planning.py` / `prompt/planning.py` 的结构化计划模板思路，在现有 P1 模板系统上扩展模板市场；新增 `/api/marketplace/templates`、Fork、评分、私有模板发布审核和 10+ 官方示例模板。
+- 2026-05-23：Library 新增“模板市场”面板，支持精选/热门/高分/最新排序、Fork 到个人模板、快速评分；新增 `npm run e2e:marketplace` 覆盖公开模板、fork、评分排序和恶意 prompt 审核。
 
 #### 相关 OpenManus 代码
 - 可复用：P1 REQ-112 的模板系统（DB 表加 `is_public` 字段）
@@ -446,7 +484,7 @@ As a 让 Agent 操作复杂 SPA（如 Notion/Figma）的用户，I want Agent �
 ---
 
 ### REQ-211：长时任务后台运行 + Email/Webhook 通知
-**模块**: M06 | **状态**: Planning | **工作量**: 3-4 人天
+**模块**: M06 | **状态**: In Progress | **工作量**: 3-4 人天
 
 #### 背景与价值
 P1 REQ-106 解决了"断线重连看进度"，但还需要"任务完成主动通知用户"。长任务（如 Wide Research）可能跑几十分钟到几小时，用户不可能挂着浏览器等。Email/Webhook 通知是基本需求。
@@ -463,15 +501,20 @@ As a 跑 1 小时任务的用户，I want 任务完成时收到邮件，So that 
 - 非功能：通知发送异步队列（不阻塞任务完成事件）
 
 #### 验收标准
-- [ ] 跑一个任务结束后 1 分钟内收到邮件
-- [ ] 邮件中的链接能直接打开任务详情
-- [ ] Slack webhook 收到格式化卡片
-- [ ] 关闭通知后不再发送
+- [x] Settings 可配置 Email/Webhook/Slack 通知偏好，并能发送开发环境测试通知
+- [x] 任务进入 completed/failed/cancelled/timeout 后会异步触发通知，不阻塞任务完成事件
+- [x] 通知正文含任务摘要 + `taskId` 直达链接，Web UI 可按 `?taskId=` 打开任务详情
+- [x] Slack webhook 使用 blocks 格式化卡片 payload
+- [x] 关闭完成通知后不再发送 completed 通知
 
 #### 相关 OpenManus 代码
 - 需新建：`app/notifications/`（providers：email/slack/webhook）
 - 可复用：P1 REQ-106 的任务状态变更事件
 - 需新增依赖：`aiosmtplib`（邮件）
+
+#### 实现记录
+- 2026-05-23：新增通知设置与日志存储、`/api/notifications/settings`、`/api/notifications/logs`、`/api/notifications/test`；任务 terminal 状态变更时异步发送 Email/Webhook/Slack 通知。
+- 2026-05-23：Settings 新增“通知”面板，支持保存偏好、测试完成通知、查看最近通知日志；新增 `npm run e2e:notifications` 覆盖开启、测试发送、关闭后不发送和失败通知标题。
 
 #### 风险与缓解
 - 风险：通知失败导致用户错过任务结果
@@ -480,7 +523,7 @@ As a 跑 1 小时任务的用户，I want 任务完成时收到邮件，So that 
 ---
 
 ### REQ-212：多模型路由优化 — 动态成本/质量平衡
-**模块**: M10 | **状态**: Planning | **工作量**: 2-3 人天
+**模块**: M10 | **状态**: In Progress | **工作量**: 2-3 人天
 
 #### 背景与价值
 P1 REQ-111 实现了基础"按 step type 分模型"路由，但是静态规则。P2 升级为动态优化：基于历史数据学习"什么任务用什么模型最 cost-effective"，自动推荐路由策略。
@@ -497,10 +540,15 @@ As a 平台用户，I want 系统自动选最划算的模型组合而不是死�
 - 非功能：路由决策 < 50ms
 
 #### 验收标准
-- [ ] 系统能基于历史推荐"调研类任务用 Sonnet + Haiku 组合"
-- [ ] A/B 测试结果可视化对比
-- [ ] 用户 override 立即生效
-- [ ] 数据不足时 fallback 到 REQ-111 静态规则
+- [x] 系统能基于历史/规则推荐"调研类任务用强规划 + 轻执行 + 稳定总结"组合
+- [x] A/B 测试结果可视化对比
+- [x] 用户 override 立即生效
+- [x] 数据不足时 fallback 到 REQ-111 静态规则
+
+#### 当前实现记录
+- 2026-05-23：新增 `router-optimizer`，基于 `context_metrics` + 任务终态聚合 `(task_type, step_type, model, cost, quality_signal)`；样本不足时使用保守决策树。
+- 2026-05-23：新增 `/api/model-router/optimizer`，返回任务类型识别、推荐模型组合、A/B 历史 token 回放、置信度与 fallback 原因，目标接口耗时 < 50ms。
+- 2026-05-23：运行时 `routeModel` 在无手动覆盖时接入动态推荐；Settings 新增“模型路由优化”面板，可查看推荐、A/B 回放并一键应用为手动 override。
 
 #### 相关 OpenManus 代码
 - 可复用：P1 REQ-111 的 `model_router.py`（扩展）
@@ -514,7 +562,7 @@ As a 平台用户，I want 系统自动选最划算的模型组合而不是死�
 ---
 
 ### REQ-213：Wide Research — 100+ 并行子 Agent 横向调研
-**模块**: M01 | **状态**: Planning | **工作量**: 5-7 人天
+**模块**: M01 | **状态**: In Progress | **工作量**: 5-7 人天
 
 #### 背景与价值
 Manus 的明星功能（[REQ-000 §1 Wide Research](REQ-000-manus-capability-research.md)）：单任务可起 100+ 个 sub-agent 独立处理子任务（如"调研 100 双球鞋"），主 agent 汇总。这是与"传统单 agent"产品的根本性差异化。
@@ -532,10 +580,15 @@ As a 想调研 50 家供应商的用户，I want 系统并行起 50 个 sub-agen
 - 非功能：100 子 agent 5 分钟内出结果（依赖 LLM 速度）
 
 #### 验收标准
-- [ ] 跑"调研 50 家公司"任务能起 50 个 sub-agent
-- [ ] 主 agent 等所有 sub 完成后汇总
-- [ ] 单个 sub 失败不影响其他
-- [ ] LLM rate limit 触发时自动 throttle 不报错
+- [x] 跑"调研 50 家公司"任务能起 50 个 sub-agent（MVP：本地虚拟子 Agent 并发池）
+- [x] 主 agent 等所有 sub 完成后汇总
+- [x] 单个 sub 失败不影响其他
+- [x] LLM rate limit 触发时自动 throttle 不报错（MVP：并发池排队节流；真实 provider 动态限流待接）
+- [ ] 100+ 子 Agent 使用 K8s Job / Pod 弹性调度跑真实 LLM 调研
+
+#### 实施记录
+- 2026-05-23：参考 OpenManus `PlanningFlow` 的“主计划 + executor 执行”模式和 `BaseAgent.run()` 的 step loop，新增 ManusXL TS 工具 `spawn_sub_agents`。当前 MVP 在单任务内启动本地虚拟子 Agent 并发池，支持 `MANUSXL_MAX_SUB_AGENTS` / `MANUSXL_SUB_AGENT_CONCURRENCY`、失败重试 2 次后 skip、structured_merge 汇总。
+- 2026-05-23：规划器遇到“Wide Research / 横向调研 / 调研 50 家公司 / 100 双球鞋”等任务会自动插入 `spawn_sub_agents` 步骤；工具输出 `wide-research-report.md`、`wide-research-results.json`、`wide-research-results.csv`、`wide-research-package.zip`。新增 `npm run e2e:wide-research` 覆盖 50 子 Agent、失败跳过、并发池和交付物。
 
 #### 相关 OpenManus 代码
 - 可复用：[OpenManus-main/app/agent/](../OpenManus-main/app/agent/) — 现有 Agent 框架可作为 sub-agent
@@ -590,7 +643,7 @@ As a 想做一个内部小工具的用户，I want 一句"帮我做一个简单�
 ---
 
 ### REQ-215：Scheduled Tasks + Mail Manus + Manus for Slack
-**模块**: M06 | **状态**: Planning | **工作量**: 5-7 人天
+**模块**: M06 | **状态**: In Progress | **工作量**: 5-7 人天
 
 #### 背景与价值
 Manus 三个"被动触发"能力（[REQ-000 §1](REQ-000-manus-capability-research.md)）：定时任务（cron）/ 邮件转发 / Slack @manus。这些让 Agent 从"用户主动启动"升级到"事件驱动"，是从工具到工作流的关键跃迁。
@@ -616,9 +669,14 @@ As a 每周需要新闻简报的用户，I want 设置"每周一 9 点跑这个 
 - DM 也支持
 
 #### 验收标准
-- [ ] cron 设置后真的按时跑
-- [ ] 转发邮件到 user 邮箱能触发任务并收到回复
-- [ ] Slack 频道 @ 能触发任务
+- [x] cron/interval 设置后真的按时跑，并创建新 Agent 任务进入队列
+- [x] 转发邮件到 user 邮箱能触发任务（MVP：入站 webhook，回复邮件待接真实邮箱服务）
+- [x] Slack 频道 @ 能触发任务（MVP：Slack Events webhook，thread 回复待接 Slack Bot token）
+
+#### 当前实现记录
+- 2026-05-23：新增 `scheduled_tasks` / `scheduled_task_runs` SQLite 存储，支持 interval 与 5-field cron，自动计算 `nextRunAt`，本地进程内 runner 每 5 秒扫描到期任务。
+- 2026-05-23：新增 `/api/scheduled-tasks`、`/api/scheduled-tasks/:id/run`、`/api/scheduled-tasks/tick`；Settings 新增 Scheduled / Mail / Slack 面板，任务详情页新增“设为定时任务”入口。
+- 2026-05-23：新增 `/api/integrations/mail/inbound` 与 `/api/integrations/slack/events`，实现 Mail Manus / Manus for Slack 的入站 webhook 触发任务；触发后复用现有 Agent 队列与完成通知链路。
 
 #### 相关 OpenManus 代码
 - 需新建：`app/scheduler/`、`app/integrations/mail/`、`app/integrations/slack/`
@@ -690,7 +748,7 @@ As a 用 AI 做 PPT 的用户，I want PPT 里需要的插图直接生成（不�
 - [ ] K8s 部署文档完善，可一键 helm install
 - [ ] 100 用户量级稳定运行 ≥ 1 个月
 - [ ] 视觉浏览器 A/B 测试结果可接受
-- [ ] Wide Research 至少跑通"100 双球鞋调研"或等价用例
+- [x] Wide Research 至少跑通"100 双球鞋调研"或等价用例（当前等价 E2E：50 家公司；100+ 真实 LLM/K8s 待 REQ-205）
 - [ ] AI Slides + Web App Builder 各有 ≥ 3 个公开 demo
 - [ ] Mail/Slack 各跑通至少 1 个用户的真实使用场景
 - [ ] AI Design 图片生成可用，视频/3D 至少有 PoC

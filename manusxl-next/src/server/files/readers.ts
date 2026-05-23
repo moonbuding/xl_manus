@@ -4,6 +4,12 @@ import { basename, extname, join } from "node:path";
 import { inflateRawSync, inflateSync } from "node:zlib";
 import { createId } from "@/lib/id";
 import { dataPath } from "@/server/data-root";
+import {
+  canUsePostgresRuntime,
+  checkPsqlCli,
+  requestedDatabaseProvider,
+  runPsql
+} from "@/server/db/provider";
 import { getManusDb } from "@/server/sqlite";
 import type { UploadedFileSummary } from "@/types/agent";
 
@@ -23,6 +29,17 @@ export interface UploadedFileRecord extends UploadedFileSummary {
   storedPath: string;
   createdAt: string;
 }
+
+interface UploadPersistenceAdapter {
+  provider: "sqlite" | "postgres";
+  ensureSchema: () => void;
+  save: (record: UploadedFileRecord) => void;
+  get: (fileId: string, ownerId?: string) => UploadedFileRecord | undefined;
+}
+
+const globalForUploads = globalThis as unknown as {
+  manusxlUploadStore?: UploadPersistenceAdapter;
+};
 
 function getUploadDb() {
   const db = getManusDb();
@@ -48,7 +65,7 @@ function getUploadDb() {
   return db;
 }
 
-function saveUploadRecord(record: UploadedFileRecord) {
+function saveUploadRecordSqlite(record: UploadedFileRecord) {
   getUploadDb()
     .prepare(
       `
@@ -84,7 +101,7 @@ function saveUploadRecord(record: UploadedFileRecord) {
     );
 }
 
-export function getUploadedFileRecord(fileId: string, ownerId?: string) {
+function getUploadedFileRecordSqlite(fileId: string, ownerId?: string) {
   const db = getUploadDb();
   const normalizedId = fileId.trim();
   if (!normalizedId) return undefined;
@@ -98,6 +115,140 @@ export function getUploadedFileRecord(fileId: string, ownerId?: string) {
         .get(normalizedId) as { data_json: string } | undefined);
 
   return row ? (JSON.parse(row.data_json) as UploadedFileRecord) : undefined;
+}
+
+function postgresSchemaPath() {
+  return join(process.cwd(), "db", "postgres", "0001_initial.sql");
+}
+
+function quotePostgresString(value: string) {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+function postgresValue(value: unknown, options: { json?: boolean } = {}) {
+  if (value === undefined || value === null) return "NULL";
+  if (options.json) return `${quotePostgresString(JSON.stringify(value))}::jsonb`;
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : "NULL";
+  if (typeof value === "boolean") return value ? "1" : "0";
+  return quotePostgresString(String(value));
+}
+
+function ensurePostgresSchema() {
+  const schemaPath = postgresSchemaPath();
+  if (!existsSync(schemaPath)) {
+    throw new Error(`找不到 PostgreSQL schema：${schemaPath}`);
+  }
+  runPsql(["-f", schemaPath]);
+}
+
+function uploadRecordUpsertSql(record: UploadedFileRecord) {
+  return `
+    INSERT INTO uploaded_files
+      (id, owner_id, name, mime_type, extension, size, stored_path, text_preview, summary, metadata_json, created_at, data_json)
+    VALUES (
+      ${postgresValue(record.id)},
+      ${postgresValue(record.ownerId)},
+      ${postgresValue(record.name)},
+      ${postgresValue(record.mimeType)},
+      ${postgresValue(record.extension)},
+      ${postgresValue(record.size)},
+      ${postgresValue(record.storedPath)},
+      ${postgresValue(record.textPreview)},
+      ${postgresValue(record.summary)},
+      ${postgresValue(record.metadata, { json: true })},
+      ${postgresValue(record.createdAt)},
+      ${postgresValue(record, { json: true })}
+    )
+    ON CONFLICT (id) DO UPDATE SET
+      owner_id = EXCLUDED.owner_id,
+      name = EXCLUDED.name,
+      mime_type = EXCLUDED.mime_type,
+      extension = EXCLUDED.extension,
+      size = EXCLUDED.size,
+      stored_path = EXCLUDED.stored_path,
+      text_preview = EXCLUDED.text_preview,
+      summary = EXCLUDED.summary,
+      metadata_json = EXCLUDED.metadata_json,
+      data_json = EXCLUDED.data_json;
+  `;
+}
+
+function getUploadedFileRecordPostgres(fileId: string, ownerId?: string) {
+  const normalizedId = fileId.trim();
+  if (!normalizedId) return undefined;
+
+  const ownerFilter = ownerId ? `AND owner_id = ${postgresValue(ownerId)}` : "";
+  const output = runPsql([
+    "-At",
+    "-c",
+    `
+      SELECT data_json::text
+      FROM uploaded_files
+      WHERE id = ${postgresValue(normalizedId)}
+      ${ownerFilter}
+      LIMIT 1;
+    `
+  ]);
+  const row = output.trim();
+  return row ? (JSON.parse(row) as UploadedFileRecord) : undefined;
+}
+
+function createSqliteUploadStore(): UploadPersistenceAdapter {
+  return {
+    provider: "sqlite",
+    ensureSchema: () => {
+      getUploadDb();
+    },
+    save: saveUploadRecordSqlite,
+    get: getUploadedFileRecordSqlite
+  };
+}
+
+function createPostgresUploadStore(): UploadPersistenceAdapter {
+  ensurePostgresSchema();
+  return {
+    provider: "postgres",
+    ensureSchema: ensurePostgresSchema,
+    save: (record) => {
+      runPsql(["-c", uploadRecordUpsertSql(record)]);
+    },
+    get: getUploadedFileRecordPostgres
+  };
+}
+
+function createUploadStore(): UploadPersistenceAdapter {
+  const requestedProvider = requestedDatabaseProvider();
+  if (requestedProvider === "postgres") {
+    const psql = checkPsqlCli();
+    if (!canUsePostgresRuntime(psql)) {
+      console.warn(
+        "MANUSXL_DATABASE_PROVIDER=postgres 已设置，但 DATABASE_URL 或 psql CLI 不可用，上传文件索引回退 SQLite。"
+      );
+      return createSqliteUploadStore();
+    }
+    try {
+      return createPostgresUploadStore();
+    } catch (error) {
+      console.warn(
+        `PostgreSQL 上传文件索引初始化失败，已回退 SQLite：${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+  return createSqliteUploadStore();
+}
+
+function getUploadStore() {
+  globalForUploads.manusxlUploadStore ??= createUploadStore();
+  globalForUploads.manusxlUploadStore.ensureSchema();
+  return globalForUploads.manusxlUploadStore;
+}
+
+function saveUploadRecord(record: UploadedFileRecord) {
+  getUploadStore().save(record);
+}
+
+export function getUploadedFileRecord(fileId: string, ownerId?: string) {
+  return getUploadStore().get(fileId, ownerId);
 }
 
 export function listUploadedFileRecords(ownerId: string | undefined, fileIds: string[]) {

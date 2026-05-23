@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createUser } from "@/server/auth/auth-store";
+import { sendVerificationEmail } from "@/server/auth/email";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,9 +18,25 @@ export async function POST(request: Request) {
       password: body.password ?? "",
       displayName: body.displayName
     });
+    const emailDelivery = await sendVerificationEmail({
+      email: result.user.email,
+      displayName: result.user.displayName,
+      verificationCode: result.verificationCode
+    });
+    if (!emailDelivery.ok && !emailDelivery.verificationCodeExposed) {
+      return NextResponse.json(
+        { error: emailDelivery.error ?? "验证邮件发送失败" },
+        { status: 502 }
+      );
+    }
     return NextResponse.json({
       user: result.user,
-      verificationCode: result.verificationCode
+      emailDelivery: {
+        mode: emailDelivery.mode,
+        sent: emailDelivery.sent,
+        error: emailDelivery.error
+      },
+      verificationCode: emailDelivery.verificationCodeExposed ? result.verificationCode : undefined
     });
   } catch (error) {
     return NextResponse.json(

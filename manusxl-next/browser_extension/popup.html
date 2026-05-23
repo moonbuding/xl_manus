@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ManusXL Local Browser</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <div class="logo">M</div>
+        <div>
+          <h1>ManusXL</h1>
+          <p id="statusText">未配对</p>
+        </div>
+      </header>
+
+      <section class="panel">
+        <label>
+          <span>服务地址</span>
+          <input id="serverUrl" value="http://localhost:3001" />
+        </label>
+        <label>
+          <span>配对码</span>
+          <input id="pairCode" placeholder="123-456" />
+        </label>
+        <button id="pairButton" type="button">配对扩展</button>
+      </section>
+
+      <section class="panel">
+        <div class="row">
+          <span>安全开关</span>
+          <strong id="pausedText">unknown</strong>
+        </div>
+        <div class="actions">
+          <button id="togglePauseButton" type="button">暂停操作</button>
+          <button id="refreshButton" class="secondary" type="button">刷新状态</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>待确认操作</h2>
+        <div id="approvals" class="approvals">暂无待确认操作</div>
+      </section>
+
+      <section class="panel">
+        <h2>最近操作</h2>
+        <div id="operations" class="operations">暂无操作</div>
+      </section>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

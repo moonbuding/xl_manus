@@ -1,0 +1,62 @@
+groups:
+  - name: manusxl-alerts
+    rules:
+      - alert: ManusXLTaskFailureRateHigh
+        expr: manusxl_task_failure_rate > 0.10
+        for: 5m
+        labels:
+          severity: warning
+          service: manusxl
+        annotations:
+          summary: ManusXL task failure rate is above 10%
+          description: Task failure or timeout rate has stayed above 10% for 5 minutes.
+
+      - alert: ManusXLLlmErrorRateHigh
+        expr: manusxl_llm_error_rate > 0.20
+        for: 5m
+        labels:
+          severity: warning
+          service: manusxl
+        annotations:
+          summary: ManusXL LLM fallback/error rate is above 20%
+          description: LLM fallback/error proxy rate has stayed above 20% for 5 minutes.
+
+      - alert: ManusXLSandboxDockerUnavailable
+        expr: manusxl_sandbox_docker_available == 0
+        for: 10m
+        labels:
+          severity: critical
+          service: manusxl
+        annotations:
+          summary: ManusXL Docker sandbox is unavailable
+          description: Docker sandbox health has reported unavailable for 10 minutes.
+
+      - alert: ManusXLSandboxImageUnavailable
+        expr: manusxl_sandbox_image_available == 0
+        for: 10m
+        labels:
+          severity: warning
+          service: manusxl
+        annotations:
+          summary: ManusXL sandbox image is unavailable
+          description: The configured sandbox image cannot be inspected by Docker.
+
+      - alert: ManusXLAuditChainBroken
+        expr: manusxl_audit_chain_ok == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: manusxl
+        annotations:
+          summary: ManusXL audit hash chain verification failed
+          description: The audit hash chain exporter reports a broken chain.
+
+      - alert: ManusXLTaskDurationP99High
+        expr: manusxl_task_duration_seconds_p99 > 1800
+        for: 10m
+        labels:
+          severity: warning
+          service: manusxl
+        annotations:
+          summary: ManusXL task p99 duration is above 30 minutes
+          description: Terminal task p99 duration has stayed above 30 minutes for 10 minutes.

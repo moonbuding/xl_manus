@@ -1,5 +1,13 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createId } from "@/lib/id";
+import {
+  canUsePostgresRuntime,
+  checkPsqlCli,
+  requestedDatabaseProvider,
+  runPsql
+} from "@/server/db/provider";
 import { callStdioMcpTool, listStdioMcpTools } from "@/server/mcp/mcp-client";
 import { getManusDb } from "@/server/sqlite";
 import type { CreateMcpServerRequest, McpServer } from "@/types/agent";
@@ -11,8 +19,22 @@ const allowedCommands = new Set(
 );
 
 const globalForMcp = globalThis as unknown as {
-  manusxlMcpDb?: DatabaseSync;
+  manusxlMcpStore?: McpPersistenceAdapter;
 };
+
+interface McpRow {
+  data_json: string;
+  owner_id: string | null;
+}
+
+interface McpPersistenceAdapter {
+  provider: "sqlite" | "postgres";
+  ensureSchema: () => void;
+  claimLegacy: (ownerId?: string) => void;
+  listRows: (ownerId?: string) => McpRow[];
+  persist: (server: McpServer) => void;
+  delete: (serverId: string, ownerId?: string) => boolean;
+}
 
 function openMcpDb() {
   const db = getManusDb();
@@ -35,17 +57,11 @@ function openMcpDb() {
       data_json TEXT NOT NULL
     );
   `);
-  ensureMcpSchema(db);
+  ensureSqliteMcpSchema(db);
   return db;
 }
 
-function getDb() {
-  globalForMcp.manusxlMcpDb ??= openMcpDb();
-  ensureMcpSchema(globalForMcp.manusxlMcpDb);
-  return globalForMcp.manusxlMcpDb;
-}
-
-function ensureMcpSchema(db: DatabaseSync) {
+function ensureSqliteMcpSchema(db: DatabaseSync) {
   const columns = new Set(
     (db.prepare("PRAGMA table_info(mcp_servers)").all() as Array<{ name: string }>).map(
       (column) => column.name
@@ -55,11 +71,6 @@ function ensureMcpSchema(db: DatabaseSync) {
     db.exec("ALTER TABLE mcp_servers ADD COLUMN owner_id TEXT");
   }
   db.exec("CREATE INDEX IF NOT EXISTS idx_mcp_servers_owner_id ON mcp_servers(owner_id)");
-}
-
-function claimLegacyMcpServers(ownerId?: string) {
-  if (!ownerId) return;
-  getDb().prepare("UPDATE mcp_servers SET owner_id = ? WHERE owner_id IS NULL").run(ownerId);
 }
 
 function rowToServer(row: { data_json: string; owner_id?: string | null }) {
@@ -77,7 +88,11 @@ export function enabledMcpTools(server: Pick<McpServer, "tools" | "disabledTools
 }
 
 function persistServer(server: McpServer) {
-  getDb()
+  getMcpStore().persist(server);
+}
+
+function persistServerSqlite(db: DatabaseSync, server: McpServer) {
+  db
     .prepare(
       `
       INSERT INTO mcp_servers
@@ -117,6 +132,200 @@ function persistServer(server: McpServer) {
       server.updatedAt,
       JSON.stringify(server)
     );
+}
+
+function createSqliteMcpStore(): McpPersistenceAdapter {
+  const db = openMcpDb();
+  return {
+    provider: "sqlite",
+    ensureSchema: () => ensureSqliteMcpSchema(db),
+    claimLegacy: (ownerId) => {
+      if (!ownerId) return;
+      db.prepare("UPDATE mcp_servers SET owner_id = ? WHERE owner_id IS NULL").run(ownerId);
+    },
+    listRows: (ownerId) =>
+      ownerId
+        ? (db
+            .prepare("SELECT data_json, owner_id FROM mcp_servers WHERE owner_id = ? ORDER BY datetime(updated_at) DESC")
+            .all(ownerId) as unknown as McpRow[])
+        : (db
+            .prepare("SELECT data_json, owner_id FROM mcp_servers ORDER BY datetime(updated_at) DESC")
+            .all() as unknown as McpRow[]),
+    persist: (server) => persistServerSqlite(db, server),
+    delete: (serverId, ownerId) => {
+      const result = ownerId
+        ? db.prepare("DELETE FROM mcp_servers WHERE id = ? AND owner_id = ?").run(serverId, ownerId)
+        : db.prepare("DELETE FROM mcp_servers WHERE id = ?").run(serverId);
+      return result.changes > 0;
+    }
+  };
+}
+
+function postgresSchemaPath() {
+  return join(process.cwd(), "db", "postgres", "0001_initial.sql");
+}
+
+function quotePostgresString(value: string) {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+function postgresValue(value: string | number | null | undefined, options: { json?: boolean } = {}) {
+  if (value === undefined || value === null) return "NULL";
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : "NULL";
+  return options.json ? `${quotePostgresString(value)}::jsonb` : quotePostgresString(value);
+}
+
+function ensurePostgresSchema() {
+  const schemaPath = postgresSchemaPath();
+  if (!existsSync(schemaPath)) {
+    throw new Error(`找不到 PostgreSQL schema：${schemaPath}`);
+  }
+  runPsql(["-f", schemaPath]);
+}
+
+function parseMcpRows(output: string) {
+  return output.trim()
+    ? output
+        .trim()
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as McpRow)
+    : [];
+}
+
+function selectMcpRowJson() {
+  return `
+    SELECT json_build_object(
+      'data_json', data_json::text,
+      'owner_id', owner_id
+    )::text
+    FROM mcp_servers
+  `;
+}
+
+function persistServerPostgres(server: McpServer) {
+  runPsql([
+    "-c",
+    `
+      INSERT INTO mcp_servers
+        (id, owner_id, name, type, url, command, args_json, env_json, enabled, status,
+         status_message, tools_json, created_at, updated_at, data_json)
+      VALUES (
+        ${postgresValue(server.id)},
+        ${postgresValue(server.ownerId)},
+        ${postgresValue(server.name)},
+        ${postgresValue(server.type)},
+        ${postgresValue(server.url)},
+        ${postgresValue(server.command)},
+        ${postgresValue(JSON.stringify(server.args), { json: true })},
+        ${postgresValue(JSON.stringify(server.env), { json: true })},
+        ${postgresValue(server.enabled ? 1 : 0)},
+        ${postgresValue(server.status)},
+        ${postgresValue(server.statusMessage)},
+        ${postgresValue(JSON.stringify(server.tools), { json: true })},
+        ${postgresValue(server.createdAt)},
+        ${postgresValue(server.updatedAt)},
+        ${postgresValue(JSON.stringify(server), { json: true })}
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        owner_id = EXCLUDED.owner_id,
+        name = EXCLUDED.name,
+        type = EXCLUDED.type,
+        url = EXCLUDED.url,
+        command = EXCLUDED.command,
+        args_json = EXCLUDED.args_json,
+        env_json = EXCLUDED.env_json,
+        enabled = EXCLUDED.enabled,
+        status = EXCLUDED.status,
+        status_message = EXCLUDED.status_message,
+        tools_json = EXCLUDED.tools_json,
+        updated_at = EXCLUDED.updated_at,
+        data_json = EXCLUDED.data_json;
+    `
+  ]);
+}
+
+function createPostgresMcpStore(): McpPersistenceAdapter {
+  ensurePostgresSchema();
+  return {
+    provider: "postgres",
+    ensureSchema: ensurePostgresSchema,
+    claimLegacy: (ownerId) => {
+      if (!ownerId) return;
+      runPsql([
+        "-c",
+        `
+          UPDATE mcp_servers
+          SET owner_id = ${postgresValue(ownerId)}
+          WHERE owner_id IS NULL;
+        `
+      ]);
+    },
+    listRows: (ownerId) => {
+      const where = ownerId ? `WHERE owner_id = ${postgresValue(ownerId)}` : "";
+      return parseMcpRows(
+        runPsql([
+          "-At",
+          "-c",
+          `
+            ${selectMcpRowJson()}
+            ${where}
+            ORDER BY updated_at DESC;
+          `
+        ])
+      );
+    },
+    persist: persistServerPostgres,
+    delete: (serverId, ownerId) => {
+      const where = ownerId
+        ? `id = ${postgresValue(serverId)} AND owner_id = ${postgresValue(ownerId)}`
+        : `id = ${postgresValue(serverId)}`;
+      const output = runPsql([
+        "-At",
+        "-c",
+        `
+          WITH deleted AS (
+            DELETE FROM mcp_servers
+            WHERE ${where}
+            RETURNING id
+          )
+          SELECT COUNT(*) FROM deleted;
+        `
+      ]);
+      return Number.parseInt(output.trim() || "0", 10) > 0;
+    }
+  };
+}
+
+function createMcpStore(): McpPersistenceAdapter {
+  const requestedProvider = requestedDatabaseProvider();
+  if (requestedProvider === "postgres") {
+    const psql = checkPsqlCli();
+    if (!canUsePostgresRuntime(psql)) {
+      console.warn(
+        "MANUSXL_DATABASE_PROVIDER=postgres 已设置，但 DATABASE_URL 或 psql CLI 不可用，MCP 存储回退 SQLite。"
+      );
+      return createSqliteMcpStore();
+    }
+    try {
+      return createPostgresMcpStore();
+    } catch (error) {
+      console.warn(
+        `PostgreSQL MCP 存储初始化失败，已回退 SQLite：${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+  return createSqliteMcpStore();
+}
+
+function getMcpStore() {
+  globalForMcp.manusxlMcpStore ??= createMcpStore();
+  globalForMcp.manusxlMcpStore.ensureSchema();
+  return globalForMcp.manusxlMcpStore;
+}
+
+function claimLegacyMcpServers(ownerId?: string) {
+  getMcpStore().claimLegacy(ownerId);
 }
 
 function parseArgs(value: unknown) {
@@ -186,14 +395,7 @@ function getMcpServer(serverId: string, ownerId?: string) {
 
 export function listMcpServers(ownerId?: string) {
   claimLegacyMcpServers(ownerId);
-  const rows = ownerId
-    ? (getDb()
-        .prepare("SELECT data_json, owner_id FROM mcp_servers WHERE owner_id = ? ORDER BY datetime(updated_at) DESC")
-        .all(ownerId) as Array<{ data_json: string; owner_id: string | null }>)
-    : (getDb()
-        .prepare("SELECT data_json, owner_id FROM mcp_servers ORDER BY datetime(updated_at) DESC")
-        .all() as Array<{ data_json: string; owner_id: string | null }>);
-  return rows.map(rowToServer);
+  return getMcpStore().listRows(ownerId).map(rowToServer);
 }
 
 export function listEnabledMcpServers(ownerId?: string) {
@@ -363,10 +565,5 @@ export function updateMcpServerEnabled(serverId: string, enabled: boolean, owner
 
 export function deleteMcpServer(serverId: string, ownerId?: string) {
   claimLegacyMcpServers(ownerId);
-  const result = ownerId
-    ? getDb()
-        .prepare("DELETE FROM mcp_servers WHERE id = ? AND owner_id = ?")
-        .run(serverId, ownerId)
-    : getDb().prepare("DELETE FROM mcp_servers WHERE id = ?").run(serverId);
-  return result.changes > 0;
+  return getMcpStore().delete(serverId, ownerId);
 }

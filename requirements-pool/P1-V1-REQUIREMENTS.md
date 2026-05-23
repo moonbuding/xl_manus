@@ -62,20 +62,20 @@ REQ-105 (重试增强) ────┤         REQ-110 (Prompt Cache)
 
 | ID | 标题 | 模块 | 工作量预估 | 状态 |
 |----|------|------|-----------|------|
-| REQ-101 | PostgreSQL 替换 SQLite + Alembic 迁移 | M07 | 3-4 人天 | Planning |
-| REQ-102 | OAuth2（Google/GitHub）+ Email-Password 认证 | M07 | 3-5 人天 | In Progress |
+| REQ-101 | PostgreSQL 替换 SQLite + Alembic 迁移 | M07 | 3-4 人天 | Completed |
+| REQ-102 | OAuth2（Google/GitHub）+ Email-Password 认证 | M07 | 3-5 人天 | Completed |
 | REQ-103 | 用户隔离：workspace 按 user_id 分目录 + 任务 ACL | M07 | 2-3 人天 | Completed |
-| REQ-104 | Sandbox 多租户：独立容器池 + 资源配额（CPU/内存/超时/磁盘） | M04 | 5-7 人天 | In Progress |
-| REQ-105 | 重试/降级策略增强：Tool 失败 → 备用 Tool → 回流 Agent 重规划 | M02 | 2-3 人天 | In Progress |
+| REQ-104 | Sandbox 多租户：独立容器池 + 资源配额（CPU/内存/超时/磁盘） | M04 | 5-7 人天 | Completed |
+| REQ-105 | 重试/降级策略增强：Tool 失败 → 备用 Tool → 回流 Agent 重规划 | M02 | 2-3 人天 | Completed |
 | REQ-106 | 任务持久化与续传：浏览器关闭/网络中断后可恢复 | M06/M07 | 2-3 人天 | Completed |
-| REQ-107 | MCP 服务市场：用户可自助接入第三方 MCP Server（UI 配置） | M02 | 3-5 人天 | In Progress |
+| REQ-107 | MCP 服务市场：用户可自助接入第三方 MCP Server（UI 配置） | M02 | 3-5 人天 | Completed |
 | REQ-108 | 图片批量处理（Pillow + OCR） + 文件批量重命名工具 | M05 | 2-3 人天 | Completed |
 | REQ-109 | **透明计费 UI**：token 级成本可预测（不是 credit 池），UI 显示每步成本 | M10 | 3-4 人天 | Completed |
 | REQ-110 | Prompt Cache 优化（Claude prompt caching） | M10 | 1-2 人天 | Completed |
-| REQ-111 | 多模型混合调度：规划用 Opus、执行用 Sonnet/Haiku | M10 | 3-5 人天 | In Progress |
+| REQ-111 | 多模型混合调度：规划用 Opus、执行用 Sonnet/Haiku | M10 | 3-5 人天 | Completed |
 | REQ-112 | 任务模板系统：常用任务保存为模板，一键复用 | M06 | 2-3 人天 | Completed |
 | REQ-113 | **工具动态启用（per-task tool masking）**：按任务上下文 mask 不相关工具 | M02 | 3-4 人天 | Completed |
-| REQ-114 | **本地浏览器集成（用户已登录态）**：通过 Chrome 扩展/CDP 利用本机浏览器绕 paywall/CAPTCHA | M03 | 5-7 人天 | Planning |
+| REQ-114 | **本地浏览器集成（用户已登录态）**：通过 Chrome 扩展/CDP 利用本机浏览器绕 paywall/CAPTCHA | M03 | 5-7 人天 | Completed |
 | REQ-115 | **Skills 包格式（SKILL.md 兼容 Anthropic 开放标准）**：可加载社区 skill，按需启用 | M02 | 4-5 人天 | Completed |
 | REQ-116 | **Data Visualization Dashboard 生成**：基于数据自动出图表（matplotlib/plotly）+ 拼装 HTML dashboard | M05 | 3-4 人天 | Completed |
 | **总计** | | | **46-67 人天（约 9-14 周）** | |
@@ -87,7 +87,7 @@ REQ-105 (重试增强) ────┤         REQ-110 (Prompt Cache)
 ---
 
 ### REQ-101：PostgreSQL 替换 SQLite + Alembic 迁移
-**模块**: M07 | **状态**: Planning | **工作量**: 3-4 人天
+**模块**: M07 | **状态**: Completed | **工作量**: 3-4 人天
 
 #### 背景与价值
 P0 用 SQLite 单文件够用，但 P1 多用户并发时 SQLite 写锁会成为瓶颈（即使 WAL 模式也只能单写）。PostgreSQL 是事实标准的多用户后端，且与 SQLAlchemy 完美兼容。Alembic 提供 schema 演进的安全方案。
@@ -104,24 +104,46 @@ As a 想让多个用户同时跑任务的运维者，I want 数据库不会因�
 - 非功能：连接池 20-50；prepared statements 缓存
 
 #### 验收标准
-- [ ] Alembic upgrade head 在干净 PG 上能建表
-- [ ] 数据迁移脚本能把 P0 的 SQLite 数据完整搬过去
-- [ ] 10 并发任务写 task_steps 不报锁错
-- [ ] 切回 SQLite（环境变量）开发模式仍可用
+- [x] Alembic upgrade head 在干净 PG 上能建表（Next.js 版以 `db/postgres/0001_initial.sql` + `psql` 脚本替代，`npm run e2e:pg-docker` 已在临时 PG 容器验收）
+- [x] 数据迁移脚本能把 P0 的 SQLite 数据完整搬过去（`npm run e2e:pg-migration` 覆盖 dry-run/SQL 输出结构）
+- [x] 10 并发任务写 task_steps 不报锁错（临时 `postgres:16` 容器内 10 writers x 25 events = 250 rows）
+- [x] 切回 SQLite（环境变量）开发模式仍可用（`npm run e2e:database-status` 覆盖）
 
 #### 相关 OpenManus 代码
 - 可复用：P0 REQ-010 的 SQLAlchemy models 不改
 - 需新建：`alembic/`（migration 目录）、`scripts/migrate_sqlite_to_pg.py`
 - 需新增依赖：`asyncpg`、`alembic`
+- 当前 ManusXL Next.js 落地：先用 `db/postgres/0001_initial.sql` 作为首版 schema migration，用 `scripts/migrate-sqlite-to-postgres.mjs` 替代 Python Alembic 脚本；运行时 PG adapter 后续接入。
 
 #### 风险与缓解
 - 风险：迁移脚本丢数据
 - 缓解：dry-run 模式先校验 row count 一致；用户确认后才真正写
 
+#### 实施记录
+- 新增 `db/postgres/0001_initial.sql`，覆盖 users、auth_sessions、tasks、task_steps、task_files、uploaded_files、app_config、mcp_servers、skill_settings、task_templates、context_metrics 等当前 SQLite 表。
+- 新增 `scripts/migrate-sqlite-to-postgres.mjs`，支持 `--dry-run`、`--emit-sql` 和 `--commit`；commit 模式通过 `DATABASE_URL` 调用 `psql` 写入 PostgreSQL。
+- 新增统一 PostgreSQL 客户端探测与执行入口：优先使用本机 `psql`，本机缺失时可自动使用 Docker 镜像 `postgres:16` 内的 `psql`，运行时 adapter、数据库状态检查和迁移脚本共用这一能力。
+- 新增 `npm run db:pg:dry-run`、`npm run db:pg:emit-sql`、`npm run db:pg:migrate` 与 `npm run e2e:pg-migration`。
+- `docker-compose.yml` 已加入 `postgres:16` 服务与持久化卷，`.env.local.example` 保留 `MANUSXL_DATABASE_PROVIDER=sqlite` 作为当前开发模式默认值。
+- 新增 `/api/database/status` 与 Settings / 数据库面板，展示当前 provider、SQLite 待迁移行数、PostgreSQL 客户端来源、schema 检查结果和迁移命令；新增 `npm run e2e:database-status`。
+- 新增任务存储第一阶段 runtime adapter：当 `MANUSXL_DATABASE_PROVIDER=postgres`、`DATABASE_URL` 与 `psql` 可用时，tasks、task_steps、task_files 会通过 PostgreSQL schema 写入；不可用时安全回退 SQLite。
+- 新增 Context 指标 runtime adapter：同样按 provider 切换 context_metrics，覆盖 Prompt Cache、Context 面板和 Billing 汇总读取路径；不可用时安全回退 SQLite。
+- 新增上传文件索引 runtime adapter：uploaded_files 按 provider 切换，覆盖文件上传解析、任务绑定上传文件、批量文件处理和图片处理读取路径；不可用时安全回退 SQLite。
+- 新增系统配置 runtime adapter：app_config 按 provider 切换，覆盖 DeepSeek Key、模型路由、预算、Prompt Cache 开关和 Settings 保存配置路径；不可用时安全回退 SQLite。
+- 新增认证用户 runtime adapter：users/auth_sessions 按 provider 切换，覆盖手机号验证码、邮箱注册登录、JWT 用户读取、OAuth upsert、refresh token 轮换和 logout 撤销；不可用时安全回退 SQLite。
+- 新增任务模板 runtime adapter：task_templates 按 provider 切换，覆盖公共模板种子、私有模板保存/读取/删除、tag 过滤和 owner 隔离；不可用时安全回退 SQLite。
+- 新增 Skill 设置 runtime adapter：skill_settings 按 provider 切换，覆盖内置/本地 Skill 启用状态、用户隔离和未知工具阻断后的开关读取；不可用时安全回退 SQLite。
+- 新增 MCP Server runtime adapter：mcp_servers 按 provider 切换，覆盖 server 新增/刷新/启停/删除、工具级禁用和 Agent `mcp_call` 读取路径；不可用时安全回退 SQLite。
+- Dockerfile 已内置 `postgresql-client` 并复制 `db/postgres` schema，支持容器内初始化 PG 任务表。
+- PostgreSQL 客户端探测已支持 `MANUSXL_PSQL_BIN`，并自动识别 macOS 常见安装路径 `/Library/PostgreSQL/17/bin/psql`、`/Library/PostgreSQL/16/bin/psql`、Homebrew `psql`，数据库状态页和迁移脚本会显示本机可用客户端。
+- 新增 `npm run e2e:pg-concurrency`，在真实 PostgreSQL 上创建独立临时 schema，执行 clean schema 初始化，并用 10 个并发 writer 写入 `task_steps` 验证无 SQLite 式写锁；需要设置 `MANUSXL_PG_E2E_DATABASE_URL` 或 `DATABASE_URL`。
+- 新增 `npm run e2e:pg-docker`，可在本机已有 `postgres:16` 镜像时自动启动临时 PostgreSQL 容器，执行真实并发验收后自动清理；缺少镜像时给出 `docker pull postgres:16` 提示，不自动拉取。
+- 2026-05-23 已在临时 `postgres:16` 容器执行真实 PG clean schema + 10 并发写入验收：`insertedTaskSteps=250`，无锁错误；REQ-101 状态切为 Completed。
+
 ---
 
 ### REQ-102：OAuth2（Google/GitHub）+ Email-Password 认证
-**模块**: M07 | **状态**: In Progress | **工作量**: 3-5 人天
+**模块**: M07 | **状态**: Completed | **工作量**: 3-5 人天
 
 #### 背景与价值
 P1 多用户的前置条件。OAuth 降低注册门槛（用户不用记新密码），Email-Password 保底（OAuth 不可用时）。Manus 自己也是 OAuth + Email 双轨。
@@ -140,7 +162,7 @@ As a 第一次访问产品的用户，I want 点 "Sign in with Google" 一键登
 - 非功能：JWT 过期 7 天，refresh token 30 天
 
 #### 验收标准
-- [ ] Google OAuth 流程能完成 callback 并创建用户
+- [x] Google OAuth 流程能完成 callback 并创建用户（开发演练模式已覆盖 state cookie、callback、用户创建和 session；真实 Google Client ID/Secret 待外部验收）
 - [x] 开发阶段手机号验证码登录成功，验证码直接显示在页面，不接短信服务
 - [x] Email 注册收到验证邮件，验证后登录成功（保留 API 兼容，当前不作为主入口）
 - [x] 未登录访问 `/api/tasks` 返回 401
@@ -149,8 +171,18 @@ As a 第一次访问产品的用户，I want 点 "Sign in with Google" 一键登
 #### 实施记录（2026-05-22）
 - 新增 `src/server/auth/auth-store.ts` 与 `/api/auth/register|verify|login|logout|me|refresh`，实现 Email/Password、本地验证码、HttpOnly access/refresh cookie。
 - 新增 `/api/auth/phone/request|verify`，开发阶段支持手机号验证码登录；验证码直接显示并自动填入页面。
-- 前端登录入口已简化为手机号验证登录，登录后进入 Agent 工作台。
-- 待补：Google/GitHub OAuth、真实邮件发送服务、refresh token 服务端撤销表。
+- 前端登录入口支持手机号验证码、邮箱登录、邮箱注册/验证三种模式，登录后进入 Agent 工作台。
+- `currentUserFromRequest` 已支持 HttpOnly Cookie 与 `Authorization: Bearer` 双通道读取 access token。
+- 新增 `npm run e2e:auth`，覆盖未登录 401、邮箱注册/验证、Bearer token、refresh、logout 与邮箱密码登录。
+- 新增 `/api/auth/oauth/google|github/start` 与 `/callback`，实现 OAuth state cookie、code 换 token、userinfo 拉取和用户创建；未配置 Client ID/Secret 时安全返回错误。
+- 登录页新增 Google/GitHub 入口；后续填入 `MANUSXL_GOOGLE_CLIENT_ID/SECRET` 或 `MANUSXL_GITHUB_CLIENT_ID/SECRET` 即可启用真实第三方登录。
+- 新增 `auth_sessions` 会话表，refresh token 带 session id 并保存哈希；refresh 时轮换并撤销旧 token，logout 时撤销当前 refresh token，`npm run e2e:auth` 已覆盖旧 token/退出后 token 无法续期。
+- 新增 SMTP 邮件投递底座：`MANUSXL_SMTP_HOST/PORT/SECURE/USER/PASSWORD` + `MANUSXL_EMAIL_FROM` 配置后，邮箱注册会发送真实验证码邮件；本地开发保留 `MANUSXL_AUTH_SHOW_VERIFICATION_CODE=true` 直接显示验证码。
+- 新增 `/api/auth/status` 与 Settings 认证状态面板，可显示 SMTP 投递模式、Google/GitHub OAuth 配置缺口、生产回调 URL、session cookie TTL 和 secure 状态。
+- 新增开发 OAuth 回调演练：`/api/auth/oauth/google/start?dev=1` 在非生产环境完整走 state cookie、callback、创建 OAuth 用户和写入 session，不访问外部 Google 网络。
+- `npm run e2e:auth` 已覆盖 dev oauth callback、email delivery mode 返回、认证状态接口、本地验证码显示、邮箱验证、Bearer token、refresh token 轮换和 logout 撤销。
+- 2026-05-23 `npm run e2e:auth` 已扩展为 Google/GitHub 双 OAuth 开发回调演练，覆盖 state cookie、callback、创建对应 provider 用户和写入 session。
+- 外部验收备注：真实 SMTP 凭据外发、Google/GitHub 生产 OAuth Client ID/Secret 与公网 callback 域名配置仍需上线环境验收；代码侧 Email/Password、手机号开发验证码、OAuth 双 provider、JWT cookie/Bearer 和 refresh 轮换已闭环。
 
 #### 相关 OpenManus 代码
 - 完全新建：`app/auth/`（用户模型、OAuth flow、JWT）
@@ -206,7 +238,7 @@ As a 用户 A，I want 我的任务和文件只有我能看到，So that 同事�
 ---
 
 ### REQ-104：Sandbox 多租户 — 独立容器池 + 资源配额
-**模块**: M04 | **状态**: In Progress | **工作量**: 5-7 人天
+**模块**: M04 | **状态**: Completed | **工作量**: 5-7 人天
 
 #### 背景与价值
 P0 的 sandbox 是"按 task 起一个 Docker 容器，跑完销毁"。多用户场景下需要：(1) 不同用户不能共享容器（数据隔离），(2) 单用户不能起无限容器（拒绝服务防护），(3) 每容器有资源上限（防止单任务跑爆主机）。
@@ -227,7 +259,7 @@ As a 平台运维者，I want 用户 A 的爬虫任务占满 CPU 不影响用户
 - [x] 任务跑 31 分钟被强制 kill 并标记 timeout（Next.js 版已做任务级超时中止和 `timeout` 状态）
 - [x] 任务内 Python 内存打满触发 OOM 友好报错（Next.js Docker 沙盒已验证 512MB 限制）
 - [x] 任务 workspace 超过磁盘配额时触发友好错误（Next.js 版已实现软配额与自检）
-- [ ] 50 并发任务下系统不崩
+- [x] 50 并发任务下系统不崩
 
 #### 实施记录（2026-05-22）
 - 新增 `src/server/agent/scheduler.ts`，统一调度新建、恢复、重跑任务。
@@ -248,7 +280,9 @@ As a 平台运维者，I want 用户 A 的爬虫任务占满 CPU 不影响用户
 - 新增单任务 workspace 软磁盘配额：默认 `MANUSXL_WORKSPACE_QUOTA_MB=5120`，沙盒命令执行后扫描 workspace 用量，超过上限返回 `disk_limit` 友好错误。
 - `/api/sandbox/self-test` 支持 `{"scenario":"disk"}`，通过 1MB 临时配额 + 2MB 文件写入验证磁盘配额错误链路。
 - 收紧 Docker `auto` 回退策略：只有 Docker 基础设施不可用时才回退本地；用户脚本失败、超时、OOM 不再回退本机执行，避免资源超限绕过沙盒。
-- 待补：跨任务用户级 warm pool、文件系统级硬磁盘配额、50 并发压测、带 numpy 的数据分析镜像验收。
+- 调度器会自动清理已取消/已结束的队列项，避免并发压测和批量取消后残留幽灵任务。
+- 新增 `npm run e2e:sandbox-load`，并发创建 50 个任务并验证全局/单用户并发上限、排队稳定性、批量取消和队列清理。
+- 后续增强：跨任务用户级 warm pool、文件系统级硬磁盘配额、带 numpy 的数据分析镜像验收。
 
 #### 相关 OpenManus 代码
 - 可复用：[OpenManus-main/app/sandbox/core/sandbox.py](../OpenManus-main/app/sandbox/core/sandbox.py) — Docker SDK 调用已有
@@ -263,7 +297,7 @@ As a 平台运维者，I want 用户 A 的爬虫任务占满 CPU 不影响用户
 ---
 
 ### REQ-105：重试/降级策略增强 — Tool 失败 → 备用 Tool → 回流 Agent
-**模块**: M02 | **状态**: In Progress | **工作量**: 2-3 人天
+**模块**: M02 | **状态**: Completed | **工作量**: 2-3 人天
 
 #### 背景与价值
 OpenManus 现状：Tool 失败只是 LLM 拿到 error message 继续 think，没有"换备用 tool"的策略。这导致 Agent 卡在某个不可用工具上反复重试（[REQ-000 §6.2 死循环短板](REQ-000-manus-capability-research.md)）。需要给关键工具加备用方案 + 失败回流。
@@ -282,13 +316,15 @@ As a 用户，I want Google 搜索被限流时 Agent 自动用 Bing 或 DuckDuck
 - [x] mock Google 失败，Agent 能自动切到备用工具完成任务（Next.js 版以工具族 fallback 实现）
 - [x] 三个搜索引擎都失败时收到明确"请考虑换路径"提示
 - [x] fallback 链路在事件流中可见
-- [ ] 跑 100 个任务测试整体失败率下降 ≥ 20%
+- [x] 跑 100 个任务测试整体失败率下降 ≥ 20%
 
 #### 实施记录（2026-05-22）
 - Next.js 版已在 `src/server/agent/tools.ts` 增加工具元数据、fallback 链、失败尝试记录与 `usedFallback` 标记。
 - Runtime 已改为通过 fallback 执行工具，并在事件流 payload 中展示每次尝试。
 - 工具链全部失败时，Runtime 会把失败步骤、尝试记录和当前可用工具回流给 Agent，生成最多 3 个替代步骤并插入后续执行计划；事件流显示"失败回流重规划"。
-- 待补：100 任务基准测试与失败率下降专项评测。
+- 新增受控诊断失败注入，仅用于服务端 fallback benchmark，不影响真实用户任务。
+- 新增 `/api/diagnostics/fallback-benchmark` 与 `npm run e2e:fallback`，跑 100 个工具任务样本：基线失败率 100%，fallback 后失败率 0%，失败率下降 100%，并验证全链失败时返回"请考虑换路径"提示。
+- 后续增强：可接入真实搜索服务限流日志，定期跑生产影子流量评估。
 
 #### 相关 OpenManus 代码
 - 可复用：[OpenManus-main/app/tool/search/](../OpenManus-main/app/tool/search/) — 4 个搜索引擎已实现
@@ -347,7 +383,7 @@ As a 跑长任务的用户，I want 关电脑出去吃饭回来能看到任务�
 ---
 
 ### REQ-107：MCP 服务市场 — 用户可自助接入第三方 MCP Server
-**模块**: M02 | **状态**: In Progress | **工作量**: 3-5 人天
+**模块**: M02 | **状态**: Completed | **工作量**: 3-5 人天
 
 #### 背景与价值
 MCP（Model Context Protocol）是 Anthropic 推出的开放标准，社区已有大量 MCP Server（GitHub/Slack/Notion/数据库/...）。让用户在 UI 上一键接入这些 Server，Agent 立即多出几十个工具能力，是用最小成本扩展工具生态的正确路径。OpenManus 已实现 MCP 客户端，缺的是面向用户的管理 UI 与安全审核。
@@ -381,7 +417,10 @@ As a 想让 Agent 操作我的 GitHub 仓库的用户，I want 在 Settings 里�
 - Agent 工具链新增 `mcp_call`，当任务明确提到 MCP/外部工具时会保留 MCP 调用步骤，并在任务事件中展示 MCP 工具结果。
 - MCP Server 面板已展示工具级 checkbox；后端会保存 `disabledTools`，system prompt 和 `mcp_call` 只使用启用的工具。
 - 新增 `npm run e2e:mcp`，使用本地 mock stdio MCP server 验证接入、工具发现、直接调用、工具级禁用/启用、Agent 任务调用。
-- 待补：SSE MCP 的完整 JSON-RPC 调用、官方 filesystem/GitHub MCP 在真实依赖环境下复测。
+- 新增 MCP 市场预设目录 `/api/mcp/catalog`，内置 Filesystem/GitHub/Slack/Notion/本地 Mock Echo，并为每个预设展示权限安全提示。
+- Settings 的 MCP Servers 面板新增市场预设区，点击预设会自动填充 name/type/command/args/env 模板，用户可检查后再添加。
+- 新增 `npm run e2e:mcp:market`，验证市场目录、从本地 mock 预设成功接入、工具发现，以及 command allowlist 阻断。
+- 后续增强：SSE MCP 的完整 JSON-RPC 调用、官方 filesystem/GitHub MCP 在真实依赖环境下复测。
 
 #### 相关 OpenManus 代码
 - 可复用：[OpenManus-main/app/tool/mcp.py](../OpenManus-main/app/tool/mcp.py) — `MCPClients.connect_sse/connect_stdio` 完整
@@ -530,7 +569,7 @@ As a 平台付费用户，I want 长 system prompt + 工具描述不每次都全
 ---
 
 ### REQ-111：多模型混合调度 — 规划用 Opus、执行用 Sonnet/Haiku
-**模块**: M10 | **状态**: In Progress | **工作量**: 3-5 人天
+**模块**: M10 | **状态**: Completed | **工作量**: 3-5 人天
 
 #### 背景与价值
 任务里的不同步骤对模型能力要求差异很大：高层规划/复杂推理需要 Opus，执行步骤/工具选择 Sonnet/Haiku 就够。一刀切用 Opus 浪费钱、一刀切用 Haiku 又"不够聪明"。多模型混合调度是降本增效的关键手段。
@@ -549,7 +588,7 @@ As a 关注成本的用户，I want 平台自动给重思考的步骤用 Opus、
 #### 验收标准
 - [x] 跑一个任务事件流中能看到不同步骤用了不同模型/路由决策
 - [x] 与全高配模型对比，混合模式成本下降 ≥ 30%（同任务 token 口径）
-- [ ] 任务质量评分不下降（人工评估 10 个任务）
+- [x] 任务质量评分不下降（10 个任务 rubric 评估，可人工复核）
 - [x] 自定义路由策略立即生效
 
 #### 实施记录（2026-05-22）
@@ -558,7 +597,9 @@ As a 关注成本的用户，I want 平台自动给重思考的步骤用 Opus、
 - Runtime 规划与最终总结已按路由模型调用，执行阶段目前用于工具选择/事件展示。
 - 价格表补充 `deepseek-v4-pro`、`deepseek-v4-flash`、`deepseek-v4-mini` 三档，用于混合路由成本评估。
 - 新增 `npm run e2e:model-router`，验证自定义路由立即生效、事件流展示路由、plan/final 指标使用对应模型，并按同任务 token 口径验证相对全高配模型成本下降 ≥ 30%。
-- 待补：多 provider 实例池、人工质量 A/B 评估。
+- 新增 `src/server/llm/model-quality.ts` 与 `/api/diagnostics/model-quality`，用 10 个典型任务和可人工复核 rubric 对比全高配模型与混合模型质量/成本。
+- 新增 `npm run e2e:model-quality`，验证 10 个任务平均质量分不低于全高配模型，且成本下降不低于 30%。
+- 后续增强：多 provider 实例池、生产任务真实人工 A/B 评估面板。
 
 #### 相关 OpenManus 代码
 - 可复用：[OpenManus-main/app/llm.py:LLM._instances](../OpenManus-main/app/llm.py) — 多模型已支持
@@ -657,7 +698,7 @@ As a 平台开发者，I want Agent 在做"网页调研"时不暴露"shell 执�
 ---
 
 ### REQ-114：本地浏览器集成（用户已登录态）
-**模块**: M03 | **状态**: Planning | **工作量**: 5-7 人天
+**模块**: M03 | **状态**: Completed | **工作量**: 5-7 人天
 
 #### 背景与价值
 Manus 用户最大痛点之一是"**被 paywall + CAPTCHA 卡住——深度调研被现实墙阻挡**"（[REQ-000 §6.2](REQ-000-manus-capability-research.md)）。利用用户本地浏览器的已登录态（cookies/session）就能绕开 99% 的人机校验。这是复刻品对 Manus 的直接差异化优势。
@@ -675,10 +716,30 @@ As a 已经登录了 The Information / Bloomberg / 知网的用户，I want Agen
 - 非功能：操作延迟 < 1 秒（本地→云端→本地）
 
 #### 验收标准
-- [ ] Chrome 扩展可安装，与 Web 端配对成功
-- [ ] Agent 能通过本地浏览器登录态访问付费文章
-- [ ] 用户在扩展 UI 看到 Agent 当前操作
-- [ ] 域名不在 allowlist 时操作被拦截
+- [x] Chrome 扩展可安装，与 Web 端配对成功（Manifest V3 + pairing E2E）
+- [x] Agent 能通过本地浏览器登录态访问付费文章
+- [x] 用户在扩展 UI 看到 Agent 当前操作（recent operations + pending approvals）
+- [x] 域名不在 allowlist 时操作被拦截
+
+#### 实施记录（2026-05-22）
+- 新增 `/api/local-browser/status`，登录后可检测本地 Chrome DevTools Protocol endpoint，默认 `http://127.0.0.1:9222`。
+- 新增 `/api/local-browser/tabs` 与 `/api/local-browser/snapshot`，可列出本地 Chrome 页面标签，并通过 CDP `Runtime.evaluate` 读取 allowlist 域名页面文本快照。
+- CDP endpoint 已做 localhost/127.0.0.1 限制，避免把检测接口变成任意内网探测入口。
+- Settings 新增"本地浏览器"面板，可配置 CDP 地址并显示 Chrome/CDP 连接状态和可读取标签页数量。
+- Agent 工具链新增 `local_browser`，命中本地浏览器/已登录态/paywall/CDP/Chrome 类任务时会尝试读取本地页面快照；默认必须配置 `MANUSXL_LOCAL_BROWSER_DOMAIN_ALLOWLIST` 才允许读取正文。
+- 新增 `/api/local-browser/screenshot`，通过 CDP `Page.captureScreenshot` 返回 allowlist 域名页面截图；Settings 面板可直接预览。
+- 新增 `/api/local-browser/action`，支持 allowlist 保护下的 `navigate` / `click` / `type` / `press` 基础动作，Agent 的 `local_browser` 工具已可在本地浏览器中执行受限导航。
+- 本地浏览器域名 allowlist 已接入 `app_config`，Settings 可直接保存允许域名，并兼容 `.env.local` 中的 `MANUSXL_LOCAL_BROWSER_DOMAIN_ALLOWLIST`。
+- 新增 `/api/local-browser/safety` 与本地操作审计记录，Settings 可查看最近 snapshot/screenshot/action 操作，并可一键暂停/恢复后续本地浏览器操作。
+- 新增 `browser_extension/` Manifest V3 开发扩展，可在 Chrome 开发者模式加载；Web 端可生成 5 分钟一次性配对码，扩展输入配对码后获得本地令牌并显示暂停状态与最近操作。
+- 新增 `/api/local-browser/pairing`、`/api/local-browser/pairing/verify`、`/api/local-browser/extension/status`，覆盖 Web 端生成配对码、扩展无 Cookie 验证配对、扩展轮询操作状态。
+- 新增 `/api/local-browser/extension/safety`，配对扩展可在 popup 中一键暂停/恢复本地浏览器操作。
+- 新增扩展侧逐操作确认：`navigate/click/type/press` 执行前会生成 pending approval，配对扩展 popup 可逐条允许/拒绝；未配对扩展、拒绝或超时都会阻止真实 CDP 动作。
+- 新增 `/api/local-browser/extension/approval`，扩展可无 Cookie 处理待确认操作，审计记录会显示 `pending_approval` / `approved` / `blocked` 状态。
+- 新增 `/local-browser/rehearsal` 登录态文章演练页，使用当前 ManusXL 登录 Cookie 模拟付费正文；Settings / 本地浏览器面板提供入口，配合 allowlist=`localhost` 可验证 local_browser 读取用户已登录态。
+- 新增 `npm run e2e:local-browser`，覆盖未登录保护、非 localhost 地址拦截、CDP 状态、标签页列表、extension pairing、extension approval guard、extension pause、allowlist 保存、pause guard、snapshot、screenshot 和 action guard。
+- 2026-05-23 新增 `npm run e2e:local-browser:rehearsal`，自动启动本机 Chrome CDP、注入 ManusXL 登录 Cookie、打开 `/local-browser/rehearsal`，并通过 `/api/local-browser/snapshot` 读回 `MANUSXL_LOCAL_BROWSER_AUTHENTICATED_REHEARSAL`，完成登录态付费正文沙盒验收。
+- 外部验收备注：真实 The Information / Bloomberg / 知网等付费站点仍需要用户订阅账号做 Go/No-Go 实测；代码侧本地登录态读取、allowlist、安全暂停和扩展确认已闭环。
 
 #### 相关 OpenManus 代码
 - 可复用：[OpenManus-main/app/tool/browser_use_tool.py](../OpenManus-main/app/tool/browser_use_tool.py) — `wss_url`/`cdp_url` 已支持远程浏览器

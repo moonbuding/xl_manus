@@ -21,10 +21,12 @@ ENV PORT=3000
 
 RUN addgroup -S nodejs \
   && adduser -S nextjs -G nodejs \
+  && apk add --no-cache postgresql-client \
   && mkdir -p /app/.manusxl-data \
   && chown -R nextjs:nodejs /app
 
 COPY --from=builder --chown=nextjs:nodejs /app/public ./public
+COPY --from=builder --chown=nextjs:nodejs /app/db ./db
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 

@@ -1,0 +1,33 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  group_by:
+    - alertname
+    - service
+    - severity
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  receiver: default
+  routes:
+    - matchers:
+        - severity="critical"
+      receiver: critical
+
+receivers:
+  - name: default
+  - name: critical
+
+# Production notification channels can be added here after secrets are ready:
+# receivers:
+#   - name: default
+#     email_configs:
+#       - to: ops@example.com
+#         from: manusxl@example.com
+#         smarthost: smtp.example.com:587
+#         auth_username: manusxl@example.com
+#         auth_password: replace-me
+#     slack_configs:
+#       - api_url: https://hooks.slack.com/services/replace/me
+#         channel: "#manusxl-alerts"

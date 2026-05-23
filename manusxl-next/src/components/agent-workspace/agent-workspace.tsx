@@ -1,7 +1,9 @@
 "use client";
 
+import Image from "next/image";
 import {
   Archive,
+  Bell,
   BookmarkPlus,
   Bot,
   Brain,
@@ -9,6 +11,7 @@ import {
   CircleStop,
   Clock3,
   Code2,
+  Database,
   Download,
   FileArchive,
   FileJson,
@@ -16,7 +19,9 @@ import {
   FileText,
   FileType,
   Gauge,
+  Globe,
   Home,
+  Camera,
   Loader2,
   PanelRight,
   Paperclip,
@@ -27,6 +32,7 @@ import {
   Search,
   Send,
   Settings,
+  ShieldCheck,
   Sparkles,
   SquareTerminal,
   Trash2,
@@ -40,12 +46,36 @@ import type {
   AnalyzeFileResponse,
   Artifact,
   AuthResponse,
+  AuthStatus,
   AuthUser,
+  AuditLog,
+  AuditVerifyResult,
   BillingSummary,
   ConfigResponse,
   ContextMetricsSummary,
   CreateTaskResponse,
+  DatabaseStatus,
+  LocalBrowserActionResult,
+  LocalBrowserPairingStatus,
+  LocalBrowserSafetyState,
+  LocalBrowserScreenshot,
+  LocalBrowserTab,
+  LocalBrowserStatus,
+  McpCatalogItem,
   McpServer,
+  ModelRouterOptimizerResponse,
+  MyComputerFileEntry,
+  MyComputerFilePlanMode,
+  MyComputerFilePlanResponse,
+  MyComputerFileScanResponse,
+  MyComputerOperation,
+  MyComputerOperationKind,
+  MyComputerStatus,
+  NotificationLog,
+  NotificationSettings,
+  ScheduledTask,
+  ScheduledTaskRunLog,
+  ScheduledTaskKind,
   Task,
   TaskTemplate,
   TaskStatus,
@@ -131,6 +161,16 @@ const defaultSkills: AgentSkill[] = [
     source: "builtin",
     enabled: true,
     validationStatus: "allowed"
+  },
+  {
+    id: "builtin-my-computer",
+    name: "my-computer",
+    description: "连接本机允许目录，生成文件分类、查重、重命名 dry-run，并创建应用/剪贴板/键鼠授权请求。",
+    triggers: ["My Computer", "本机", "本地文件", "Downloads", "剪贴板", "启动应用", "键鼠"],
+    toolsRequired: ["my_computer", "file_workspace"],
+    source: "builtin",
+    enabled: true,
+    validationStatus: "allowed"
   }
 ];
 
@@ -144,6 +184,8 @@ const statusText: Record<TaskStatus, string> = {
 };
 
 type NavigationView = "workspace" | "agent" | "library" | "settings";
+type AuthMode = "phone" | "email-login" | "email-register";
+type MarketplaceSort = "featured" | "popular" | "topRated" | "latest";
 
 interface SandboxStatus {
   mode: string;
@@ -241,6 +283,10 @@ function formatCny(value: number) {
   return `¥${value.toFixed(value < 0.1 ? 4 : 2)}`;
 }
 
+function basenameForUi(pathname: string) {
+  return pathname.split(/[\\/]/).filter(Boolean).pop() ?? pathname;
+}
+
 async function readJson<T>(response: Response, fallback?: T): Promise<T> {
   const text = await response.text();
   if (!text.trim()) {
@@ -254,6 +300,38 @@ function getErrorMessage(caught: unknown, fallback: string) {
   if (caught instanceof Error) return caught.message;
   if (typeof caught === "string" && caught.trim()) return caught;
   return fallback;
+}
+
+function parseDomainAllowlist(value: string) {
+  return Array.from(
+    new Set(
+      value
+        .split(/[\n,]/)
+        .map((item) => item.trim().toLowerCase())
+        .filter(Boolean)
+        .map((item) => {
+          try {
+            if (/^https?:\/\//.test(item)) return new URL(item).hostname.toLowerCase();
+          } catch {
+            return item;
+          }
+          return item;
+        })
+        .map((item) => item.replace(/^\*\./, "").replace(/^\.+/, "").replace(/\.+$/, ""))
+        .filter((item) => /^[a-z0-9-]+(\.[a-z0-9-]+)*$/i.test(item))
+    )
+  );
+}
+
+function parseFilesystemRoots(value: string) {
+  return Array.from(
+    new Set(
+      value
+        .split(/[\n,]/)
+        .map((item) => item.trim())
+        .filter(Boolean)
+    )
+  );
 }
 
 function createOptimisticTask(taskId: string, prompt: string, model: string, status: TaskStatus): Task {
@@ -384,9 +462,19 @@ export function AgentWorkspace() {
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFileSummary[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [templates, setTemplates] = useState<TaskTemplate[]>([]);
+  const [marketplaceTemplates, setMarketplaceTemplates] = useState<TaskTemplate[]>([]);
   const [skills, setSkills] = useState<AgentSkill[]>([]);
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
+  const [mcpCatalog, setMcpCatalog] = useState<McpCatalogItem[]>([]);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [auditVerify, setAuditVerify] = useState<AuditVerifyResult | null>(null);
+  const [notificationSettings, setNotificationSettings] = useState<NotificationSettings | null>(null);
+  const [notificationLogs, setNotificationLogs] = useState<NotificationLog[]>([]);
+  const [scheduledTasks, setScheduledTasks] = useState<ScheduledTask[]>([]);
+  const [scheduledLogs, setScheduledLogs] = useState<ScheduledTaskRunLog[]>([]);
+  const [scheduledMailbox, setScheduledMailbox] = useState("");
   const [authDraft, setAuthDraft] = useState({
     phone: "",
     email: "",
@@ -395,15 +483,29 @@ export function AgentWorkspace() {
     verificationCode: ""
   });
   const [authNotice, setAuthNotice] = useState<string | null>(null);
+  const [authMode, setAuthMode] = useState<AuthMode>("phone");
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [isAuthSubmitting, setIsAuthSubmitting] = useState(false);
+  const [isRefreshingAudit, setIsRefreshingAudit] = useState(false);
   const [activeTask, setActiveTask] = useState<Task | null>(null);
   const [activeNav, setActiveNav] = useState<NavigationView>("workspace");
   const [config, setConfig] = useState<ConfigResponse | null>(null);
   const [contextMetrics, setContextMetrics] = useState<ContextMetricsSummary | null>(null);
+  const [routerOptimizer, setRouterOptimizer] = useState<ModelRouterOptimizerResponse | null>(null);
   const [billingSummary, setBillingSummary] = useState<BillingSummary | null>(null);
   const [sandboxStatus, setSandboxStatus] = useState<SandboxStatus | null>(null);
   const [sandboxSelfTest, setSandboxSelfTest] = useState<SandboxSelfTestResult | null>(null);
+  const [databaseStatus, setDatabaseStatus] = useState<DatabaseStatus | null>(null);
+  const [localBrowserStatus, setLocalBrowserStatus] = useState<LocalBrowserStatus | null>(null);
+  const [localBrowserTabs, setLocalBrowserTabs] = useState<LocalBrowserTab[]>([]);
+  const [localBrowserScreenshot, setLocalBrowserScreenshot] = useState<LocalBrowserScreenshot | null>(null);
+  const [localBrowserActionResult, setLocalBrowserActionResult] = useState<LocalBrowserActionResult | null>(null);
+  const [localBrowserSafety, setLocalBrowserSafety] = useState<LocalBrowserSafetyState | null>(null);
+  const [localBrowserPairing, setLocalBrowserPairing] = useState<LocalBrowserPairingStatus | null>(null);
+  const [myComputerStatus, setMyComputerStatus] = useState<MyComputerStatus | null>(null);
+  const [myComputerScan, setMyComputerScan] = useState<MyComputerFileScanResponse | null>(null);
+  const [myComputerPlan, setMyComputerPlan] = useState<MyComputerFilePlanResponse | null>(null);
+  const [myComputerActionResult, setMyComputerActionResult] = useState<MyComputerOperation | null>(null);
   const [ocrStatus, setOcrStatus] = useState<OcrStatus | null>(null);
   const [templateRun, setTemplateRun] = useState<{
     template: TaskTemplate;
@@ -412,9 +514,11 @@ export function AgentWorkspace() {
   } | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isUploadingFile, setIsUploadingFile] = useState(false);
+  const [isForkingTemplate, setIsForkingTemplate] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [taskQuery, setTaskQuery] = useState("");
   const [templateTagFilter, setTemplateTagFilter] = useState("all");
+  const [marketplaceSort, setMarketplaceSort] = useState<MarketplaceSort>("featured");
   const [settingsDraft, setSettingsDraft] = useState({
     apiKey: "",
     model: "deepseek-v4-flash",
@@ -425,11 +529,76 @@ export function AgentWorkspace() {
     planningModel: "deepseek-v4-flash",
     executionModel: "deepseek-v4-flash",
     finalModel: "deepseek-v4-flash",
-    promptCacheEnabled: true
+    promptCacheEnabled: true,
+    localBrowserDomainAllowlist: "",
+    myComputerAllowedRoots: ""
+  });
+  const [notificationDraft, setNotificationDraft] = useState({
+    emailEnabled: false,
+    webhookEnabled: false,
+    slackEnabled: false,
+    webhookUrl: "",
+    slackWebhookUrl: "",
+    notifyOnCompleted: true,
+    notifyOnFailed: true
+  });
+  const [scheduledDraft, setScheduledDraft] = useState({
+    name: "",
+    prompt: "",
+    kind: "interval" as ScheduledTaskKind,
+    intervalMinutes: "60",
+    cronExpression: "0 9 * * 1"
   });
   const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [isApplyingRouterPolicy, setIsApplyingRouterPolicy] = useState(false);
+  const [isSavingNotifications, setIsSavingNotifications] = useState(false);
+  const [isTestingNotifications, setIsTestingNotifications] = useState(false);
+  const [isCreatingScheduledTask, setIsCreatingScheduledTask] = useState(false);
+  const [isRunningScheduledTask, setIsRunningScheduledTask] = useState(false);
   const [isUploadingSkill, setIsUploadingSkill] = useState(false);
   const [isRunningSandboxTest, setIsRunningSandboxTest] = useState(false);
+  const [isCheckingDatabase, setIsCheckingDatabase] = useState(false);
+  const [isCheckingLocalBrowser, setIsCheckingLocalBrowser] = useState(false);
+  const [isCapturingLocalBrowser, setIsCapturingLocalBrowser] = useState(false);
+  const [isRunningLocalBrowserAction, setIsRunningLocalBrowserAction] = useState(false);
+  const [isSavingLocalBrowserAllowlist, setIsSavingLocalBrowserAllowlist] = useState(false);
+  const [isTogglingLocalBrowserPause, setIsTogglingLocalBrowserPause] = useState(false);
+  const [isCreatingLocalBrowserPairing, setIsCreatingLocalBrowserPairing] = useState(false);
+  const [isCheckingMyComputer, setIsCheckingMyComputer] = useState(false);
+  const [isSavingMyComputer, setIsSavingMyComputer] = useState(false);
+  const [isScanningMyComputer, setIsScanningMyComputer] = useState(false);
+  const [isPlanningMyComputer, setIsPlanningMyComputer] = useState(false);
+  const [isApprovingMyComputer, setIsApprovingMyComputer] = useState(false);
+  const [isUndoingMyComputer, setIsUndoingMyComputer] = useState(false);
+  const [isRunningMyComputerAction, setIsRunningMyComputerAction] = useState(false);
+  const [localBrowserEndpoint, setLocalBrowserEndpoint] = useState("http://127.0.0.1:9222");
+  const [localBrowserActionDraft, setLocalBrowserActionDraft] = useState({
+    action: "navigate" as "navigate" | "click" | "type" | "press",
+    url: "",
+    x: "",
+    y: "",
+    text: "",
+    key: "Enter"
+  });
+  const [myComputerDraft, setMyComputerDraft] = useState({
+    root: "",
+    mode: "classify" as MyComputerFilePlanMode,
+    actionKind: "app_launch" as Extract<
+      MyComputerOperationKind,
+      | "app_launch"
+      | "app_quit"
+      | "clipboard_write"
+      | "clipboard_read"
+      | "keyboard_shortcut"
+      | "mouse_click"
+      | "terminal_command"
+    >,
+    actionTarget: "Calculator",
+    actionText: "来自 ManusXL 的剪贴板测试",
+    actionCommand: "pwd",
+    x: "320",
+    y: "240"
+  });
   const [isAddingMcp, setIsAddingMcp] = useState(false);
   const [mcpError, setMcpError] = useState<string | null>(null);
   const [mcpDraft, setMcpDraft] = useState({
@@ -443,6 +612,7 @@ export function AgentWorkspace() {
   const eventSourceRef = useRef<EventSource | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const skillInputRef = useRef<HTMLInputElement | null>(null);
+  const initialTaskParamRef = useRef<string | null>(null);
   const activeTaskId = activeTask?.id;
   const activeTaskStatus = activeTask?.status;
 
@@ -500,6 +670,86 @@ export function AgentWorkspace() {
     }
   }, []);
 
+  const refreshAuthStatus = useCallback(async () => {
+    try {
+      const response = await fetch("/api/auth/status", { cache: "no-store" });
+      if (!response.ok) return;
+      setAuthStatus(await readJson<AuthStatus>(response));
+    } catch {
+      setAuthStatus(null);
+    }
+  }, []);
+
+  const refreshAudit = useCallback(async () => {
+    setIsRefreshingAudit(true);
+    try {
+      const [logsResponse, verifyResponse] = await Promise.all([
+        fetch("/api/audit/logs?limit=8", { cache: "no-store" }),
+        fetch("/api/audit/verify", { cache: "no-store" })
+      ]);
+      if (logsResponse.ok) {
+        const data = await readJson<{ logs: AuditLog[] }>(logsResponse, { logs: [] });
+        setAuditLogs(data.logs);
+      }
+      if (verifyResponse.ok) {
+        setAuditVerify(await readJson<AuditVerifyResult>(verifyResponse));
+      }
+    } catch {
+      setAuditLogs([]);
+      setAuditVerify(null);
+    } finally {
+      setIsRefreshingAudit(false);
+    }
+  }, []);
+
+  const refreshNotifications = useCallback(async () => {
+    try {
+      const [settingsResponse, logsResponse] = await Promise.all([
+        fetch("/api/notifications/settings", { cache: "no-store" }),
+        fetch("/api/notifications/logs?limit=8", { cache: "no-store" })
+      ]);
+      if (settingsResponse.ok) {
+        const data = await readJson<{ settings: NotificationSettings }>(settingsResponse);
+        setNotificationSettings(data.settings);
+        setNotificationDraft({
+          emailEnabled: data.settings.emailEnabled,
+          webhookEnabled: data.settings.webhookEnabled,
+          slackEnabled: data.settings.slackEnabled,
+          webhookUrl: data.settings.webhookUrl ?? "",
+          slackWebhookUrl: data.settings.slackWebhookUrl ?? "",
+          notifyOnCompleted: data.settings.notifyOnCompleted,
+          notifyOnFailed: data.settings.notifyOnFailed
+        });
+      }
+      if (logsResponse.ok) {
+        const data = await readJson<{ logs: NotificationLog[] }>(logsResponse, { logs: [] });
+        setNotificationLogs(data.logs);
+      }
+    } catch {
+      setNotificationSettings(null);
+      setNotificationLogs([]);
+    }
+  }, []);
+
+  const refreshScheduledTasks = useCallback(async () => {
+    try {
+      const response = await fetch("/api/scheduled-tasks", { cache: "no-store" });
+      if (!response.ok) return;
+      const data = await readJson<{
+        mailbox: string;
+        tasks: ScheduledTask[];
+        logs: ScheduledTaskRunLog[];
+      }>(response, { mailbox: "", tasks: [], logs: [] });
+      setScheduledMailbox(data.mailbox);
+      setScheduledTasks(data.tasks);
+      setScheduledLogs(data.logs);
+    } catch {
+      setScheduledMailbox("");
+      setScheduledTasks([]);
+      setScheduledLogs([]);
+    }
+  }, []);
+
   const refreshContextMetrics = useCallback(async (taskId?: string) => {
     try {
       const suffix = taskId ? `?taskId=${encodeURIComponent(taskId)}` : "";
@@ -508,6 +758,17 @@ export function AgentWorkspace() {
       setContextMetrics(await readJson<ContextMetricsSummary>(response));
     } catch {
       setContextMetrics(null);
+    }
+  }, []);
+
+  const refreshRouterOptimizer = useCallback(async (nextPrompt = "") => {
+    try {
+      const suffix = nextPrompt.trim() ? `?prompt=${encodeURIComponent(nextPrompt.trim())}` : "";
+      const response = await fetch(`/api/model-router/optimizer${suffix}`, { cache: "no-store" });
+      if (!response.ok) return;
+      setRouterOptimizer(await readJson<ModelRouterOptimizerResponse>(response));
+    } catch {
+      setRouterOptimizer(null);
     }
   }, []);
 
@@ -530,6 +791,371 @@ export function AgentWorkspace() {
       setSandboxStatus(null);
     }
   }, []);
+
+  const refreshDatabaseStatus = useCallback(async (checkPostgres = false) => {
+    if (checkPostgres) setIsCheckingDatabase(true);
+    try {
+      const suffix = checkPostgres ? "?check=1" : "";
+      const response = await fetch(`/api/database/status${suffix}`, { cache: "no-store" });
+      if (!response.ok) return;
+      setDatabaseStatus(await readJson<DatabaseStatus>(response));
+    } catch {
+      setDatabaseStatus(null);
+    } finally {
+      if (checkPostgres) setIsCheckingDatabase(false);
+    }
+  }, []);
+
+  const refreshLocalBrowserStatus = useCallback(async (endpoint?: string) => {
+    setIsCheckingLocalBrowser(true);
+    try {
+      const response = await fetch("/api/local-browser/tabs", {
+        method: endpoint ? "POST" : "GET",
+        headers: endpoint ? { "Content-Type": "application/json" } : undefined,
+        body: endpoint ? JSON.stringify({ endpoint }) : undefined,
+        cache: "no-store"
+      });
+      if (!response.ok) return;
+      const data = await readJson<{ status: LocalBrowserStatus; tabs: LocalBrowserTab[] }>(response);
+      setLocalBrowserStatus(data.status);
+      setLocalBrowserTabs(data.tabs);
+      setLocalBrowserEndpoint(data.status.endpoint);
+      setLocalBrowserSafety({
+        paused: Boolean(data.status.paused),
+        recentOperations: data.status.recentOperations ?? [],
+        pendingApprovals: []
+      });
+    } catch {
+      setLocalBrowserStatus(null);
+      setLocalBrowserTabs([]);
+    } finally {
+      setIsCheckingLocalBrowser(false);
+    }
+  }, []);
+
+  const refreshLocalBrowserSafety = useCallback(async () => {
+    try {
+      const response = await fetch("/api/local-browser/safety", { cache: "no-store" });
+      if (!response.ok) return;
+      setLocalBrowserSafety(await readJson<LocalBrowserSafetyState>(response));
+    } catch {
+      setLocalBrowserSafety(null);
+    }
+  }, []);
+
+  const refreshLocalBrowserPairing = useCallback(async () => {
+    try {
+      const response = await fetch("/api/local-browser/pairing", { cache: "no-store" });
+      if (!response.ok) return;
+      setLocalBrowserPairing(await readJson<LocalBrowserPairingStatus>(response));
+    } catch {
+      setLocalBrowserPairing(null);
+    }
+  }, []);
+
+  const refreshMyComputerStatus = useCallback(async () => {
+    setIsCheckingMyComputer(true);
+    try {
+      const response = await fetch("/api/my-computer/status", { cache: "no-store" });
+      if (!response.ok) return;
+      const data = await readJson<MyComputerStatus>(response);
+      setMyComputerStatus(data);
+      setSettingsDraft((current) => ({
+        ...current,
+        myComputerAllowedRoots: data.allowedRoots.join("\n")
+      }));
+      setMyComputerDraft((current) => ({
+        ...current,
+        root: current.root || data.allowedRoots[0] || ""
+      }));
+    } catch {
+      setMyComputerStatus(null);
+    } finally {
+      setIsCheckingMyComputer(false);
+    }
+  }, []);
+
+  const createLocalBrowserPairing = useCallback(async () => {
+    setIsCreatingLocalBrowserPairing(true);
+    try {
+      const response = await fetch("/api/local-browser/pairing", { method: "POST" });
+      setLocalBrowserPairing(await readJson<LocalBrowserPairingStatus>(response));
+    } catch (caught: unknown) {
+      setError(getErrorMessage(caught, "生成本地浏览器配对码失败"));
+    } finally {
+      setIsCreatingLocalBrowserPairing(false);
+    }
+  }, []);
+
+  const captureLocalBrowserScreenshot = useCallback(async () => {
+    setIsCapturingLocalBrowser(true);
+    setLocalBrowserActionResult(null);
+    try {
+      const response = await fetch("/api/local-browser/screenshot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          endpoint: localBrowserEndpoint,
+          tabId: localBrowserTabs[0]?.id,
+          format: "jpeg",
+          quality: 70
+        })
+      });
+      const data = await readJson<LocalBrowserScreenshot>(response);
+      setLocalBrowserScreenshot(data);
+      if (!data.ok) setError(data.error ?? "本地浏览器截图失败");
+      await refreshLocalBrowserSafety();
+    } catch (caught: unknown) {
+      setError(getErrorMessage(caught, "本地浏览器截图失败"));
+    } finally {
+      setIsCapturingLocalBrowser(false);
+    }
+  }, [localBrowserEndpoint, localBrowserTabs, refreshLocalBrowserSafety]);
+
+  const runLocalBrowserControlAction = useCallback(async () => {
+    setIsRunningLocalBrowserAction(true);
+    try {
+      const body = {
+        endpoint: localBrowserEndpoint,
+        tabId: localBrowserTabs[0]?.id,
+        action: localBrowserActionDraft.action,
+        url: localBrowserActionDraft.url,
+        x: localBrowserActionDraft.x ? Number(localBrowserActionDraft.x) : undefined,
+        y: localBrowserActionDraft.y ? Number(localBrowserActionDraft.y) : undefined,
+        text: localBrowserActionDraft.text,
+        key: localBrowserActionDraft.key,
+        waitMs: 900
+      };
+      const response = await fetch("/api/local-browser/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      const data = await readJson<LocalBrowserActionResult>(response);
+      setLocalBrowserActionResult(data);
+      if (!data.ok) {
+        setError(data.error ?? "本地浏览器动作失败");
+        await refreshLocalBrowserSafety();
+        return;
+      }
+      await refreshLocalBrowserStatus(localBrowserEndpoint);
+      await refreshLocalBrowserSafety();
+    } catch (caught: unknown) {
+      setError(getErrorMessage(caught, "本地浏览器动作失败"));
+    } finally {
+      setIsRunningLocalBrowserAction(false);
+    }
+  }, [
+    localBrowserActionDraft,
+    localBrowserEndpoint,
+    localBrowserTabs,
+    refreshLocalBrowserSafety,
+    refreshLocalBrowserStatus
+  ]);
+
+  const toggleLocalBrowserPause = useCallback(async (paused: boolean) => {
+    setIsTogglingLocalBrowserPause(true);
+    try {
+      const response = await fetch("/api/local-browser/safety", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paused })
+      });
+      const data = await readJson<LocalBrowserSafetyState>(response);
+      setLocalBrowserSafety(data);
+      setLocalBrowserStatus((current) =>
+        current
+          ? {
+              ...current,
+              paused: data.paused,
+              recentOperations: data.recentOperations
+            }
+          : current
+      );
+    } catch (caught: unknown) {
+      setError(getErrorMessage(caught, "切换本地浏览器安全开关失败"));
+    } finally {
+      setIsTogglingLocalBrowserPause(false);
+    }
+  }, []);
+
+  const saveMyComputerSettings = useCallback(async (paused?: boolean) => {
+    setIsSavingMyComputer(true);
+    try {
+      const response = await fetch("/api/my-computer/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          allowedRoots: parseFilesystemRoots(settingsDraft.myComputerAllowedRoots),
+          paused
+        })
+      });
+      const data = await readJson<MyComputerStatus>(response);
+      setMyComputerStatus(data);
+      setSettingsDraft((current) => ({
+        ...current,
+        myComputerAllowedRoots: data.allowedRoots.join("\n")
+      }));
+      setMyComputerDraft((current) => ({
+        ...current,
+        root: data.allowedRoots.includes(current.root) ? current.root : data.allowedRoots[0] || current.root
+      }));
+    } catch (caught: unknown) {
+      setError(getErrorMessage(caught, "保存 My Computer 设置失败"));
+    } finally {
+      setIsSavingMyComputer(false);
+    }
+  }, [settingsDraft.myComputerAllowedRoots]);
+
+  const clearMyComputerAlwaysAllow = useCallback(async () => {
+    setIsSavingMyComputer(true);
+    try {
+      const response = await fetch("/api/my-computer/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          allowedRoots: parseFilesystemRoots(settingsDraft.myComputerAllowedRoots),
+          paused: myComputerStatus?.paused,
+          alwaysAllowRules: []
+        })
+      });
+      const data = await readJson<MyComputerStatus>(response);
+      setMyComputerStatus(data);
+    } catch (caught: unknown) {
+      setError(getErrorMessage(caught, "清空 My Computer 授权规则失败"));
+    } finally {
+      setIsSavingMyComputer(false);
+    }
+  }, [myComputerStatus, settingsDraft.myComputerAllowedRoots]);
+
+  const scanMyComputerRoot = useCallback(async () => {
+    setIsScanningMyComputer(true);
+    setMyComputerPlan(null);
+    try {
+      const response = await fetch("/api/my-computer/files/scan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          root: myComputerDraft.root,
+          maxFiles: 120,
+          maxDepth: 2
+        })
+      });
+      const data = await readJson<MyComputerFileScanResponse>(response);
+      if (!response.ok) throw new Error((data as { error?: string }).error ?? "扫描失败");
+      setMyComputerScan(data);
+      await refreshMyComputerStatus();
+    } catch (caught: unknown) {
+      setError(getErrorMessage(caught, "扫描本机目录失败"));
+    } finally {
+      setIsScanningMyComputer(false);
+    }
+  }, [myComputerDraft.root, refreshMyComputerStatus]);
+
+  const planMyComputerFiles = useCallback(async () => {
+    setIsPlanningMyComputer(true);
+    try {
+      const response = await fetch("/api/my-computer/files/plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          root: myComputerDraft.root,
+          mode: myComputerDraft.mode,
+          maxFiles: 160
+        })
+      });
+      const data = await readJson<MyComputerFilePlanResponse & { error?: string }>(response);
+      if (!response.ok) throw new Error(data.error ?? "生成文件操作预览失败");
+      setMyComputerPlan(data);
+      setMyComputerActionResult(null);
+      await refreshMyComputerStatus();
+    } catch (caught: unknown) {
+      setError(getErrorMessage(caught, "生成 My Computer 文件计划失败"));
+    } finally {
+      setIsPlanningMyComputer(false);
+    }
+  }, [myComputerDraft.mode, myComputerDraft.root, refreshMyComputerStatus]);
+
+  const approveMyComputerOperation = useCallback(async (operationId: string, decision: "allow_once" | "always" | "deny") => {
+    setIsApprovingMyComputer(true);
+    try {
+      const response = await fetch("/api/my-computer/approvals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ operationId, decision })
+      });
+      const data = await readJson<{ operation?: MyComputerOperation; error?: string }>(response);
+      if (!response.ok || !data.operation) throw new Error(data.error ?? "授权操作失败");
+      setMyComputerActionResult(data.operation);
+      setMyComputerPlan((current) =>
+        current && current.operation.id === data.operation?.id
+          ? { ...current, operation: data.operation }
+          : current
+      );
+      await refreshMyComputerStatus();
+      if (data.operation.kind.startsWith("file_")) {
+        await scanMyComputerRoot();
+      }
+    } catch (caught: unknown) {
+      setError(getErrorMessage(caught, "执行 My Computer 授权操作失败"));
+    } finally {
+      setIsApprovingMyComputer(false);
+    }
+  }, [refreshMyComputerStatus, scanMyComputerRoot]);
+
+  const runMyComputerSystemAction = useCallback(async () => {
+    setIsRunningMyComputerAction(true);
+    try {
+      const response = await fetch("/api/my-computer/actions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: myComputerDraft.actionKind,
+          target:
+            myComputerDraft.actionKind === "clipboard_write" || myComputerDraft.actionKind === "clipboard_read"
+              ? undefined
+              : myComputerDraft.actionKind === "mouse_click"
+                ? "screen"
+                : myComputerDraft.actionTarget,
+          text: myComputerDraft.actionKind === "clipboard_write" ? myComputerDraft.actionText : undefined,
+          command: myComputerDraft.actionKind === "terminal_command" ? myComputerDraft.actionCommand : undefined,
+          x: myComputerDraft.actionKind === "mouse_click" ? Number(myComputerDraft.x) : undefined,
+          y: myComputerDraft.actionKind === "mouse_click" ? Number(myComputerDraft.y) : undefined,
+          dryRun: true
+        })
+      });
+      const data = await readJson<{ operation?: MyComputerOperation; error?: string }>(response);
+      if (!response.ok || !data.operation) throw new Error(data.error ?? "创建本机动作失败");
+      setMyComputerActionResult(data.operation);
+      await refreshMyComputerStatus();
+    } catch (caught: unknown) {
+      setError(getErrorMessage(caught, "创建 My Computer 动作失败"));
+    } finally {
+      setIsRunningMyComputerAction(false);
+    }
+  }, [myComputerDraft, refreshMyComputerStatus]);
+
+  const undoMyComputerLastFileOperation = useCallback(async () => {
+    setIsUndoingMyComputer(true);
+    try {
+      const response = await fetch("/api/my-computer/undo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          operationId: myComputerPlan?.operation.status === "completed" ? myComputerPlan.operation.id : undefined
+        })
+      });
+      const data = await readJson<{ operation?: MyComputerOperation; error?: string }>(response);
+      if (!response.ok || !data.operation) throw new Error(data.error ?? "撤销 My Computer 操作失败");
+      setMyComputerActionResult(data.operation);
+      await refreshMyComputerStatus();
+      await scanMyComputerRoot();
+    } catch (caught: unknown) {
+      setError(getErrorMessage(caught, "撤销 My Computer 文件操作失败"));
+    } finally {
+      setIsUndoingMyComputer(false);
+    }
+  }, [myComputerPlan, refreshMyComputerStatus, scanMyComputerRoot]);
 
   const refreshOcrStatus = useCallback(async () => {
     try {
@@ -555,9 +1181,9 @@ export function AgentWorkspace() {
       setTasks(data.tasks);
       setActiveTask((current) => {
         if (current) {
-          return data.tasks.find((task) => task.id === current.id) ?? current;
+          return data.tasks.find((task) => task.id === current.id) ?? null;
         }
-        return data.tasks[0] ?? null;
+        return null;
       });
     } catch (caught) {
       setError(getErrorMessage(caught, "刷新任务失败"));
@@ -572,6 +1198,17 @@ export function AgentWorkspace() {
       setTemplates(data.templates);
     } catch {
       setTemplates([]);
+    }
+  }, []);
+
+  const refreshMarketplaceTemplates = useCallback(async (sort: MarketplaceSort = "featured") => {
+    try {
+      const response = await fetch(`/api/marketplace/templates?sort=${sort}`, { cache: "no-store" });
+      if (!response.ok) return;
+      const data = await readJson<{ templates: TaskTemplate[] }>(response, { templates: [] });
+      setMarketplaceTemplates(data.templates);
+    } catch {
+      setMarketplaceTemplates([]);
     }
   }, []);
 
@@ -600,6 +1237,17 @@ export function AgentWorkspace() {
     }
   }, []);
 
+  const refreshMcpCatalog = useCallback(async () => {
+    try {
+      const response = await fetch("/api/mcp/catalog", { cache: "no-store" });
+      if (!response.ok) return;
+      const data = await readJson<{ catalog: McpCatalogItem[] }>(response, { catalog: [] });
+      setMcpCatalog(data.catalog);
+    } catch {
+      setMcpCatalog([]);
+    }
+  }, []);
+
   const connectStream = useCallback(
     (taskId: string) => {
       closeStream();
@@ -617,6 +1265,7 @@ export function AgentWorkspace() {
           source.close();
           eventSourceRef.current = null;
           void refreshTasks();
+          void refreshRouterOptimizer();
         }
       });
 
@@ -625,7 +1274,23 @@ export function AgentWorkspace() {
         eventSourceRef.current = null;
       };
     },
-    [closeStream, refreshTasks]
+    [closeStream, refreshRouterOptimizer, refreshTasks]
+  );
+
+  const selectTask = useCallback(
+    async (taskId: string) => {
+      const response = await fetch(`/api/tasks/${taskId}`, { cache: "no-store" });
+      if (!response.ok) return;
+      const task = await readJson<Task>(response);
+      setActiveTask(task);
+      setActiveNav("agent");
+      if (task.status === "running" || task.status === "queued") {
+        connectStream(task.id);
+      } else {
+        closeStream();
+      }
+    },
+    [closeStream, connectStream]
   );
 
   const resumePendingTasks = useCallback(async () => {
@@ -650,11 +1315,23 @@ export function AgentWorkspace() {
         if (!user) return;
         await resumePendingTasks();
         await refreshTasks();
+        void refreshAuthStatus();
+        void refreshAudit();
+        void refreshNotifications();
+        void refreshScheduledTasks();
         void refreshTemplates();
+        void refreshMarketplaceTemplates();
         void refreshSkills();
         void refreshMcpServers();
+        void refreshMcpCatalog();
         void refreshBilling();
+        void refreshRouterOptimizer();
         void refreshSandboxStatus();
+        void refreshDatabaseStatus();
+        void refreshLocalBrowserStatus();
+        void refreshLocalBrowserSafety();
+        void refreshLocalBrowserPairing();
+        void refreshMyComputerStatus();
         void refreshOcrStatus();
       });
       void fetch("/api/config", { cache: "no-store" })
@@ -672,7 +1349,13 @@ export function AgentWorkspace() {
             planningModel: data.planningModel,
             executionModel: data.executionModel,
             finalModel: data.finalModel,
-            promptCacheEnabled: data.promptCacheEnabled
+            promptCacheEnabled: data.promptCacheEnabled,
+            localBrowserDomainAllowlist: data.localBrowserDomainAllowlist.join("\n"),
+            myComputerAllowedRoots: data.myComputerAllowedRoots.join("\n")
+          }));
+          setMyComputerDraft((current) => ({
+            ...current,
+            root: current.root || data.myComputerAllowedRoots[0] || ""
           }));
         })
         .catch((caught: unknown) => {
@@ -686,16 +1369,47 @@ export function AgentWorkspace() {
     };
   }, [
     closeStream,
+    refreshAudit,
+    refreshAuthStatus,
     refreshAuthUser,
     refreshBilling,
+    refreshDatabaseStatus,
+    refreshLocalBrowserSafety,
+    refreshLocalBrowserPairing,
+    refreshLocalBrowserStatus,
+    refreshMarketplaceTemplates,
+    refreshMyComputerStatus,
+    refreshMcpCatalog,
     refreshMcpServers,
     refreshOcrStatus,
+    refreshNotifications,
+    refreshScheduledTasks,
+    refreshRouterOptimizer,
     refreshSandboxStatus,
     resumePendingTasks,
     refreshSkills,
     refreshTasks,
     refreshTemplates
   ]);
+
+  useEffect(() => {
+    if (!authUser) return;
+    const timer = window.setTimeout(() => {
+      void refreshMarketplaceTemplates(marketplaceSort);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [authUser, marketplaceSort, refreshMarketplaceTemplates]);
+
+  useEffect(() => {
+    if (!authUser || initialTaskParamRef.current) return;
+    const taskId = new URLSearchParams(window.location.search).get("taskId");
+    if (!taskId) return;
+    initialTaskParamRef.current = taskId;
+    const timer = window.setTimeout(() => {
+      void selectTask(taskId);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [authUser, selectTask]);
 
   useEffect(() => {
     if (!activeTaskId || (activeTaskStatus !== "running" && activeTaskStatus !== "queued")) return;
@@ -717,23 +1431,46 @@ export function AgentWorkspace() {
     setAuthNotice(null);
 
     try {
-      const endpoint = authDraft.verificationCode.trim()
-        ? "/api/auth/phone/verify"
-        : "/api/auth/phone/request";
+      const endpoint =
+        authMode === "phone"
+          ? authDraft.verificationCode.trim()
+            ? "/api/auth/phone/verify"
+            : "/api/auth/phone/request"
+          : authMode === "email-register"
+            ? authDraft.verificationCode.trim()
+              ? "/api/auth/verify"
+              : "/api/auth/register"
+            : "/api/auth/login";
+      const body =
+        authMode === "phone"
+          ? authDraft
+          : authMode === "email-register" && authDraft.verificationCode.trim()
+            ? {
+                email: authDraft.email,
+                code: authDraft.verificationCode
+              }
+            : {
+                email: authDraft.email,
+                password: authDraft.password,
+                displayName: authDraft.displayName
+              };
       const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(authDraft)
+        body: JSON.stringify(body)
       });
-      const data = await readJson<Partial<AuthResponse> & { error?: string; verificationCode?: string }>(
-        response,
-        {}
-      );
+      const data = await readJson<
+        Partial<AuthResponse> & {
+          error?: string;
+          verificationCode?: string;
+          emailDelivery?: { mode?: "development" | "smtp"; sent?: boolean; error?: string };
+        }
+      >(response, {});
       if (!response.ok) {
         throw new Error(data.error ?? "认证失败");
       }
 
-      if (!authDraft.verificationCode.trim()) {
+      if (authMode === "phone" && !authDraft.verificationCode.trim()) {
         setAuthDraft((current) => ({
           ...current,
           verificationCode: data.verificationCode ?? ""
@@ -745,6 +1482,20 @@ export function AgentWorkspace() {
         );
         return;
       }
+      if (authMode === "email-register" && !authDraft.verificationCode.trim()) {
+        setAuthDraft((current) => ({
+          ...current,
+          verificationCode: data.verificationCode ?? ""
+        }));
+        setAuthNotice(
+          data.verificationCode
+            ? `本地邮箱验证码：${data.verificationCode}`
+            : data.emailDelivery?.sent
+              ? "验证邮件已发送，请输入邮箱中的验证码。"
+              : "验证邮件已生成，请输入验证码。"
+        );
+        return;
+      }
 
       if (data.user) {
         setAuthUser(data.user);
@@ -752,9 +1503,11 @@ export function AgentWorkspace() {
         await resumePendingTasks();
         await refreshTasks();
         await refreshTemplates();
+        await refreshScheduledTasks();
         await refreshSkills();
         await refreshMcpServers();
         await refreshBilling();
+        await refreshMyComputerStatus();
       }
     } catch (caught) {
       setError(getErrorMessage(caught, "认证失败"));
@@ -771,6 +1524,9 @@ export function AgentWorkspace() {
     setTasks([]);
     setActiveTask(null);
     setContextMetrics(null);
+    setScheduledTasks([]);
+    setScheduledLogs([]);
+    setScheduledMailbox("");
     setBillingSummary(null);
     setSandboxStatus(null);
     setSandboxSelfTest(null);
@@ -822,6 +1578,7 @@ export function AgentWorkspace() {
       setActiveNav("agent");
       setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
       connectStream(task.id);
+      void refreshRouterOptimizer(trimmed);
     } catch (caught) {
       setError(getErrorMessage(caught, "创建任务失败"));
     } finally {
@@ -860,19 +1617,6 @@ export function AgentWorkspace() {
       setError(getErrorMessage(caught, "文件上传失败"));
     } finally {
       setIsUploadingFile(false);
-    }
-  }
-
-  async function selectTask(taskId: string) {
-    const response = await fetch(`/api/tasks/${taskId}`, { cache: "no-store" });
-    if (!response.ok) return;
-    const task = await readJson<Task>(response);
-    setActiveTask(task);
-    setActiveNav("agent");
-    if (task.status === "running" || task.status === "queued") {
-      connectStream(task.id);
-    } else {
-      closeStream();
     }
   }
 
@@ -935,15 +1679,182 @@ export function AgentWorkspace() {
           planningModel: settingsDraft.planningModel,
           executionModel: settingsDraft.executionModel,
           finalModel: settingsDraft.finalModel,
-          promptCacheEnabled: settingsDraft.promptCacheEnabled
+          promptCacheEnabled: settingsDraft.promptCacheEnabled,
+          localBrowserDomainAllowlist: parseDomainAllowlist(settingsDraft.localBrowserDomainAllowlist),
+          myComputerAllowedRoots: parseFilesystemRoots(settingsDraft.myComputerAllowedRoots)
         })
       });
       const data = await readJson<ConfigResponse>(response);
       setConfig(data);
-      setSettingsDraft((current) => ({ ...current, apiKey: "" }));
+      setSettingsDraft((current) => ({
+        ...current,
+        apiKey: "",
+        localBrowserDomainAllowlist: data.localBrowserDomainAllowlist.join("\n"),
+        myComputerAllowedRoots: data.myComputerAllowedRoots.join("\n")
+      }));
+      void refreshRouterOptimizer();
     } finally {
       setIsSavingSettings(false);
     }
+  }
+
+  async function applyRouterRecommendation() {
+    if (!routerOptimizer) return;
+    setIsApplyingRouterPolicy(true);
+    try {
+      const policy = routerOptimizer.recommendation.policy;
+      const response = await fetch("/api/config", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          planningModel: policy.planning.model,
+          executionModel: policy.execution.model,
+          finalModel: policy.finalAnswer.model
+        })
+      });
+      const data = await readJson<ConfigResponse>(response);
+      setConfig(data);
+      setSettingsDraft((current) => ({
+        ...current,
+        planningModel: data.planningModel,
+        executionModel: data.executionModel,
+        finalModel: data.finalModel
+      }));
+      await refreshRouterOptimizer();
+    } finally {
+      setIsApplyingRouterPolicy(false);
+    }
+  }
+
+  async function saveLocalBrowserAllowlist() {
+    setIsSavingLocalBrowserAllowlist(true);
+    try {
+      const response = await fetch("/api/config", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          localBrowserDomainAllowlist: parseDomainAllowlist(settingsDraft.localBrowserDomainAllowlist)
+        })
+      });
+      const data = await readJson<ConfigResponse>(response);
+      setConfig(data);
+      setSettingsDraft((current) => ({
+        ...current,
+        localBrowserDomainAllowlist: data.localBrowserDomainAllowlist.join("\n")
+      }));
+      await refreshLocalBrowserStatus(localBrowserEndpoint);
+    } catch (caught: unknown) {
+      setError(getErrorMessage(caught, "保存本地浏览器域名失败"));
+    } finally {
+      setIsSavingLocalBrowserAllowlist(false);
+    }
+  }
+
+  async function saveNotificationSettings() {
+    setIsSavingNotifications(true);
+    try {
+      const response = await fetch("/api/notifications/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(notificationDraft)
+      });
+      if (!response.ok) throw new Error("通知配置保存失败");
+      await refreshNotifications();
+    } catch (caught) {
+      setError(getErrorMessage(caught, "通知配置保存失败"));
+    } finally {
+      setIsSavingNotifications(false);
+    }
+  }
+
+  async function sendNotificationTest(status: "completed" | "failed" = "completed") {
+    setIsTestingNotifications(true);
+    try {
+      const response = await fetch("/api/notifications/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status })
+      });
+      if (!response.ok) throw new Error("通知测试失败");
+      await refreshNotifications();
+    } catch (caught) {
+      setError(getErrorMessage(caught, "通知测试失败"));
+    } finally {
+      setIsTestingNotifications(false);
+    }
+  }
+
+  async function createScheduledTaskFromDraft() {
+    const promptText = scheduledDraft.prompt.trim();
+    if (!promptText) return;
+    setIsCreatingScheduledTask(true);
+    try {
+      const response = await fetch("/api/scheduled-tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: scheduledDraft.name || undefined,
+          prompt: promptText,
+          model: config?.model,
+          kind: scheduledDraft.kind,
+          intervalMinutes: Number(scheduledDraft.intervalMinutes),
+          cronExpression: scheduledDraft.cronExpression
+        })
+      });
+      const data = await readJson<{ error?: string }>(response, {});
+      if (!response.ok) throw new Error(data.error ?? "创建定时任务失败");
+      setScheduledDraft((current) => ({ ...current, name: "", prompt: "" }));
+      await refreshScheduledTasks();
+    } catch (caught) {
+      setError(getErrorMessage(caught, "创建定时任务失败"));
+    } finally {
+      setIsCreatingScheduledTask(false);
+    }
+  }
+
+  async function scheduleTaskFromHistory(task: Task) {
+    setIsCreatingScheduledTask(true);
+    try {
+      const response = await fetch("/api/scheduled-tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: task.prompt.slice(0, 48),
+          prompt: task.prompt,
+          model: task.model,
+          kind: "cron",
+          cronExpression: "0 9 * * 1"
+        })
+      });
+      const data = await readJson<{ error?: string }>(response, {});
+      if (!response.ok) throw new Error(data.error ?? "设置定时任务失败");
+      setActiveNav("settings");
+      await refreshScheduledTasks();
+    } catch (caught) {
+      setError(getErrorMessage(caught, "设置定时任务失败"));
+    } finally {
+      setIsCreatingScheduledTask(false);
+    }
+  }
+
+  async function runScheduledTaskNow(scheduleId: string) {
+    setIsRunningScheduledTask(true);
+    try {
+      const response = await fetch(`/api/scheduled-tasks/${scheduleId}/run`, { method: "POST" });
+      const data = await readJson<{ error?: string }>(response, {});
+      if (!response.ok) throw new Error(data.error ?? "运行定时任务失败");
+      await refreshScheduledTasks();
+      await refreshTasks();
+    } catch (caught) {
+      setError(getErrorMessage(caught, "运行定时任务失败"));
+    } finally {
+      setIsRunningScheduledTask(false);
+    }
+  }
+
+  async function deleteScheduledTaskById(scheduleId: string) {
+    const response = await fetch(`/api/scheduled-tasks/${scheduleId}`, { method: "DELETE" });
+    if (response.ok) await refreshScheduledTasks();
   }
 
   async function runSandboxSelfTest() {
@@ -995,6 +1906,45 @@ export function AgentWorkspace() {
     const response = await fetch(`/api/templates/${templateId}`, { method: "DELETE" });
     if (response.ok) {
       await refreshTemplates();
+    }
+  }
+
+  async function publishTemplateToMarketplace(templateId: string) {
+    const response = await fetch(`/api/templates/${templateId}/publish`, { method: "POST" });
+    if (!response.ok) {
+      const data = await readJson<{ error?: string }>(response, {});
+      setError(data.error ?? "模板发布审核未通过");
+      await refreshTemplates();
+      return;
+    }
+    await refreshTemplates();
+    await refreshMarketplaceTemplates(marketplaceSort);
+  }
+
+  async function forkMarketplaceTemplate(templateId: string) {
+    setIsForkingTemplate(true);
+    try {
+      const response = await fetch(`/api/marketplace/templates/${templateId}/fork`, { method: "POST" });
+      if (!response.ok) {
+        const data = await readJson<{ error?: string }>(response, {});
+        setError(data.error ?? "Fork 模板失败");
+        return;
+      }
+      await refreshTemplates();
+      await refreshMarketplaceTemplates(marketplaceSort);
+    } finally {
+      setIsForkingTemplate(false);
+    }
+  }
+
+  async function rateMarketplaceTemplate(templateId: string, rating: number) {
+    const response = await fetch(`/api/marketplace/templates/${templateId}/rating`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rating })
+    });
+    if (response.ok) {
+      await refreshMarketplaceTemplates(marketplaceSort);
     }
   }
 
@@ -1063,6 +2013,18 @@ export function AgentWorkspace() {
     } finally {
       setIsAddingMcp(false);
     }
+  }
+
+  function applyMcpCatalogItem(item: McpCatalogItem) {
+    setMcpError(null);
+    setMcpDraft({
+      name: item.name,
+      type: item.type,
+      url: item.url ?? "",
+      command: item.command ?? "",
+      args: item.args.join(" "),
+      env: item.envTemplate.map((key) => `${key}=`).join("\n")
+    });
   }
 
   async function toggleMcpServer(serverId: string, enabled: boolean) {
@@ -1218,6 +2180,7 @@ export function AgentWorkspace() {
           canSave={activeTask?.status === "completed"}
           onSave={() => void saveActiveTaskAsTemplate()}
           onUse={useTemplate}
+          onPublish={(templateId) => void publishTemplateToMarketplace(templateId)}
           onDelete={(templateId) => void deleteTemplate(templateId)}
         />
         <TemplateVariablePanel
@@ -1236,6 +2199,20 @@ export function AgentWorkspace() {
           onCancel={() => setTemplateRun(null)}
         />
       </>
+    );
+  }
+
+  function renderMarketplacePanel() {
+    return (
+      <MarketplaceTemplateList
+        templates={marketplaceTemplates}
+        sort={marketplaceSort}
+        isForking={isForkingTemplate}
+        onSortChange={setMarketplaceSort}
+        onUse={useTemplate}
+        onFork={(templateId) => void forkMarketplaceTemplate(templateId)}
+        onRate={(templateId, rating) => void rateMarketplaceTemplate(templateId, rating)}
+      />
     );
   }
 
@@ -1361,6 +2338,103 @@ export function AgentWorkspace() {
     );
   }
 
+  function renderModelRouterOptimizerPanel() {
+    if (!routerOptimizer) {
+      return (
+        <div className="router-optimizer empty-state-inline">
+          <p>还没有路由优化数据。创建几个任务后，这里会根据 Context 指标推荐模型组合。</p>
+          <button type="button" className="secondary-button compact-button" onClick={() => void refreshRouterOptimizer()}>
+            <RefreshCw size={14} />
+            刷新
+          </button>
+        </div>
+      );
+    }
+
+    const policyRows = [
+      routerOptimizer.recommendation.policy.planning,
+      routerOptimizer.recommendation.policy.execution,
+      routerOptimizer.recommendation.policy.finalAnswer
+    ];
+    const stageLabel: Record<string, string> = {
+      planning: "规划",
+      execution: "执行",
+      final_answer: "总结"
+    };
+    const ab = routerOptimizer.abTest;
+
+    return (
+      <div className="router-optimizer">
+        <div className="router-summary">
+          <div>
+            <span className="mini-label">当前识别</span>
+            <strong>{routerOptimizer.selectedLabel}</strong>
+            <small>
+              {routerOptimizer.currentPolicy.manualOverride ? "手动覆盖已生效" : "自动优化可接管默认模型"}
+              {" · "}
+              {routerOptimizer.latencyMs}ms
+            </small>
+          </div>
+          <div className="router-actions">
+            <button type="button" className="secondary-button compact-button" onClick={() => void refreshRouterOptimizer(prompt)}>
+              <RefreshCw size={14} />
+              刷新
+            </button>
+            <button
+              type="button"
+              className="primary-button compact-button"
+              disabled={isApplyingRouterPolicy}
+              onClick={() => void applyRouterRecommendation()}
+            >
+              <Sparkles size={14} />
+              {isApplyingRouterPolicy ? "应用中" : "应用推荐"}
+            </button>
+          </div>
+        </div>
+
+        <div className="router-policy-grid">
+          {policyRows.map((item) => (
+            <div className="router-policy-item" key={item.stage}>
+              <span className="mini-label">{stageLabel[item.stage]}</span>
+              <strong>{item.model}</strong>
+              <small>
+                {item.source === "history" ? `${item.sampleSize} 个样本` : "规则回退"}
+                {" · "}
+                置信度 {formatPercent(item.confidence)}
+              </small>
+            </div>
+          ))}
+        </div>
+
+        <div className="router-ab">
+          <div>
+            <span className="mini-label">A/B 回放</span>
+            <strong>
+              {ab.winner === "candidate"
+                ? `推荐策略预计节省 ${formatPercent(ab.costSavingsRate)}`
+                : ab.winner === "baseline"
+                  ? "当前策略更稳"
+                  : "样本不足"}
+            </strong>
+            <small>
+              样本 {ab.sampleSize} 个 · 当前 {formatUsd(ab.baselineCostUsd)} · 推荐 {formatUsd(ab.candidateCostUsd)}
+            </small>
+          </div>
+          <div className="router-quality">
+            <span>{ab.baselineQualityScore.toFixed(1)}</span>
+            <small>当前质量分</small>
+            <span>{ab.candidateQualityScore.toFixed(1)}</span>
+            <small>推荐质量分</small>
+          </div>
+        </div>
+
+        {routerOptimizer.fallbackReason ? (
+          <p className="muted-note">{routerOptimizer.fallbackReason}</p>
+        ) : null}
+      </div>
+    );
+  }
+
   function renderLibraryView() {
     return (
       <div className="view-page">
@@ -1411,6 +2485,14 @@ export function AgentWorkspace() {
 
         <section className="section-panel">
           <div className="panel-title">
+            <Sparkles size={14} />
+            模板市场
+          </div>
+          {renderMarketplacePanel()}
+        </section>
+
+        <section className="section-panel">
+          <div className="panel-title">
             <FileSpreadsheet size={14} />
             Billing
           </div>
@@ -1443,10 +2525,74 @@ export function AgentWorkspace() {
 
           <section className="section-panel">
             <div className="panel-title">
+              <Gauge size={14} />
+              模型路由优化
+            </div>
+            {renderModelRouterOptimizerPanel()}
+          </section>
+
+          <section className="section-panel">
+            <div className="panel-title">
+              <CheckCircle2 size={14} />
+              认证
+            </div>
+            {renderAuthPanel()}
+          </section>
+
+          <section className="section-panel">
+            <div className="panel-title">
+              <Database size={14} />
+              数据库
+            </div>
+            {renderDatabasePanel()}
+          </section>
+
+          <section className="section-panel">
+            <div className="panel-title">
+              <ShieldCheck size={14} />
+              审计日志
+            </div>
+            {renderAuditPanel()}
+          </section>
+
+          <section className="section-panel">
+            <div className="panel-title">
+              <Bell size={14} />
+              通知
+            </div>
+            {renderNotificationPanel()}
+          </section>
+
+          <section className="section-panel">
+            <div className="panel-title">
+              <Clock3 size={14} />
+              Scheduled / Mail / Slack
+            </div>
+            {renderScheduledTaskPanel()}
+          </section>
+
+          <section className="section-panel">
+            <div className="panel-title">
               <SquareTerminal size={14} />
               沙盒
             </div>
             {renderSandboxPanel()}
+          </section>
+
+          <section className="section-panel">
+            <div className="panel-title">
+              <Globe size={14} />
+              本地浏览器
+            </div>
+            {renderLocalBrowserPanel()}
+          </section>
+
+          <section className="section-panel">
+            <div className="panel-title">
+              <Home size={14} />
+              My Computer
+            </div>
+            {renderMyComputerPanel()}
           </section>
 
           <section className="section-panel">
@@ -1484,10 +2630,12 @@ export function AgentWorkspace() {
             </div>
             <McpServerPanel
               servers={mcpServers}
+              catalog={mcpCatalog}
               draft={mcpDraft}
               error={mcpError}
               isAdding={isAddingMcp}
               onDraftChange={(patch) => setMcpDraft((current) => ({ ...current, ...patch }))}
+              onApplyCatalog={applyMcpCatalogItem}
               onAdd={() => void addMcpServer()}
               onToggle={(serverId, enabled) => void toggleMcpServer(serverId, enabled)}
               onDelete={(serverId) => void deleteMcpServer(serverId)}
@@ -1518,6 +2666,537 @@ export function AgentWorkspace() {
           <div className="panel-title">最近任务</div>
           {renderTaskLibrary(10)}
         </section>
+      </div>
+    );
+  }
+
+  function renderAuthPanel() {
+    const configuredOauth = authStatus?.oauth.filter((provider) => provider.configured).length ?? 0;
+    const emailMeta = authStatus
+      ? authStatus.email.mode === "smtp"
+        ? `${authStatus.email.host ?? "smtp"}:${authStatus.email.port ?? "-"} · ${authStatus.email.from ?? "from unset"}`
+        : "development code display"
+      : "检查中";
+    const accessDays = authStatus ? Math.round(authStatus.session.accessMaxAgeSeconds / 86400) : 0;
+    const refreshDays = authStatus ? Math.round(authStatus.session.refreshMaxAgeSeconds / 86400) : 0;
+
+    return (
+      <div className="sandbox-panel">
+        <div className="metric-list compact">
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">邮箱验证</span>
+              <span className="metric-meta">{emailMeta}</span>
+            </div>
+            <strong>{authStatus?.email.configured ? "smtp" : "local"}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">验证码</span>
+              <span className="metric-meta">
+                {authStatus?.email.verificationCodeExposed
+                  ? "开发模式会在页面直接显示验证码"
+                  : "生产模式不暴露验证码"}
+              </span>
+            </div>
+            <strong>{authStatus?.email.verificationCodeExposed ? "visible" : "hidden"}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">OAuth</span>
+              <span className="metric-meta">{authStatus?.baseUrl ?? "检查中"}</span>
+            </div>
+            <strong>{configuredOauth}/2</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">Session</span>
+              <span className="metric-meta">
+                access {accessDays || "-"}d · refresh {refreshDays || "-"}d
+              </span>
+            </div>
+            <strong>{authStatus?.session.cookieSecure ? "secure" : "dev"}</strong>
+          </div>
+        </div>
+        {authStatus?.oauth.length ? (
+          <div className="browser-operation-list">
+            {authStatus.oauth.map((provider) => (
+              <div className="browser-operation-item" key={provider.provider}>
+                <div>
+                  <span>{provider.provider}</span>
+                  <small>
+                    {provider.configured
+                      ? provider.callbackUrl
+                      : `缺少 ${provider.missing.slice(0, 2).join(" / ")}`}
+                  </small>
+                </div>
+                <strong className={`operation-status ${provider.configured ? "is-completed" : "is-blocked"}`}>
+                  {provider.configured ? "ready" : "unset"}
+                </strong>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        <div className="panel-actions">
+          <button type="button" className="secondary-button" onClick={() => void refreshAuthStatus()}>
+            <RefreshCw size={15} />
+            刷新认证
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  function renderAuditPanel() {
+    const verifyLabel = auditVerify ? (auditVerify.ok ? "verified" : "broken") : "checking";
+    const lastHash = auditVerify?.lastHash ? auditVerify.lastHash.slice(0, 12) : "-";
+
+    return (
+      <div className="sandbox-panel">
+        <div className="metric-list compact">
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">Hash Chain</span>
+              <span className="metric-meta">
+                {auditVerify?.error ?? `last ${lastHash}`}
+              </span>
+            </div>
+            <strong>{verifyLabel}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">记录数</span>
+              <span className="metric-meta">
+                {auditVerify?.checkedAt
+                  ? new Date(auditVerify.checkedAt).toLocaleTimeString()
+                  : "等待校验"}
+              </span>
+            </div>
+            <strong>{auditVerify?.total ?? auditLogs.length}</strong>
+          </div>
+        </div>
+        {auditLogs.length ? (
+          <div className="browser-operation-list">
+            {auditLogs.map((log) => (
+              <div className="browser-operation-item" key={log.id}>
+                <div>
+                  <span>{log.action}</span>
+                  <small>
+                    {log.resource} · {log.taskId ?? "no-task"} · {new Date(log.createdAt).toLocaleTimeString()}
+                  </small>
+                </div>
+                <strong className={`operation-status is-${log.status}`}>{log.status}</strong>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="muted-note">暂无审计记录。</p>
+        )}
+        <div className="panel-actions">
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isRefreshingAudit}
+            onClick={() => void refreshAudit()}
+          >
+            {isRefreshingAudit ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />}
+            刷新审计
+          </button>
+          <a className="secondary-button" href="/api/audit/logs?format=csv&limit=200">
+            <Download size={15} />
+            导出 CSV
+          </a>
+        </div>
+      </div>
+    );
+  }
+
+  function renderNotificationPanel() {
+    const enabledChannels = [
+      notificationSettings?.emailEnabled ? "Email" : null,
+      notificationSettings?.webhookEnabled ? "Webhook" : null,
+      notificationSettings?.slackEnabled ? "Slack" : null
+    ].filter(Boolean);
+
+    return (
+      <div className="sandbox-panel">
+        <div className="metric-list compact">
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">渠道</span>
+              <span className="metric-meta">任务完成/失败后异步发送，不阻塞 Agent。</span>
+            </div>
+            <strong>{enabledChannels.length ? enabledChannels.join("+") : "off"}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">触发</span>
+              <span className="metric-meta">
+                completed {notificationSettings?.notifyOnCompleted ? "on" : "off"} · failed{" "}
+                {notificationSettings?.notifyOnFailed ? "on" : "off"}
+              </span>
+            </div>
+            <strong>{notificationLogs.length}</strong>
+          </div>
+        </div>
+
+        <div className="settings-grid notification-grid">
+          <label className="setting-row checkbox-row">
+            <span>Email</span>
+            <input
+              type="checkbox"
+              checked={notificationDraft.emailEnabled}
+              onChange={(event) =>
+                setNotificationDraft((current) => ({ ...current, emailEnabled: event.target.checked }))
+              }
+            />
+          </label>
+          <label className="setting-row checkbox-row">
+            <span>完成时通知</span>
+            <input
+              type="checkbox"
+              checked={notificationDraft.notifyOnCompleted}
+              onChange={(event) =>
+                setNotificationDraft((current) => ({
+                  ...current,
+                  notifyOnCompleted: event.target.checked
+                }))
+              }
+            />
+          </label>
+          <label className="setting-row checkbox-row">
+            <span>失败时通知</span>
+            <input
+              type="checkbox"
+              checked={notificationDraft.notifyOnFailed}
+              onChange={(event) =>
+                setNotificationDraft((current) => ({ ...current, notifyOnFailed: event.target.checked }))
+              }
+            />
+          </label>
+          <label className="setting-row checkbox-row">
+            <span>Webhook</span>
+            <input
+              type="checkbox"
+              checked={notificationDraft.webhookEnabled}
+              onChange={(event) =>
+                setNotificationDraft((current) => ({ ...current, webhookEnabled: event.target.checked }))
+              }
+            />
+          </label>
+          <label className="settings-field">
+            <span>Webhook URL</span>
+            <input
+              value={notificationDraft.webhookUrl}
+              onChange={(event) =>
+                setNotificationDraft((current) => ({ ...current, webhookUrl: event.target.value }))
+              }
+              placeholder="https://example.com/manusxl-webhook"
+            />
+          </label>
+          <label className="setting-row checkbox-row">
+            <span>Slack</span>
+            <input
+              type="checkbox"
+              checked={notificationDraft.slackEnabled}
+              onChange={(event) =>
+                setNotificationDraft((current) => ({ ...current, slackEnabled: event.target.checked }))
+              }
+            />
+          </label>
+          <label className="settings-field">
+            <span>Slack Webhook</span>
+            <input
+              value={notificationDraft.slackWebhookUrl}
+              onChange={(event) =>
+                setNotificationDraft((current) => ({ ...current, slackWebhookUrl: event.target.value }))
+              }
+              placeholder="https://hooks.slack.com/services/..."
+            />
+          </label>
+        </div>
+
+        {notificationLogs.length ? (
+          <div className="browser-operation-list">
+            {notificationLogs.slice(0, 6).map((log) => (
+              <div className="browser-operation-item" key={log.id}>
+                <div>
+                  <span>{log.title}</span>
+                  <small>
+                    {log.channel} · {log.status} · {new Date(log.createdAt).toLocaleTimeString()}
+                  </small>
+                </div>
+                <strong className={`operation-status is-${log.status === "failed" ? "failed" : "completed"}`}>
+                  {log.status}
+                </strong>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="muted-note">暂无通知记录。</p>
+        )}
+
+        <div className="panel-actions">
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isSavingNotifications}
+            onClick={() => void saveNotificationSettings()}
+          >
+            {isSavingNotifications ? <Loader2 size={15} className="spin" /> : <CheckCircle2 size={15} />}
+            保存通知
+          </button>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isTestingNotifications}
+            onClick={() => void sendNotificationTest("completed")}
+          >
+            {isTestingNotifications ? <Loader2 size={15} className="spin" /> : <Send size={15} />}
+            测试完成通知
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  function renderScheduledTaskPanel() {
+    const activeCount = scheduledTasks.filter((task) => task.status === "active").length;
+
+    return (
+      <div className="sandbox-panel">
+        <div className="metric-list compact">
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">Mail Manus 地址</span>
+              <span className="metric-meta">{scheduledMailbox || "登录后生成"}</span>
+            </div>
+            <strong>{scheduledMailbox ? "ready" : "local"}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">计划任务</span>
+              <span className="metric-meta">定时器会创建新任务并进入现有 Agent 队列。</span>
+            </div>
+            <strong>{activeCount}/{scheduledTasks.length}</strong>
+          </div>
+        </div>
+
+        <div className="settings-grid notification-grid">
+          <label className="settings-field">
+            <span>名称</span>
+            <input
+              value={scheduledDraft.name}
+              onChange={(event) => setScheduledDraft((current) => ({ ...current, name: event.target.value }))}
+              placeholder="每周竞品简报"
+            />
+          </label>
+          <label className="settings-field">
+            <span>模式</span>
+            <select
+              value={scheduledDraft.kind}
+              onChange={(event) =>
+                setScheduledDraft((current) => ({
+                  ...current,
+                  kind: event.target.value as ScheduledTaskKind
+                }))
+              }
+            >
+              <option value="interval">Interval</option>
+              <option value="cron">Cron</option>
+            </select>
+          </label>
+          {scheduledDraft.kind === "interval" ? (
+            <label className="settings-field">
+              <span>间隔分钟</span>
+              <input
+                type="number"
+                min="0.02"
+                step="0.1"
+                value={scheduledDraft.intervalMinutes}
+                onChange={(event) =>
+                  setScheduledDraft((current) => ({ ...current, intervalMinutes: event.target.value }))
+                }
+              />
+            </label>
+          ) : (
+            <label className="settings-field">
+              <span>Cron 表达式</span>
+              <input
+                value={scheduledDraft.cronExpression}
+                onChange={(event) =>
+                  setScheduledDraft((current) => ({ ...current, cronExpression: event.target.value }))
+                }
+                placeholder="0 9 * * 1"
+              />
+            </label>
+          )}
+          <label className="settings-field wide-field">
+            <span>Prompt</span>
+            <textarea
+              value={scheduledDraft.prompt}
+              onChange={(event) => setScheduledDraft((current) => ({ ...current, prompt: event.target.value }))}
+              placeholder="每周一 9 点调研本周 AI Agent 行业新闻，输出简报。"
+            />
+          </label>
+        </div>
+
+        <div className="panel-actions">
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isCreatingScheduledTask || !scheduledDraft.prompt.trim()}
+            onClick={() => void createScheduledTaskFromDraft()}
+          >
+            {isCreatingScheduledTask ? <Loader2 size={15} className="spin" /> : <Clock3 size={15} />}
+            创建计划
+          </button>
+          <button type="button" className="secondary-button" onClick={() => void refreshScheduledTasks()}>
+            <RefreshCw size={15} />
+            刷新
+          </button>
+        </div>
+
+        {scheduledTasks.length ? (
+          <div className="browser-operation-list">
+            {scheduledTasks.slice(0, 8).map((task) => (
+              <div className="browser-operation-item" key={task.id}>
+                <div>
+                  <span>{task.name}</span>
+                  <small>
+                    {task.kind === "cron" ? task.cronExpression : `${task.intervalMinutes} min`} · next{" "}
+                    {task.nextRunAt ? formatDate(task.nextRunAt) : "paused"} · runs {task.runCount}
+                  </small>
+                </div>
+                <div className="panel-actions compact-actions">
+                  <button
+                    type="button"
+                    className="secondary-button compact-button"
+                    disabled={isRunningScheduledTask}
+                    onClick={() => void runScheduledTaskNow(task.id)}
+                  >
+                    <Play size={13} />
+                    运行
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost-button compact-button"
+                    onClick={() => void deleteScheduledTaskById(task.id)}
+                  >
+                    <Trash2 size={13} />
+                    删除
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="muted-note">还没有计划任务。也可以在任务详情页把历史任务设为定时任务。</p>
+        )}
+
+        {scheduledLogs.length ? (
+          <div className="browser-operation-list">
+            {scheduledLogs.slice(0, 6).map((log) => (
+              <div className="browser-operation-item" key={log.id}>
+                <div>
+                  <span>{log.source}</span>
+                  <small>
+                    {log.triggerType} · {log.status} · {new Date(log.createdAt).toLocaleTimeString()}
+                  </small>
+                </div>
+                <strong className={`operation-status is-${log.status === "failed" ? "failed" : "completed"}`}>
+                  {log.status}
+                </strong>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  function renderDatabasePanel() {
+    const providerLabel = databaseStatus
+      ? `${databaseStatus.requestedProvider} / ${databaseStatus.activeProvider}`
+      : "loading";
+    const pgStatus = databaseStatus
+      ? databaseStatus.postgres.schemaReady === true
+        ? "ready"
+        : databaseStatus.postgres.schemaReady === false
+          ? "unready"
+          : databaseStatus.postgres.configured
+            ? "configured"
+            : "unset"
+      : "loading";
+    const tableSummary = databaseStatus
+      ? databaseStatus.sqlite.tables
+          .filter((table) => table.rows > 0)
+          .slice(0, 4)
+          .map((table) => `${table.table}:${table.rows}`)
+          .join(" · ") || "暂无表数据"
+      : "检查中";
+    const pgClientLabel = databaseStatus?.postgres.cliAvailable
+      ? `psql:${databaseStatus.postgres.cliSource ?? "local"}`
+      : "psql:missing";
+    const pgMeta = databaseStatus
+      ? `${pgClientLabel} · ${
+          databaseStatus.postgres.error ??
+          databaseStatus.postgres.databaseUrlMasked ??
+          "未配置 DATABASE_URL"
+        }`
+      : "检查中";
+
+    return (
+      <div className="sandbox-panel">
+        <div className="metric-list compact">
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">运行模式</span>
+              <span className="metric-meta">{databaseStatus?.note ?? "检查中"}</span>
+            </div>
+            <strong>{providerLabel}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">SQLite</span>
+              <span className="metric-meta">{tableSummary}</span>
+            </div>
+            <strong>{databaseStatus?.sqlite.totalRows ?? 0}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">PostgreSQL</span>
+              <span className="metric-meta">{pgMeta}</span>
+            </div>
+            <strong>{pgStatus}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">迁移命令</span>
+              <span className="metric-meta">{databaseStatus?.commands.dryRun ?? "npm run db:pg:dry-run"}</span>
+            </div>
+            <strong>
+              {databaseStatus?.postgres.schemaTableCount === undefined
+                ? `${databaseStatus?.postgres.expectedTableCount ?? 10} tables`
+                : `${databaseStatus.postgres.schemaTableCount}/${databaseStatus.postgres.expectedTableCount}`}
+            </strong>
+          </div>
+        </div>
+        <div className="panel-actions">
+          <button type="button" className="secondary-button" onClick={() => void refreshDatabaseStatus()}>
+            <RefreshCw size={15} />
+            刷新状态
+          </button>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isCheckingDatabase}
+            onClick={() => void refreshDatabaseStatus(true)}
+          >
+            {isCheckingDatabase ? <Loader2 size={15} className="spin" /> : <Database size={15} />}
+            检查 PG
+          </button>
+        </div>
       </div>
     );
   }
@@ -1595,6 +3274,719 @@ export function AgentWorkspace() {
     );
   }
 
+  function renderLocalBrowserPanel() {
+    const statusLabel = localBrowserStatus
+      ? localBrowserStatus.connected
+        ? "connected"
+        : "offline"
+      : "unknown";
+    const detail = localBrowserStatus
+      ? localBrowserStatus.connected
+        ? `${localBrowserStatus.browser ?? "Chrome"} · CDP ${localBrowserStatus.protocolVersion ?? "unknown"}`
+        : localBrowserStatus.error ?? "未检测到本地 Chrome CDP"
+      : "尚未检测";
+    const browserPaused = Boolean(localBrowserSafety?.paused ?? localBrowserStatus?.paused);
+    const pendingApprovals = localBrowserSafety?.pendingApprovals ?? [];
+    const recentOperations =
+      localBrowserSafety?.recentOperations ?? localBrowserStatus?.recentOperations ?? [];
+    const pairedDeviceCount = localBrowserPairing?.pairedDevices.length ?? 0;
+
+    return (
+      <div className="sandbox-panel">
+        <div className="metric-list compact">
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">连接</span>
+              <span className="metric-meta">{detail}</span>
+            </div>
+            <strong>{statusLabel}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">CDP 地址</span>
+              <span className="metric-meta">{localBrowserStatus?.endpoint ?? localBrowserEndpoint}</span>
+            </div>
+            <strong>{localBrowserStatus?.webSocketDebuggerUrl ? "ws" : "http"}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">标签页</span>
+              <span className="metric-meta">
+                {localBrowserTabs[0]?.title || localBrowserTabs[0]?.url || "暂无可读取标签页"}
+              </span>
+            </div>
+            <strong>{localBrowserTabs.length}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">Allowlist</span>
+              <span className="metric-meta">
+                {config?.localBrowserDomainAllowlist.length
+                  ? config.localBrowserDomainAllowlist.slice(0, 3).join(" / ")
+                  : "empty"}
+              </span>
+            </div>
+            <strong>{config?.localBrowserDomainAllowlist.length ? "on" : "off"}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">安全开关</span>
+              <span className="metric-meta">
+                {browserPaused
+                  ? "已暂停所有本地浏览器动作"
+                  : pendingApprovals.length
+                    ? `${pendingApprovals.length} 个操作等待扩展确认`
+                    : "允许已授权域名动作"}
+              </span>
+            </div>
+            <strong>{browserPaused ? "paused" : pendingApprovals.length ? "pending" : "active"}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">扩展配对</span>
+              <span className="metric-meta">
+                {localBrowserPairing?.activeCode
+                  ? `配对码 ${localBrowserPairing.activeCode.code}`
+                  : pairedDeviceCount > 0
+                    ? `${pairedDeviceCount} 个扩展已配对`
+                    : "尚未配对扩展"}
+              </span>
+            </div>
+            <strong>{pairedDeviceCount > 0 ? "paired" : localBrowserPairing?.activeCode ? "code" : "none"}</strong>
+          </div>
+        </div>
+        <label className="settings-field">
+          <span>Chrome DevTools 地址</span>
+          <input
+            value={localBrowserEndpoint}
+            onChange={(event) => setLocalBrowserEndpoint(event.target.value)}
+            placeholder="http://127.0.0.1:9222"
+          />
+        </label>
+        <label className="settings-field">
+          <span>允许域名</span>
+          <textarea
+            value={settingsDraft.localBrowserDomainAllowlist}
+            onChange={(event) =>
+              setSettingsDraft((current) => ({
+                ...current,
+                localBrowserDomainAllowlist: event.target.value
+              }))
+            }
+            placeholder={"example.com\nnews.example.com"}
+          />
+        </label>
+        <div className="panel-actions">
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isCheckingLocalBrowser}
+            onClick={() => void refreshLocalBrowserStatus(localBrowserEndpoint)}
+          >
+            {isCheckingLocalBrowser ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />}
+            检测连接
+          </button>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isCapturingLocalBrowser}
+            onClick={() => void captureLocalBrowserScreenshot()}
+          >
+            {isCapturingLocalBrowser ? <Loader2 size={15} className="spin" /> : <Camera size={15} />}
+            截图
+          </button>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isSavingLocalBrowserAllowlist}
+            onClick={() => void saveLocalBrowserAllowlist()}
+          >
+            {isSavingLocalBrowserAllowlist ? <Loader2 size={15} className="spin" /> : <CheckCircle2 size={15} />}
+            保存域名
+          </button>
+          <button
+            type="button"
+            className={browserPaused ? "secondary-button" : "danger-button"}
+            disabled={isTogglingLocalBrowserPause}
+            onClick={() => void toggleLocalBrowserPause(!browserPaused)}
+          >
+            {isTogglingLocalBrowserPause ? (
+              <Loader2 size={15} className="spin" />
+            ) : browserPaused ? (
+              <Play size={15} />
+            ) : (
+              <CircleStop size={15} />
+            )}
+            {browserPaused ? "恢复操作" : "暂停操作"}
+          </button>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isCreatingLocalBrowserPairing}
+            onClick={() => void createLocalBrowserPairing()}
+          >
+            {isCreatingLocalBrowserPairing ? <Loader2 size={15} className="spin" /> : <Globe size={15} />}
+            生成配对码
+          </button>
+          <a className="secondary-button" href="/local-browser/rehearsal" target="_blank" rel="noreferrer">
+            <Globe size={15} />
+            登录态演练
+          </a>
+        </div>
+        {localBrowserPairing?.activeCode ? (
+          <div className="pairing-code-panel">
+            <strong>{localBrowserPairing.activeCode.code}</strong>
+            <span>在 Chrome 扩展里输入此码，5 分钟内有效。</span>
+          </div>
+        ) : null}
+        {localBrowserPairing?.pairedDevices.length ? (
+          <div className="browser-operation-list">
+            {localBrowserPairing.pairedDevices.slice(0, 3).map((device) => (
+              <div className="browser-operation-item" key={device.id}>
+                <div>
+                  <span>{device.name}</span>
+                  <small>last seen {new Date(device.lastSeenAt).toLocaleTimeString()}</small>
+                </div>
+                <strong className="operation-status is-completed">paired</strong>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {pendingApprovals.length > 0 ? (
+          <div className="browser-operation-list">
+            {pendingApprovals.slice(0, 5).map((approval) => (
+              <div className="browser-operation-item" key={approval.id}>
+                <div>
+                  <span>{approval.description || approval.action}</span>
+                  <small>{approval.title || approval.url || approval.id}</small>
+                </div>
+                <strong className="operation-status is-pending_approval">pending</strong>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {recentOperations.length > 0 ? (
+          <div className="browser-operation-list">
+            {recentOperations.slice(0, 5).map((operation) => (
+              <div className="browser-operation-item" key={operation.id}>
+                <div>
+                  <span>{operation.action}</span>
+                  <small>{operation.title || operation.url || operation.error || operation.id}</small>
+                </div>
+                <strong className={`operation-status is-${operation.status}`}>{operation.status}</strong>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {localBrowserScreenshot?.dataUrl ? (
+          <div className="browser-preview">
+            <Image
+              src={localBrowserScreenshot.dataUrl}
+              alt="本地浏览器截图预览"
+              width={localBrowserScreenshot.width ?? 960}
+              height={localBrowserScreenshot.height ?? 540}
+              unoptimized
+            />
+            <span>
+              {localBrowserScreenshot.width ?? "-"} x {localBrowserScreenshot.height ?? "-"}
+            </span>
+          </div>
+        ) : null}
+        <div className="browser-action-grid">
+          <label className="settings-field">
+            <span>动作</span>
+            <select
+              value={localBrowserActionDraft.action}
+              onChange={(event) =>
+                setLocalBrowserActionDraft((current) => ({
+                  ...current,
+                  action: event.target.value as "navigate" | "click" | "type" | "press"
+                }))
+              }
+            >
+              <option value="navigate">navigate</option>
+              <option value="click">click</option>
+              <option value="type">type</option>
+              <option value="press">press</option>
+            </select>
+          </label>
+          {localBrowserActionDraft.action === "navigate" ? (
+            <label className="settings-field">
+              <span>URL</span>
+              <input
+                value={localBrowserActionDraft.url}
+                onChange={(event) =>
+                  setLocalBrowserActionDraft((current) => ({ ...current, url: event.target.value }))
+                }
+                placeholder="https://example.com"
+              />
+            </label>
+          ) : null}
+          {localBrowserActionDraft.action === "click" ? (
+            <div className="browser-coordinate-row">
+              <label className="settings-field">
+                <span>X</span>
+                <input
+                  value={localBrowserActionDraft.x}
+                  onChange={(event) =>
+                    setLocalBrowserActionDraft((current) => ({ ...current, x: event.target.value }))
+                  }
+                  inputMode="numeric"
+                  placeholder="320"
+                />
+              </label>
+              <label className="settings-field">
+                <span>Y</span>
+                <input
+                  value={localBrowserActionDraft.y}
+                  onChange={(event) =>
+                    setLocalBrowserActionDraft((current) => ({ ...current, y: event.target.value }))
+                  }
+                  inputMode="numeric"
+                  placeholder="240"
+                />
+              </label>
+            </div>
+          ) : null}
+          {localBrowserActionDraft.action === "type" ? (
+            <label className="settings-field">
+              <span>文本</span>
+              <input
+                value={localBrowserActionDraft.text}
+                onChange={(event) =>
+                  setLocalBrowserActionDraft((current) => ({ ...current, text: event.target.value }))
+                }
+                placeholder="输入文本"
+              />
+            </label>
+          ) : null}
+          {localBrowserActionDraft.action === "press" ? (
+            <label className="settings-field">
+              <span>Key</span>
+              <input
+                value={localBrowserActionDraft.key}
+                onChange={(event) =>
+                  setLocalBrowserActionDraft((current) => ({ ...current, key: event.target.value }))
+                }
+                placeholder="Enter"
+              />
+            </label>
+          ) : null}
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isRunningLocalBrowserAction}
+            onClick={() => void runLocalBrowserControlAction()}
+          >
+            {isRunningLocalBrowserAction ? <Loader2 size={15} className="spin" /> : <Play size={15} />}
+            执行动作
+          </button>
+        </div>
+        {localBrowserActionResult ? (
+          <p className={`muted-note ${localBrowserActionResult.ok ? "" : "error-note"}`}>
+            {localBrowserActionResult.ok
+              ? `${localBrowserActionResult.action} 已完成：${localBrowserActionResult.title ?? localBrowserActionResult.url ?? "当前页面"}`
+              : localBrowserActionResult.error ?? "本地浏览器动作失败。"}
+          </p>
+        ) : null}
+      </div>
+    );
+  }
+
+  function renderMyComputerPanel() {
+    const statusLabel = myComputerStatus
+      ? myComputerStatus.connected
+        ? "connected"
+        : "offline"
+      : "unknown";
+    const paused = Boolean(myComputerStatus?.paused);
+    const readyCapabilities = myComputerStatus?.capabilities.filter((capability) => capability.ready).length ?? 0;
+    const pendingCount = myComputerStatus?.pendingApprovals.length ?? 0;
+    const rootLabel = myComputerStatus?.allowedRoots[0] ?? "尚未配置";
+    const latestOperation = myComputerActionResult ?? myComputerPlan?.operation;
+    const hasUndoableFileOperation = Boolean(
+      myComputerStatus?.recentOperations.some((operation) =>
+        ["file_classify", "file_dedupe", "file_rename", "file_move"].includes(operation.kind) &&
+        operation.status === "completed"
+      )
+    );
+
+    return (
+      <div className="sandbox-panel">
+        <div className="metric-list compact">
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">桌面桥接</span>
+              <span className="metric-meta">
+                {myComputerStatus?.bridge ?? "next-local"} · {myComputerStatus?.platform ?? "loading"}
+              </span>
+            </div>
+            <strong>{statusLabel}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">允许目录</span>
+              <span className="metric-meta">{rootLabel}</span>
+            </div>
+            <strong>{myComputerStatus?.allowedRoots.length ?? 0}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">能力</span>
+              <span className="metric-meta">文件操作、应用启动、剪贴板、键鼠授权</span>
+            </div>
+            <strong>{readyCapabilities}/{myComputerStatus?.capabilities.length ?? 0}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">动作授权</span>
+              <span className="metric-meta">
+                {paused ? "My Computer 已暂停" : pendingCount ? `${pendingCount} 个操作等待确认` : "每次执行前确认"}
+              </span>
+            </div>
+            <strong>{paused ? "paused" : pendingCount ? "pending" : "active"}</strong>
+          </div>
+        </div>
+
+        <label className="settings-field">
+          <span>允许访问的本机目录</span>
+          <textarea
+            value={settingsDraft.myComputerAllowedRoots}
+            onChange={(event) =>
+              setSettingsDraft((current) => ({
+                ...current,
+                myComputerAllowedRoots: event.target.value
+              }))
+            }
+            placeholder={"/Users/you/Downloads\n/Users/you/Documents/Work"}
+          />
+        </label>
+        <div className="panel-actions">
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isCheckingMyComputer}
+            onClick={() => void refreshMyComputerStatus()}
+          >
+            {isCheckingMyComputer ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />}
+            检测连接
+          </button>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isSavingMyComputer}
+            onClick={() => void saveMyComputerSettings(myComputerStatus?.paused)}
+          >
+            {isSavingMyComputer ? <Loader2 size={15} className="spin" /> : <CheckCircle2 size={15} />}
+            保存目录
+          </button>
+          <button
+            type="button"
+            className={paused ? "secondary-button" : "danger-button"}
+            disabled={isSavingMyComputer}
+            onClick={() => void saveMyComputerSettings(!paused)}
+          >
+            {paused ? <Play size={15} /> : <CircleStop size={15} />}
+            {paused ? "恢复 My Computer" : "暂停 My Computer"}
+          </button>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isUndoingMyComputer || !hasUndoableFileOperation}
+            onClick={() => void undoMyComputerLastFileOperation()}
+          >
+            {isUndoingMyComputer ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />}
+            撤销最近
+          </button>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isSavingMyComputer}
+            onClick={() => void clearMyComputerAlwaysAllow()}
+          >
+            <ShieldCheck size={15} />
+            清空授权
+          </button>
+        </div>
+
+        <div className="browser-action-grid">
+          <label className="settings-field">
+            <span>目标目录</span>
+            <input
+              value={myComputerDraft.root}
+              onChange={(event) =>
+                setMyComputerDraft((current) => ({ ...current, root: event.target.value }))
+              }
+              placeholder={rootLabel}
+            />
+          </label>
+          <label className="settings-field">
+            <span>文件任务</span>
+            <select
+              value={myComputerDraft.mode}
+              onChange={(event) =>
+                setMyComputerDraft((current) => ({
+                  ...current,
+                  mode: event.target.value as MyComputerFilePlanMode
+                }))
+              }
+            >
+              <option value="classify">按类型分类</option>
+              <option value="dedupe">内容查重</option>
+              <option value="rename">批量重命名</option>
+            </select>
+          </label>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isScanningMyComputer}
+            onClick={() => void scanMyComputerRoot()}
+          >
+            {isScanningMyComputer ? <Loader2 size={15} className="spin" /> : <Search size={15} />}
+            扫描
+          </button>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isPlanningMyComputer}
+            onClick={() => void planMyComputerFiles()}
+          >
+            {isPlanningMyComputer ? <Loader2 size={15} className="spin" /> : <FileArchive size={15} />}
+            生成 Dry-run
+          </button>
+        </div>
+
+        {myComputerScan ? (
+          <div className="browser-operation-list">
+            <div className="browser-operation-item">
+              <div>
+                <span>扫描完成</span>
+                <small>
+                  {myComputerScan.root} · {myComputerScan.total} 项
+                  {myComputerScan.truncated ? " · 已截断" : ""}
+                </small>
+              </div>
+              <strong className="operation-status is-completed">scan</strong>
+            </div>
+            {myComputerScan.entries.slice(0, 5).map((entry: MyComputerFileEntry) => (
+              <div className="browser-operation-item" key={entry.path}>
+                <div>
+                  <span>{entry.name}</span>
+                  <small>
+                    {entry.category ?? entry.kind} · {formatSize(entry.size)}
+                  </small>
+                </div>
+                <strong className="operation-status is-started">{entry.kind}</strong>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        {myComputerPlan ? (
+          <div className="browser-operation-list">
+            <div className="browser-operation-item">
+              <div>
+                <span>{myComputerPlan.operation.description}</span>
+                <small>
+                  {myComputerPlan.summary.actionCount} 个动作 · {myComputerPlan.summary.affectedFiles} 个文件
+                </small>
+              </div>
+              <strong className={`operation-status is-${myComputerPlan.operation.status}`}>
+                {myComputerPlan.operation.status}
+              </strong>
+            </div>
+            {myComputerPlan.operation.actions?.slice(0, 6).map((action) => (
+              <div className="browser-operation-item" key={action.id}>
+                <div>
+                  <span>{basenameForUi(action.sourcePath)} → {basenameForUi(action.targetPath)}</span>
+                  <small>{action.reason}</small>
+                </div>
+                <strong className="operation-status is-pending_approval">{action.type}</strong>
+              </div>
+            ))}
+            {myComputerPlan.operation.status === "pending_approval" ? (
+              <div className="panel-actions">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={isApprovingMyComputer}
+                  onClick={() => void approveMyComputerOperation(myComputerPlan.operation.id, "allow_once")}
+                >
+                  {isApprovingMyComputer ? <Loader2 size={15} className="spin" /> : <CheckCircle2 size={15} />}
+                  允许一次
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={isApprovingMyComputer}
+                  onClick={() => void approveMyComputerOperation(myComputerPlan.operation.id, "always")}
+                >
+                  Always Allow
+                </button>
+                <button
+                  type="button"
+                  className="danger-button"
+                  disabled={isApprovingMyComputer}
+                  onClick={() => void approveMyComputerOperation(myComputerPlan.operation.id, "deny")}
+                >
+                  拒绝
+                </button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        <div className="browser-action-grid">
+          <label className="settings-field">
+            <span>系统动作</span>
+            <select
+              value={myComputerDraft.actionKind}
+              onChange={(event) =>
+                setMyComputerDraft((current) => ({
+                  ...current,
+                  actionKind: event.target.value as typeof current.actionKind
+                }))
+              }
+            >
+              <option value="app_launch">启动应用</option>
+              <option value="app_quit">关闭应用</option>
+              <option value="clipboard_write">写入剪贴板</option>
+              <option value="clipboard_read">读取剪贴板</option>
+              <option value="keyboard_shortcut">键盘快捷键</option>
+              <option value="mouse_click">鼠标点击</option>
+              <option value="terminal_command">本机命令</option>
+            </select>
+          </label>
+          {myComputerDraft.actionKind === "clipboard_write" ? (
+            <label className="settings-field">
+              <span>剪贴板文本</span>
+              <input
+                value={myComputerDraft.actionText}
+                onChange={(event) =>
+                  setMyComputerDraft((current) => ({ ...current, actionText: event.target.value }))
+                }
+              />
+            </label>
+          ) : myComputerDraft.actionKind === "clipboard_read" ? (
+            <p className="muted-note">读取剪贴板会先进入动作授权，确认后只回传文本长度和预览。</p>
+          ) : myComputerDraft.actionKind === "terminal_command" ? (
+            <label className="settings-field">
+              <span>命令</span>
+              <input
+                value={myComputerDraft.actionCommand}
+                onChange={(event) =>
+                  setMyComputerDraft((current) => ({ ...current, actionCommand: event.target.value }))
+                }
+                placeholder="pwd"
+              />
+            </label>
+          ) : myComputerDraft.actionKind === "mouse_click" ? (
+            <div className="browser-coordinate-row">
+              <label className="settings-field">
+                <span>X</span>
+                <input
+                  value={myComputerDraft.x}
+                  onChange={(event) => setMyComputerDraft((current) => ({ ...current, x: event.target.value }))}
+                  inputMode="numeric"
+                />
+              </label>
+              <label className="settings-field">
+                <span>Y</span>
+                <input
+                  value={myComputerDraft.y}
+                  onChange={(event) => setMyComputerDraft((current) => ({ ...current, y: event.target.value }))}
+                  inputMode="numeric"
+                />
+              </label>
+            </div>
+          ) : (
+            <label className="settings-field">
+              <span>
+                {myComputerDraft.actionKind === "app_launch" || myComputerDraft.actionKind === "app_quit"
+                  ? "应用名"
+                  : "快捷键"}
+              </span>
+              <input
+                value={myComputerDraft.actionTarget}
+                onChange={(event) =>
+                  setMyComputerDraft((current) => ({ ...current, actionTarget: event.target.value }))
+                }
+                placeholder={
+                  myComputerDraft.actionKind === "app_launch" || myComputerDraft.actionKind === "app_quit"
+                    ? "Calculator"
+                    : "cmd+c"
+                }
+              />
+            </label>
+          )}
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isRunningMyComputerAction}
+            onClick={() => void runMyComputerSystemAction()}
+          >
+            {isRunningMyComputerAction ? <Loader2 size={15} className="spin" /> : <Play size={15} />}
+            生成授权请求
+          </button>
+        </div>
+
+        {latestOperation ? (
+          <div className="browser-operation-list">
+            <div className="browser-operation-item">
+              <div>
+                <span>{latestOperation.description}</span>
+                <small>{latestOperation.error ?? latestOperation.target}</small>
+              </div>
+              <strong className={`operation-status is-${latestOperation.status}`}>{latestOperation.status}</strong>
+            </div>
+            {latestOperation.status === "pending_approval" && !latestOperation.actions?.length ? (
+              <div className="panel-actions">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={isApprovingMyComputer}
+                  onClick={() => void approveMyComputerOperation(latestOperation.id, "allow_once")}
+                >
+                  允许一次执行
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={isApprovingMyComputer}
+                  onClick={() => void approveMyComputerOperation(latestOperation.id, "always")}
+                >
+                  Always Allow
+                </button>
+                <button
+                  type="button"
+                  className="danger-button"
+                  disabled={isApprovingMyComputer}
+                  onClick={() => void approveMyComputerOperation(latestOperation.id, "deny")}
+                >
+                  拒绝
+                </button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {myComputerStatus?.recentOperations.length ? (
+          <div className="browser-operation-list">
+            {myComputerStatus.recentOperations.slice(0, 4).map((operation) => (
+              <div className="browser-operation-item" key={operation.id}>
+                <div>
+                  <span>{operation.kind}</span>
+                  <small>{operation.description}</small>
+                </div>
+                <strong className={`operation-status is-${operation.status}`}>{operation.status}</strong>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
   function renderOcrPanel() {
     const statusLabel = ocrStatus ? (ocrStatus.available ? "ready" : "missing") : "loading";
     const languageLabel = ocrStatus
@@ -1652,7 +4044,17 @@ export function AgentWorkspace() {
   function renderMainContent() {
     if (activeNav === "library") return renderLibraryView();
     if (activeNav === "settings") return renderSettingsView();
-    if (activeNav === "agent") return activeTask ? <TaskDetail task={activeTask} /> : renderAgentEmptyView();
+    if (activeNav === "agent") {
+      return activeTask ? (
+        <TaskDetail
+          task={activeTask}
+          isScheduling={isCreatingScheduledTask}
+          onSchedule={(task) => void scheduleTaskFromHistory(task)}
+        />
+      ) : (
+        renderAgentEmptyView()
+      );
+    }
     return <EmptyState onPick={(value) => void submitTask(value)} />;
   }
 
@@ -1772,12 +4174,19 @@ export function AgentWorkspace() {
     return (
       <AuthScreen
         draft={authDraft}
+        mode={authMode}
         notice={authNotice}
         error={error}
         isSubmitting={isAuthSubmitting}
         onDraftChange={(patch) => {
-          if ("phone" in patch) setAuthNotice(null);
+          if ("phone" in patch || "email" in patch || "password" in patch) setAuthNotice(null);
           setAuthDraft((current) => ({ ...current, ...patch }));
+        }}
+        onModeChange={(mode) => {
+          setAuthMode(mode);
+          setAuthNotice(null);
+          setError(null);
+          setAuthDraft((current) => ({ ...current, verificationCode: "" }));
         }}
         onSubmit={submitAuth}
       />
@@ -2015,10 +4424,12 @@ export function AgentWorkspace() {
 
 function AuthScreen({
   draft,
+  mode,
   notice,
   error,
   isSubmitting,
   onDraftChange,
+  onModeChange,
   onSubmit
 }: {
   draft: {
@@ -2028,45 +4439,116 @@ function AuthScreen({
     displayName: string;
     verificationCode: string;
   };
+  mode: AuthMode;
   notice: string | null;
   error: string | null;
   isSubmitting: boolean;
   onDraftChange: (patch: Partial<typeof draft>) => void;
+  onModeChange: (mode: AuthMode) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
   const hasCode = !!draft.verificationCode.trim();
+  const isPhone = mode === "phone";
+  const isRegister = mode === "email-register";
 
   return (
     <div className="auth-shell">
       <form className="auth-panel" onSubmit={onSubmit}>
         <div>
           <div className="empty-kicker">Agent Workspace</div>
-          <h1>手机号验证登录</h1>
-          <p className="muted-note">开发阶段直接显示验证码；任务、事件和交付物会按手机号隔离保存。</p>
+          <h1>{isPhone ? "手机号验证登录" : isRegister ? "邮箱注册" : "邮箱登录"}</h1>
+          <p className="muted-note">
+            {isPhone
+              ? "开发阶段直接显示验证码；任务、事件和交付物会按手机号隔离保存。"
+              : isRegister
+                ? "邮箱注册会生成本地验证码，验证后即可进入工作台。"
+                : "使用已验证邮箱和密码登录，适合正式账号体系。"}
+          </p>
         </div>
-        <label className="settings-field">
-          <span>手机号</span>
-          <input
-            inputMode="tel"
-            value={draft.phone}
-            onChange={(event) => onDraftChange({ phone: event.target.value, verificationCode: "" })}
-            placeholder="请输入 11 位手机号"
-          />
-        </label>
-        <label className="settings-field">
-          <span>验证码</span>
-          <input
-            inputMode="numeric"
-            value={draft.verificationCode}
-            onChange={(event) => onDraftChange({ verificationCode: event.target.value })}
-            placeholder="点击获取后自动显示"
-          />
-        </label>
+        <div className="auth-tabs" role="tablist" aria-label="登录方式">
+          <button type="button" className={mode === "phone" ? "is-active" : ""} onClick={() => onModeChange("phone")}>
+            手机号
+          </button>
+          <button type="button" className={mode === "email-login" ? "is-active" : ""} onClick={() => onModeChange("email-login")}>
+            邮箱登录
+          </button>
+          <button type="button" className={mode === "email-register" ? "is-active" : ""} onClick={() => onModeChange("email-register")}>
+            邮箱注册
+          </button>
+        </div>
+        <div className="auth-oauth-row">
+          <a href="/api/auth/oauth/google/start">Google</a>
+          <a href="/api/auth/oauth/github/start">GitHub</a>
+        </div>
+        {isPhone ? (
+          <>
+            <label className="settings-field">
+              <span>手机号</span>
+              <input
+                inputMode="tel"
+                value={draft.phone}
+                onChange={(event) => onDraftChange({ phone: event.target.value, verificationCode: "" })}
+                placeholder="请输入 11 位手机号"
+              />
+            </label>
+            <label className="settings-field">
+              <span>验证码</span>
+              <input
+                inputMode="numeric"
+                value={draft.verificationCode}
+                onChange={(event) => onDraftChange({ verificationCode: event.target.value })}
+                placeholder="点击获取后自动显示"
+              />
+            </label>
+          </>
+        ) : (
+          <>
+            <label className="settings-field">
+              <span>邮箱</span>
+              <input
+                inputMode="email"
+                value={draft.email}
+                onChange={(event) => onDraftChange({ email: event.target.value, verificationCode: "" })}
+                placeholder="name@example.com"
+              />
+            </label>
+            <label className="settings-field">
+              <span>密码</span>
+              <input
+                type="password"
+                value={draft.password}
+                onChange={(event) => onDraftChange({ password: event.target.value })}
+                placeholder="至少 8 位"
+              />
+            </label>
+            {isRegister ? (
+              <>
+                <label className="settings-field">
+                  <span>显示名称</span>
+                  <input
+                    value={draft.displayName}
+                    onChange={(event) => onDraftChange({ displayName: event.target.value })}
+                    placeholder="可选"
+                  />
+                </label>
+                <label className="settings-field">
+                  <span>邮箱验证码</span>
+                  <input
+                    inputMode="numeric"
+                    value={draft.verificationCode}
+                    onChange={(event) => onDraftChange({ verificationCode: event.target.value })}
+                    placeholder="注册后自动显示"
+                  />
+                </label>
+              </>
+            ) : null}
+          </>
+        )}
         {notice ? <p className="muted-note auth-notice">{notice}</p> : null}
         {error ? <p className="muted-note error-note">{error}</p> : null}
         <button className="primary-button" disabled={isSubmitting}>
           {isSubmitting ? <Loader2 size={17} className="spin" /> : <Send size={17} />}
-          {hasCode ? "验证并登录" : "获取验证码"}
+          {isPhone ? (hasCode ? "验证并登录" : "获取验证码") : isRegister ? (hasCode ? "验证并登录" : "注册并获取验证码") : "邮箱登录"}
         </button>
       </form>
     </div>
@@ -2096,7 +4578,15 @@ function EmptyState({ onPick }: { onPick: (prompt: string) => void }) {
   );
 }
 
-function TaskDetail({ task }: { task: Task }) {
+function TaskDetail({
+  task,
+  isScheduling,
+  onSchedule
+}: {
+  task: Task;
+  isScheduling: boolean;
+  onSchedule: (task: Task) => void;
+}) {
   return (
     <div className="task-detail">
       <div className="task-heading">
@@ -2107,6 +4597,15 @@ function TaskDetail({ task }: { task: Task }) {
             {task.id} · {statusText[task.status]} · {task.model}
           </p>
         </div>
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={isScheduling}
+          onClick={() => onSchedule(task)}
+        >
+          {isScheduling ? <Loader2 size={15} className="spin" /> : <Clock3 size={15} />}
+          设为定时任务
+        </button>
       </div>
 
       <div className="step-timeline">
@@ -2180,6 +4679,7 @@ function TemplateList({
   canSave,
   onSave,
   onUse,
+  onPublish,
   onDelete
 }: {
   templates: TaskTemplate[];
@@ -2189,6 +4689,7 @@ function TemplateList({
   canSave: boolean;
   onSave: () => void;
   onUse: (template: TaskTemplate) => void;
+  onPublish: (templateId: string) => void;
   onDelete: (templateId: string) => void;
 }) {
   return (
@@ -2236,15 +4737,105 @@ function TemplateList({
                   公
                 </span>
               ) : (
-                <button
-                  className="icon-button"
-                  aria-label={`删除模板 ${template.name}`}
-                  onClick={() => onDelete(template.id)}
-                >
-                  <Trash2 size={14} />
-                </button>
+                <>
+                  <button
+                    className="icon-button"
+                    aria-label={`发布模板 ${template.name}`}
+                    title={template.reviewStatus === "rejected" ? template.rejectionReason : "发布到模板市场"}
+                    onClick={() => onPublish(template.id)}
+                  >
+                    <Sparkles size={14} />
+                  </button>
+                  <button
+                    className="icon-button"
+                    aria-label={`删除模板 ${template.name}`}
+                    onClick={() => onDelete(template.id)}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </>
               )}
             </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MarketplaceTemplateList({
+  templates,
+  sort,
+  isForking,
+  onSortChange,
+  onUse,
+  onFork,
+  onRate
+}: {
+  templates: TaskTemplate[];
+  sort: MarketplaceSort;
+  isForking: boolean;
+  onSortChange: (sort: MarketplaceSort) => void;
+  onUse: (template: TaskTemplate) => void;
+  onFork: (templateId: string) => void;
+  onRate: (templateId: string, rating: number) => void;
+}) {
+  const sortOptions: Array<{ value: MarketplaceSort; label: string }> = [
+    { value: "featured", label: "精选" },
+    { value: "popular", label: "热门" },
+    { value: "topRated", label: "高分" },
+    { value: "latest", label: "最新" }
+  ];
+
+  return (
+    <div className="marketplace-panel">
+      <div className="template-tags" aria-label="模板市场排序">
+        {sortOptions.map((option) => (
+          <button
+            key={option.value}
+            className={sort === option.value ? "template-tag active" : "template-tag"}
+            onClick={() => onSortChange(option.value)}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+      {templates.length === 0 ? (
+        <p className="muted-note">模板市场还没有可用模板。</p>
+      ) : (
+        <div className="marketplace-grid">
+          {templates.slice(0, 10).map((template) => (
+            <article key={template.id} className="marketplace-item">
+              <button className="marketplace-main" onClick={() => onUse(template)}>
+                <span className="template-name">{template.name}</span>
+                <span className="template-meta">
+                  {[
+                    template.category ?? "general",
+                    `评分 ${(template.ratingAverage ?? 0).toFixed(1)}(${template.ratingCount ?? 0})`,
+                    `Fork ${template.forkCount ?? 0}`
+                  ].join(" · ")}
+                </span>
+                <span className="marketplace-description">{template.description}</span>
+              </button>
+              <div className="marketplace-actions">
+                <button
+                  type="button"
+                  className="secondary-button compact-button"
+                  disabled={isForking}
+                  onClick={() => onFork(template.id)}
+                >
+                  <Plus size={13} />
+                  Fork
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button compact-button"
+                  onClick={() => onRate(template.id, 5)}
+                >
+                  5 分
+                </button>
+              </div>
+            </article>
           ))}
         </div>
       )}
@@ -2349,10 +4940,12 @@ function SkillList({
 
 function McpServerPanel({
   servers,
+  catalog,
   draft,
   error,
   isAdding,
   onDraftChange,
+  onApplyCatalog,
   onAdd,
   onToggle,
   onDelete,
@@ -2360,6 +4953,7 @@ function McpServerPanel({
   onToolToggle
 }: {
   servers: McpServer[];
+  catalog: McpCatalogItem[];
   draft: {
     name: string;
     type: "sse" | "stdio";
@@ -2371,6 +4965,7 @@ function McpServerPanel({
   error: string | null;
   isAdding: boolean;
   onDraftChange: (patch: Partial<typeof draft>) => void;
+  onApplyCatalog: (item: McpCatalogItem) => void;
   onAdd: () => void;
   onToggle: (serverId: string, enabled: boolean) => void;
   onDelete: (serverId: string) => void;
@@ -2381,6 +4976,18 @@ function McpServerPanel({
 
   return (
     <div className="mcp-panel">
+      {catalog.length > 0 ? (
+        <div className="mcp-market">
+          {catalog.slice(0, 6).map((item) => (
+            <button key={item.id} type="button" className="mcp-market-item" onClick={() => onApplyCatalog(item)}>
+              <span className="skill-name">{item.name}</span>
+              <span className="skill-meta">
+                {item.tags.slice(0, 2).join(" / ")} · {item.type}
+              </span>
+            </button>
+          ))}
+        </div>
+      ) : null}
       <div className="mcp-form">
         <label className="settings-field">
           <span>名称</span>

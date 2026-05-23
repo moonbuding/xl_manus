@@ -1,6 +1,14 @@
-import { createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createId } from "@/lib/id";
+import {
+  canUsePostgresRuntime,
+  checkPsqlCli,
+  requestedDatabaseProvider,
+  runPsql
+} from "@/server/db/provider";
 import { getManusDb } from "@/server/sqlite";
 import type { AuthUser } from "@/types/agent";
 
@@ -11,7 +19,7 @@ const refreshMaxAgeSeconds = 30 * 24 * 60 * 60;
 const jwtSecret = process.env.MANUSXL_AUTH_SECRET || "manusxl-local-dev-secret";
 
 const globalForAuth = globalThis as unknown as {
-  manusxlAuthDb?: DatabaseSync;
+  manusxlAuthStore?: AuthPersistenceAdapter;
 };
 
 interface UserRow {
@@ -27,10 +35,33 @@ interface UserRow {
   data_json: string;
 }
 
+interface AuthSessionRow {
+  id: string;
+  user_id: string;
+  refresh_token_hash: string;
+  revoked_at: string | null;
+  expires_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
 interface SessionPayload {
   sub: string;
   type: "access" | "refresh";
   exp: number;
+  sid?: string;
+}
+
+interface AuthPersistenceAdapter {
+  provider: "sqlite" | "postgres";
+  ensureSchema: () => void;
+  getByEmail: (email: string) => UserRow | undefined;
+  getByPhone: (phone: string) => UserRow | undefined;
+  getById: (userId: string) => UserRow | undefined;
+  upsert: (row: UserRow) => void;
+  createSession: (row: AuthSessionRow) => void;
+  getSessionById: (sessionId: string) => AuthSessionRow | undefined;
+  revokeSession: (sessionId: string, revokedAt: string) => void;
 }
 
 function openAuthDb() {
@@ -48,14 +79,22 @@ function openAuthDb() {
       updated_at TEXT NOT NULL,
       data_json TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS auth_sessions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      refresh_token_hash TEXT NOT NULL,
+      revoked_at TEXT,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_id ON auth_sessions(user_id);
+    CREATE INDEX IF NOT EXISTS idx_auth_sessions_refresh_token_hash ON auth_sessions(refresh_token_hash);
   `);
   ensureAuthColumns(db);
   return db;
-}
-
-function getDb() {
-  globalForAuth.manusxlAuthDb ??= openAuthDb();
-  return globalForAuth.manusxlAuthDb;
 }
 
 function ensureAuthColumns(db: DatabaseSync) {
@@ -68,6 +107,267 @@ function ensureAuthColumns(db: DatabaseSync) {
     db.exec("ALTER TABLE users ADD COLUMN phone TEXT");
     db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_phone ON users(phone)");
   }
+}
+
+function upsertUserRowSqlite(db: DatabaseSync, row: UserRow) {
+  db.prepare(
+    `
+    INSERT INTO users
+      (id, email, phone, display_name, password_hash, email_verified, verification_code, created_at, updated_at, data_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      email = excluded.email,
+      phone = excluded.phone,
+      display_name = excluded.display_name,
+      password_hash = excluded.password_hash,
+      email_verified = excluded.email_verified,
+      verification_code = excluded.verification_code,
+      updated_at = excluded.updated_at,
+      data_json = excluded.data_json
+  `
+  )
+    .run(
+      row.id,
+      row.email,
+      row.phone,
+      row.display_name,
+      row.password_hash,
+      row.email_verified,
+      row.verification_code,
+      row.created_at,
+      row.updated_at,
+      row.data_json
+    );
+}
+
+function createAuthSessionSqlite(db: DatabaseSync, row: AuthSessionRow) {
+  db.prepare(
+    `
+    INSERT INTO auth_sessions
+      (id, user_id, refresh_token_hash, revoked_at, expires_at, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `
+  ).run(
+    row.id,
+    row.user_id,
+    row.refresh_token_hash,
+    row.revoked_at,
+    row.expires_at,
+    row.created_at,
+    row.updated_at
+  );
+}
+
+function createSqliteAuthStore(): AuthPersistenceAdapter {
+  const db = openAuthDb();
+  return {
+    provider: "sqlite",
+    ensureSchema: () => ensureAuthColumns(db),
+    getByEmail: (email) =>
+      db.prepare("SELECT * FROM users WHERE email = ?").get(normalizeEmail(email)) as UserRow | undefined,
+    getByPhone: (phone) =>
+      db.prepare("SELECT * FROM users WHERE phone = ?").get(normalizePhone(phone)) as UserRow | undefined,
+    getById: (userId) =>
+      db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as UserRow | undefined,
+    upsert: (row) => upsertUserRowSqlite(db, row),
+    createSession: (row) => createAuthSessionSqlite(db, row),
+    getSessionById: (sessionId) =>
+      db.prepare("SELECT * FROM auth_sessions WHERE id = ?").get(sessionId) as AuthSessionRow | undefined,
+    revokeSession: (sessionId, revokedAt) => {
+      db.prepare(
+        `
+        UPDATE auth_sessions
+        SET revoked_at = ?, updated_at = ?
+        WHERE id = ? AND revoked_at IS NULL
+      `
+      ).run(revokedAt, revokedAt, sessionId);
+    }
+  };
+}
+
+function postgresSchemaPath() {
+  return join(process.cwd(), "db", "postgres", "0001_initial.sql");
+}
+
+function quotePostgresString(value: string) {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+function postgresValue(value: string | number | null | undefined, options: { json?: boolean } = {}) {
+  if (value === undefined || value === null) return "NULL";
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : "NULL";
+  return options.json ? `${quotePostgresString(value)}::jsonb` : quotePostgresString(value);
+}
+
+function ensurePostgresSchema() {
+  const schemaPath = postgresSchemaPath();
+  if (!existsSync(schemaPath)) {
+    throw new Error(`找不到 PostgreSQL schema：${schemaPath}`);
+  }
+  runPsql(["-f", schemaPath]);
+}
+
+function parsePostgresUserRow(output: string) {
+  const line = output.trim();
+  return line ? (JSON.parse(line) as UserRow) : undefined;
+}
+
+function selectUserRowJson(whereSql: string) {
+  return `
+    SELECT json_build_object(
+      'id', id,
+      'email', email,
+      'phone', phone,
+      'display_name', display_name,
+      'password_hash', password_hash,
+      'email_verified', email_verified,
+      'verification_code', verification_code,
+      'created_at', created_at,
+      'updated_at', updated_at,
+      'data_json', data_json::text
+    )::text
+    FROM users
+    WHERE ${whereSql}
+    LIMIT 1;
+  `;
+}
+
+function selectAuthSessionRowJson(whereSql: string) {
+  return `
+    SELECT json_build_object(
+      'id', id,
+      'user_id', user_id,
+      'refresh_token_hash', refresh_token_hash,
+      'revoked_at', revoked_at,
+      'expires_at', expires_at,
+      'created_at', created_at,
+      'updated_at', updated_at
+    )::text
+    FROM auth_sessions
+    WHERE ${whereSql}
+    LIMIT 1;
+  `;
+}
+
+function parsePostgresAuthSessionRow(output: string) {
+  const line = output.trim();
+  return line ? (JSON.parse(line) as AuthSessionRow) : undefined;
+}
+
+function upsertUserRowPostgres(row: UserRow) {
+  runPsql([
+    "-c",
+    `
+      INSERT INTO users
+        (id, email, phone, display_name, password_hash, email_verified, verification_code, created_at, updated_at, data_json)
+      VALUES (
+        ${postgresValue(row.id)},
+        ${postgresValue(row.email)},
+        ${postgresValue(row.phone)},
+        ${postgresValue(row.display_name)},
+        ${postgresValue(row.password_hash)},
+        ${postgresValue(row.email_verified)},
+        ${postgresValue(row.verification_code)},
+        ${postgresValue(row.created_at)},
+        ${postgresValue(row.updated_at)},
+        ${postgresValue(row.data_json, { json: true })}
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        email = EXCLUDED.email,
+        phone = EXCLUDED.phone,
+        display_name = EXCLUDED.display_name,
+        password_hash = EXCLUDED.password_hash,
+        email_verified = EXCLUDED.email_verified,
+        verification_code = EXCLUDED.verification_code,
+        updated_at = EXCLUDED.updated_at,
+        data_json = EXCLUDED.data_json;
+    `
+  ]);
+}
+
+function createAuthSessionPostgres(row: AuthSessionRow) {
+  runPsql([
+    "-c",
+    `
+      INSERT INTO auth_sessions
+        (id, user_id, refresh_token_hash, revoked_at, expires_at, created_at, updated_at)
+      VALUES (
+        ${postgresValue(row.id)},
+        ${postgresValue(row.user_id)},
+        ${postgresValue(row.refresh_token_hash)},
+        ${postgresValue(row.revoked_at)},
+        ${postgresValue(row.expires_at)},
+        ${postgresValue(row.created_at)},
+        ${postgresValue(row.updated_at)}
+      );
+    `
+  ]);
+}
+
+function createPostgresAuthStore(): AuthPersistenceAdapter {
+  ensurePostgresSchema();
+  return {
+    provider: "postgres",
+    ensureSchema: ensurePostgresSchema,
+    getByEmail: (email) =>
+      parsePostgresUserRow(
+        runPsql(["-At", "-c", selectUserRowJson(`email = ${postgresValue(normalizeEmail(email))}`)])
+      ),
+    getByPhone: (phone) =>
+      parsePostgresUserRow(
+        runPsql(["-At", "-c", selectUserRowJson(`phone = ${postgresValue(normalizePhone(phone))}`)])
+      ),
+    getById: (userId) =>
+      parsePostgresUserRow(
+        runPsql(["-At", "-c", selectUserRowJson(`id = ${postgresValue(userId)}`)])
+      ),
+    upsert: upsertUserRowPostgres,
+    createSession: createAuthSessionPostgres,
+    getSessionById: (sessionId) =>
+      parsePostgresAuthSessionRow(
+        runPsql(["-At", "-c", selectAuthSessionRowJson(`id = ${postgresValue(sessionId)}`)])
+      ),
+    revokeSession: (sessionId, revokedAt) => {
+      runPsql([
+        "-c",
+        `
+          UPDATE auth_sessions
+          SET revoked_at = ${postgresValue(revokedAt)}, updated_at = ${postgresValue(revokedAt)}
+          WHERE id = ${postgresValue(sessionId)}
+            AND revoked_at IS NULL;
+        `
+      ]);
+    }
+  };
+}
+
+function createAuthStore(): AuthPersistenceAdapter {
+  const requestedProvider = requestedDatabaseProvider();
+  if (requestedProvider === "postgres") {
+    const psql = checkPsqlCli();
+    if (!canUsePostgresRuntime(psql)) {
+      console.warn(
+        "MANUSXL_DATABASE_PROVIDER=postgres 已设置，但 DATABASE_URL 或 psql CLI 不可用，认证存储回退 SQLite。"
+      );
+      return createSqliteAuthStore();
+    }
+    try {
+      return createPostgresAuthStore();
+    } catch (error) {
+      console.warn(
+        `PostgreSQL 认证存储初始化失败，已回退 SQLite：${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+  return createSqliteAuthStore();
+}
+
+function getAuthStore() {
+  if (!globalForAuth.manusxlAuthStore || typeof globalForAuth.manusxlAuthStore.createSession !== "function") {
+    globalForAuth.manusxlAuthStore = createAuthStore();
+  }
+  globalForAuth.manusxlAuthStore.ensureSchema();
+  return globalForAuth.manusxlAuthStore;
 }
 
 function base64Url(input: Buffer | string) {
@@ -97,6 +397,10 @@ function verifyToken(token: string, type: SessionPayload["type"]) {
   const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8")) as SessionPayload;
   if (payload.type !== type || payload.exp < Math.floor(Date.now() / 1000)) return undefined;
   return payload;
+}
+
+function hashRefreshToken(refreshToken: string) {
+  return createHash("sha256").update(refreshToken).digest("hex");
 }
 
 function hashPassword(password: string) {
@@ -138,19 +442,19 @@ function publicUser(row: UserRow): AuthUser {
 }
 
 function getUserRowByEmail(email: string) {
-  return getDb()
-    .prepare("SELECT * FROM users WHERE email = ?")
-    .get(normalizeEmail(email)) as UserRow | undefined;
+  return getAuthStore().getByEmail(email);
 }
 
 function getUserRowByPhone(phone: string) {
-  return getDb()
-    .prepare("SELECT * FROM users WHERE phone = ?")
-    .get(normalizePhone(phone)) as UserRow | undefined;
+  return getAuthStore().getByPhone(phone);
 }
 
 function getUserRowById(userId: string) {
-  return getDb().prepare("SELECT * FROM users WHERE id = ?").get(userId) as UserRow | undefined;
+  return getAuthStore().getById(userId);
+}
+
+function upsertUserRow(row: UserRow) {
+  getAuthStore().upsert(row);
 }
 
 export function createUser(input: { email: string; password: string; displayName?: string }) {
@@ -170,25 +474,18 @@ export function createUser(input: { email: string; password: string; displayName
     updatedAt: now
   };
 
-  getDb()
-    .prepare(
-      `
-      INSERT INTO users
-        (id, email, display_name, password_hash, email_verified, verification_code, created_at, updated_at, data_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `
-    )
-    .run(
-      user.id,
-      user.email,
-      user.displayName,
-      hashPassword(input.password),
-      0,
-      verificationCode,
-      user.createdAt,
-      user.updatedAt,
-      JSON.stringify(user)
-    );
+  upsertUserRow({
+    id: user.id,
+    email: user.email,
+    phone: null,
+    display_name: user.displayName,
+    password_hash: hashPassword(input.password),
+    email_verified: 0,
+    verification_code: verificationCode,
+    created_at: user.createdAt,
+    updated_at: user.updatedAt,
+    data_json: JSON.stringify(user)
+  });
 
   return { user, verificationCode };
 }
@@ -206,15 +503,13 @@ export function requestPhoneLoginCode(input: { phone: string }) {
       ...publicUser(existing),
       updatedAt: now
     };
-    getDb()
-      .prepare(
-        `
-        UPDATE users
-        SET verification_code = ?, email_verified = 1, updated_at = ?, data_json = ?
-        WHERE id = ?
-      `
-      )
-      .run(verificationCode, now, JSON.stringify(user), existing.id);
+    upsertUserRow({
+      ...existing,
+      email_verified: 1,
+      verification_code: verificationCode,
+      updated_at: now,
+      data_json: JSON.stringify(user)
+    });
     return { user, verificationCode };
   }
 
@@ -228,26 +523,18 @@ export function requestPhoneLoginCode(input: { phone: string }) {
     updatedAt: now
   };
 
-  getDb()
-    .prepare(
-      `
-      INSERT INTO users
-        (id, email, phone, display_name, password_hash, email_verified, verification_code, created_at, updated_at, data_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `
-    )
-    .run(
-      user.id,
-      user.email,
-      user.phone ?? null,
-      user.displayName,
-      hashPassword(randomBytes(18).toString("base64url")),
-      1,
-      verificationCode,
-      user.createdAt,
-      user.updatedAt,
-      JSON.stringify(user)
-    );
+  upsertUserRow({
+    id: user.id,
+    email: user.email,
+    phone: user.phone ?? null,
+    display_name: user.displayName,
+    password_hash: hashPassword(randomBytes(18).toString("base64url")),
+    email_verified: 1,
+    verification_code: verificationCode,
+    created_at: user.createdAt,
+    updated_at: user.updatedAt,
+    data_json: JSON.stringify(user)
+  });
 
   return { user, verificationCode };
 }
@@ -262,15 +549,13 @@ export function verifyPhoneLogin(input: { phone: string; code: string }) {
     ...publicUser(row),
     updatedAt: now
   };
-  getDb()
-    .prepare(
-      `
-      UPDATE users
-      SET verification_code = NULL, email_verified = 1, updated_at = ?, data_json = ?
-      WHERE id = ?
-    `
-    )
-    .run(now, JSON.stringify(user), row.id);
+  upsertUserRow({
+    ...row,
+    email_verified: 1,
+    verification_code: null,
+    updated_at: now,
+    data_json: JSON.stringify(user)
+  });
   return user;
 }
 
@@ -286,15 +571,13 @@ export function verifyEmail(input: { email: string; code: string }) {
     emailVerified: true,
     updatedAt: now
   };
-  getDb()
-    .prepare(
-      `
-      UPDATE users
-      SET email_verified = 1, verification_code = NULL, updated_at = ?, data_json = ?
-      WHERE id = ?
-    `
-    )
-    .run(now, JSON.stringify(user), row.id);
+  upsertUserRow({
+    ...row,
+    email_verified: 1,
+    verification_code: null,
+    updated_at: now,
+    data_json: JSON.stringify(user)
+  });
   return user;
 }
 
@@ -305,6 +588,64 @@ export function authenticateUser(email: string, password: string) {
   return publicUser(row);
 }
 
+export function upsertOAuthUser(input: {
+  provider: string;
+  providerAccountId: string;
+  email?: string | null;
+  displayName?: string | null;
+}) {
+  const email = input.email?.trim()
+    ? normalizeEmail(input.email)
+    : `${input.provider}-${input.providerAccountId}@oauth.manusxl.local`;
+  const existing = getUserRowByEmail(email);
+  const now = new Date().toISOString();
+
+  if (existing) {
+    const user = {
+      ...publicUser(existing),
+      displayName: input.displayName?.trim() || publicUser(existing).displayName,
+      emailVerified: true,
+      updatedAt: now
+    };
+    upsertUserRow({
+      ...existing,
+      display_name: user.displayName,
+      email_verified: 1,
+      updated_at: now,
+      data_json: JSON.stringify(user)
+    });
+    return user;
+  }
+
+  const user: AuthUser = {
+    id: createId("usr"),
+    email,
+    displayName: input.displayName?.trim() || email.split("@")[0],
+    emailVerified: true,
+    createdAt: now,
+    updatedAt: now
+  };
+
+  upsertUserRow({
+    id: user.id,
+    email: user.email,
+    phone: null,
+    display_name: user.displayName,
+    password_hash: hashPassword(randomBytes(18).toString("base64url")),
+    email_verified: 1,
+    verification_code: null,
+    created_at: user.createdAt,
+    updated_at: user.updatedAt,
+    data_json: JSON.stringify({
+      ...user,
+      authProvider: input.provider,
+      providerAccountId: input.providerAccountId
+    })
+  });
+
+  return user;
+}
+
 export function readUser(userId: string) {
   const row = getUserRowById(userId);
   return row ? publicUser(row) : undefined;
@@ -312,10 +653,23 @@ export function readUser(userId: string) {
 
 export function makeSessionTokens(userId: string) {
   const now = Math.floor(Date.now() / 1000);
-  return {
-    accessToken: makeToken({ sub: userId, type: "access", exp: now + accessMaxAgeSeconds }),
-    refreshToken: makeToken({ sub: userId, type: "refresh", exp: now + refreshMaxAgeSeconds })
+  const sessionId = createId("ses");
+  const refreshExpiresAt = now + refreshMaxAgeSeconds;
+  const tokens = {
+    accessToken: makeToken({ sub: userId, sid: sessionId, type: "access", exp: now + accessMaxAgeSeconds }),
+    refreshToken: makeToken({ sub: userId, sid: sessionId, type: "refresh", exp: refreshExpiresAt })
   };
+  const createdAt = new Date(now * 1000).toISOString();
+  getAuthStore().createSession({
+    id: sessionId,
+    user_id: userId,
+    refresh_token_hash: hashRefreshToken(tokens.refreshToken),
+    revoked_at: null,
+    expires_at: new Date(refreshExpiresAt * 1000).toISOString(),
+    created_at: createdAt,
+    updated_at: createdAt
+  });
+  return tokens;
 }
 
 export function getAuthCookieNames() {
@@ -339,13 +693,37 @@ export function readAuthUserFromCookieHeader(cookieHeader: string | null) {
   return payload ? readUser(payload.sub) : undefined;
 }
 
+export function readAuthUserFromAccessToken(token: string | null | undefined) {
+  if (!token) return undefined;
+  const payload = verifyToken(token, "access");
+  return payload ? readUser(payload.sub) : undefined;
+}
+
 export function refreshAccessToken(refreshToken: string) {
   const payload = verifyToken(refreshToken, "refresh");
-  if (!payload) return undefined;
+  if (!payload?.sid) return undefined;
+  const session = getAuthStore().getSessionById(payload.sid);
+  if (
+    !session ||
+    session.user_id !== payload.sub ||
+    session.revoked_at ||
+    session.refresh_token_hash !== hashRefreshToken(refreshToken) ||
+    Date.parse(session.expires_at) < Date.now()
+  ) {
+    return undefined;
+  }
   const user = readUser(payload.sub);
   if (!user) return undefined;
+  getAuthStore().revokeSession(session.id, new Date().toISOString());
   return {
     user,
     ...makeSessionTokens(user.id)
   };
+}
+
+export function revokeRefreshToken(refreshToken: string | null | undefined) {
+  if (!refreshToken) return;
+  const payload = verifyToken(refreshToken, "refresh");
+  if (!payload?.sid) return;
+  getAuthStore().revokeSession(payload.sid, new Date().toISOString());
 }

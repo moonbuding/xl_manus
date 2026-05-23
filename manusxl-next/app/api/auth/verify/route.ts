@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requestAuditContext, safeRecordAuditLog } from "@/server/audit/audit-store";
 import { verifyEmail } from "@/server/auth/auth-store";
 import { jsonWithSession } from "@/server/auth/http";
 
@@ -12,6 +13,14 @@ export async function POST(request: Request) {
     const user = verifyEmail({
       email: body.email ?? "",
       code: body.code ?? body.verificationCode ?? ""
+    });
+    safeRecordAuditLog({
+      userId: user.id,
+      action: "auth.email_verify",
+      resource: "email",
+      status: "completed",
+      ...requestAuditContext(request),
+      metadata: { email: user.email }
     });
     return jsonWithSession({ user }, user.id);
   } catch (error) {
