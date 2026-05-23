@@ -35,7 +35,8 @@ export async function POST(request: Request) {
       description: body.description,
       promptTemplate,
       defaultModel: body.defaultModel,
-      tags: body.tags
+      tags: body.tags,
+      category: body.category
     }, user.id)
   );
 }

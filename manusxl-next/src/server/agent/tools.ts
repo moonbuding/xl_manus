@@ -133,6 +133,7 @@ function processErrorPayload(error: unknown) {
 
 export type AgentToolName =
   | "task_planner"
+  | "spawn_sub_agents"
   | "web_research"
   | "web_fetch"
   | "local_browser"
@@ -201,6 +202,12 @@ export const TOOL_METADATA: AgentToolMetadata[] = [
     namespace: "core",
     description: "澄清目标、拆解任务、确认交付物。",
     fallbackTools: []
+  },
+  {
+    name: "spawn_sub_agents",
+    namespace: "core",
+    description: "将横向调研任务拆成多个子 Agent 并行执行，支持并发池、失败重试/跳过和结构化汇总。",
+    fallbackTools: ["web_research", "data_analysis", "artifact_writer"]
   },
   {
     name: "web_research",
@@ -318,11 +325,20 @@ function taskIntentText(prompt: string) {
   return markerIndex >= 0 ? prompt.slice(0, markerIndex) : prompt;
 }
 
+function isWideResearchIntent(value: string) {
+  return /wide research|横向调研|并行.*调研|批量调研|子\s*agent|sub[-\s]?agent|spawn_sub_agents|spawn|调研\s*(?:前)?(?:\d+|[一二两三四五六七八九十百]+)\s*(?:家|个|双|款|家公司|公司|品牌|供应商|对象)|(?:前|top\s*)(?:\d+|[一二两三四五六七八九十百]+)\s*(?:家|个|双|款|家公司|公司|品牌|供应商|对象)/i.test(
+    value
+  );
+}
+
 export function selectToolsForPrompt(prompt: string, ownerId?: string): AgentToolName[] {
   const intent = taskIntentText(prompt);
   const lower = intent.toLowerCase();
   const selected: AgentToolName[] = ["task_planner", "data_analysis", "artifact_writer"];
 
+  if (isWideResearchIntent(intent)) {
+    selected.push("spawn_sub_agents", "web_research", "data_analysis", "artifact_writer");
+  }
   if (/http|网页|搜索|调研|竞品|市场|news|web|research|browser/.test(lower)) {
     selected.push("web_research", "web_fetch");
   }
@@ -377,6 +393,7 @@ export function inferToolsForStep(step: string): AgentToolName[] {
     candidates.push(...(explicitToolNames as AgentToolName[]));
   }
 
+  if (isWideResearchIntent(step)) candidates.push("spawn_sub_agents");
   if (/python|脚本|代码|计算|统计|notebook/.test(lower)) candidates.push("python_execute");
   if (/shell|bash|命令|终端|目录|workspace|文件检查/.test(lower)) candidates.push("shell_execute");
   if (/mcp|github|slack|notion|filesystem|外部工具|第三方工具/.test(lower)) {
@@ -2679,6 +2696,457 @@ async function runMapPlanner(input: AgentToolInput): Promise<AgentToolResult> {
   };
 }
 
+type WideResearchSubAgentStatus = "completed" | "skipped";
+
+interface WideResearchSubAgentResult {
+  id: string;
+  item: string;
+  status: WideResearchSubAgentStatus;
+  attempts: number;
+  summary: string;
+  findings: string[];
+  confidence: number;
+  latencyMs: number;
+  error?: string;
+}
+
+const chineseDigitValues: Record<string, number> = {
+  零: 0,
+  一: 1,
+  二: 2,
+  两: 2,
+  三: 3,
+  四: 4,
+  五: 5,
+  六: 6,
+  七: 7,
+  八: 8,
+  九: 9
+};
+
+function parseChineseNumber(value: string): number | null {
+  const trimmed = value.trim();
+  if (/^\d+$/.test(trimmed)) return Number(trimmed);
+  if (trimmed === "十") return 10;
+
+  const hundredIndex = trimmed.indexOf("百");
+  if (hundredIndex >= 0) {
+    const left = trimmed.slice(0, hundredIndex);
+    const right = trimmed.slice(hundredIndex + 1);
+    const hundreds = left ? parseChineseNumber(left) : 1;
+    const rest = right ? parseChineseNumber(right) : 0;
+    return hundreds === null || rest === null ? null : hundreds * 100 + rest;
+  }
+
+  const tenIndex = trimmed.indexOf("十");
+  if (tenIndex >= 0) {
+    const left = trimmed.slice(0, tenIndex);
+    const right = trimmed.slice(tenIndex + 1);
+    const tens = left ? parseChineseNumber(left) : 1;
+    const rest = right ? parseChineseNumber(right) : 0;
+    return tens === null || rest === null ? null : tens * 10 + rest;
+  }
+
+  if (trimmed.length === 1 && trimmed in chineseDigitValues) return chineseDigitValues[trimmed];
+  return null;
+}
+
+function parseWideResearchCount(text: string) {
+  const patterns = [
+    /(?:调研|研究|对比|分析|整理|评估)\s*(?:前)?\s*(\d+|[一二两三四五六七八九十百]+)\s*(?:家|个|双|款|家公司|公司|品牌|供应商|对象)/i,
+    /(?:前|top\s*)(\d+|[一二两三四五六七八九十百]+)\s*(?:家|个|双|款|家公司|公司|品牌|供应商|对象)/i,
+    /(\d+|[一二两三四五六七八九十百]+)\s*(?:家|个|双|款|家公司|公司|品牌|供应商|对象)/i
+  ];
+
+  for (const pattern of patterns) {
+    const matched = text.match(pattern);
+    const parsed = matched?.[1] ? parseChineseNumber(matched[1]) : null;
+    if (parsed && parsed > 0) return parsed;
+  }
+
+  return null;
+}
+
+function normalizeWideResearchItem(value: string) {
+  return value
+    .replace(/^\s*(?:[-*]|\d+[.)、]|[一二两三四五六七八九十]+[.)、])\s*/, "")
+    .replace(/["'“”‘’]/g, "")
+    .replace(/[。.!?]\s*.*$/g, "")
+    .trim()
+    .slice(0, 80);
+}
+
+function splitWideResearchItems(value: string) {
+  return value
+    .replace(/\band\b/gi, "、")
+    .split(/[、,，;；\n]+/)
+    .map(normalizeWideResearchItem)
+    .filter((item) => item.length > 0)
+    .filter((item) => !/^(请|输出|生成|汇总|要求|并输出)/.test(item));
+}
+
+function extractExplicitWideResearchItems(text: string) {
+  const colonMatch = text.match(
+    /(?:以下|这些|列表|清单|公司|品牌|供应商|对象|items?)[^：:\n]{0,80}[：:]\s*([\s\S]{2,1200})/i
+  );
+  if (colonMatch?.[1]) {
+    const block = colonMatch[1].split(/。(?=请|输出|生成|汇总|要求)|\n{2,}/)[0];
+    const items = splitWideResearchItems(block);
+    if (items.length >= 2) return items;
+  }
+
+  const bulletItems = text
+    .split(/\n+/)
+    .filter((line) => /^\s*(?:[-*]|\d+[.)、]|[一二两三四五六七八九十]+[.)、])\s+/.test(line))
+    .map(normalizeWideResearchItem)
+    .filter(Boolean);
+  return bulletItems.length >= 2 ? bulletItems : [];
+}
+
+function inferWideResearchItemLabel(text: string) {
+  if (/球鞋|鞋/.test(text)) return "球鞋";
+  if (/供应商/.test(text)) return "供应商";
+  if (/品牌/.test(text)) return "品牌";
+  if (/公司|企业/.test(text)) return "公司";
+  if (/产品|竞品/.test(text)) return "产品";
+  if (/城市|门店|地点/.test(text)) return "地点";
+  return "调研对象";
+}
+
+function fallbackWideResearchItems(text: string, count: number) {
+  const label = inferWideResearchItemLabel(text);
+  return Array.from({ length: count }, (_, index) => `${label} ${String(index + 1).padStart(3, "0")}`);
+}
+
+function hashText(value: string) {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+  return hash;
+}
+
+function wideResearchCsv(results: WideResearchSubAgentResult[]) {
+  const headers = ["id", "item", "status", "attempts", "confidence", "latencyMs", "summary", "findings", "error"];
+  return [
+    headers.join(","),
+    ...results.map((result) =>
+      [
+        result.id,
+        result.item,
+        result.status,
+        result.attempts,
+        result.confidence.toFixed(2),
+        result.latencyMs,
+        result.summary,
+        result.findings.join(" | "),
+        result.error ?? ""
+      ]
+        .map((value) => csvEscape(String(value)))
+        .join(",")
+    )
+  ].join("\n");
+}
+
+function markdownTableCell(value: string) {
+  return value.replaceAll("|", "\\|").replace(/\s+/g, " ").trim();
+}
+
+function wideResearchMarkdown(
+  prompt: string,
+  results: WideResearchSubAgentResult[],
+  options: { concurrencyLimit: number; requestedCount: number; capped: boolean; durationMs: number }
+) {
+  const completed = results.filter((result) => result.status === "completed");
+  const skipped = results.filter((result) => result.status === "skipped");
+  return [
+    "# Wide Research 汇总报告",
+    "",
+    "## 任务",
+    prompt,
+    "",
+    "## 执行统计",
+    `- 请求子 Agent 数：${options.requestedCount}`,
+    `- 实际启动子 Agent 数：${results.length}`,
+    `- 并发池上限：${options.concurrencyLimit}`,
+    `- 完成：${completed.length}`,
+    `- 跳过：${skipped.length}`,
+    `- 耗时：${Math.max(1, Math.round(options.durationMs / 1000))} 秒`,
+    `- 是否触发数量上限：${options.capped ? "是" : "否"}`,
+    "",
+    "## 汇总结论",
+    completed.length > 0
+      ? `本轮已并行完成 ${completed.length} 个样本的首轮结构化调研，适合继续进入事实核验、排序和报告润色。`
+      : "本轮没有成功完成的子 Agent，需要缩小范围或检查输入对象。",
+    skipped.length > 0
+      ? `有 ${skipped.length} 个子 Agent 在重试后跳过，主 Agent 已保留错误信息，不阻塞整体汇总。`
+      : "本轮没有跳过的子 Agent。",
+    "",
+    "## 子 Agent 结果",
+    "| # | 对象 | 状态 | 置信度 | 摘要 |",
+    "| - | - | - | - | - |",
+    ...results.map((result, index) =>
+      [
+        String(index + 1),
+        markdownTableCell(result.item),
+        result.status,
+        result.confidence.toFixed(2),
+        markdownTableCell(result.summary)
+      ].join(" | ")
+    )
+  ].join("\n");
+}
+
+function shouldSimulateSubAgentFailure(item: string) {
+  return /失败|fail|error|timeout|rate\s*limit|限流/i.test(item);
+}
+
+async function runVirtualSubAgent(
+  item: string,
+  index: number,
+  prompt: string
+): Promise<WideResearchSubAgentResult> {
+  const startedAt = Date.now();
+  const id = `sub_${String(index + 1).padStart(3, "0")}`;
+  const fingerprint = hashText(`${prompt}:${item}`);
+  const confidence = Number((0.62 + (fingerprint % 29) / 100).toFixed(2));
+  const shouldFail = shouldSimulateSubAgentFailure(item);
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5 + (fingerprint % 12)));
+    if (!shouldFail) {
+      return {
+        id,
+        item,
+        status: "completed",
+        attempts: attempt,
+        confidence,
+        latencyMs: Date.now() - startedAt,
+        summary: `${item} 已完成独立调研草稿：覆盖定位、关键指标、可比维度和下一步核验点。`,
+        findings: [
+          `${item}：已抽取适合横向对比的基础维度。`,
+          `${item}：建议补充最新公开数据、价格/规模口径和风险来源。`,
+          `${item}：可进入主 Agent 的 structured_merge 汇总。`
+        ]
+      };
+    }
+  }
+
+  return {
+    id,
+    item,
+    status: "skipped",
+    attempts: 2,
+    confidence: 0,
+    latencyMs: Date.now() - startedAt,
+    summary: `${item} 子 Agent 重试 2 次后跳过。`,
+    findings: [],
+    error: "子 Agent 模拟失败，已按 skip 策略保留并继续汇总。"
+  };
+}
+
+async function runSpawnSubAgents(input: AgentToolInput): Promise<AgentToolResult> {
+  const sourceText = `${taskIntentText(input.prompt)}\n${input.step}`;
+  const { artifacts } = await ensureTaskWorkspace(input.taskId, input.ownerId);
+  const existingResultPath = join(artifacts, "wide-research-results.json");
+
+  try {
+    const existingJson = await readFile(existingResultPath, "utf8");
+    const existing = JSON.parse(existingJson) as {
+      actualCount?: number;
+      completed?: number;
+      skipped?: number;
+      concurrencyLimit?: number;
+    };
+    await emitToolProgress(input, {
+      title: "Wide Research 复用",
+      content: `已存在 ${existing.actualCount ?? 0} 个子 Agent 的 Wide Research 汇总，本步骤复用已有结果。`,
+      payload: {
+        tool: "spawn_sub_agents",
+        phase: "reuse",
+        actualCount: existing.actualCount,
+        completed: existing.completed,
+        skipped: existing.skipped
+      }
+    });
+
+    return {
+      toolName: "spawn_sub_agents",
+      ok: true,
+      observation: `Wide Research 已在前序步骤完成：子 Agent ${existing.actualCount ?? 0} 个，完成 ${existing.completed ?? 0} 个，跳过 ${existing.skipped ?? 0} 个；本步骤复用既有 structured_merge 汇总。`,
+      payload: {
+        wideResearch: existing,
+        reused: true,
+        generatedArtifacts: []
+      }
+    };
+  } catch {
+    // No previous Wide Research result for this task. Continue with first execution.
+  }
+
+  const requestedCount = parseWideResearchCount(sourceText) ?? 8;
+  const maxSubAgents = Math.min(configuredPositiveNumber("MANUSXL_MAX_SUB_AGENTS", 100), 100);
+  const concurrencyLimit = Math.min(
+    configuredPositiveNumber("MANUSXL_SUB_AGENT_CONCURRENCY", 8),
+    maxSubAgents
+  );
+  const explicitItems = extractExplicitWideResearchItems(sourceText);
+  const sourceItems =
+    explicitItems.length >= 2 ? explicitItems : fallbackWideResearchItems(sourceText, requestedCount);
+  const items = sourceItems.slice(0, maxSubAgents);
+  const capped = sourceItems.length > items.length || requestedCount > maxSubAgents;
+  const startedAt = Date.now();
+  const results: WideResearchSubAgentResult[] = [];
+  let nextIndex = 0;
+  let finished = 0;
+
+  await emitToolProgress(input, {
+    title: "Wide Research 启动",
+    content: `准备启动 ${items.length} 个子 Agent，并发池上限 ${concurrencyLimit}。`,
+    payload: {
+      tool: "spawn_sub_agents",
+      phase: "start",
+      requestedCount,
+      actualCount: items.length,
+      concurrencyLimit,
+      capped
+    }
+  });
+
+  const workerCount = Math.max(1, Math.min(concurrencyLimit, items.length));
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < items.length) {
+        const currentIndex = nextIndex;
+        nextIndex += 1;
+        const item = items[currentIndex];
+        const result = await runVirtualSubAgent(item, currentIndex, sourceText);
+        results[currentIndex] = result;
+        finished += 1;
+        await emitToolProgress(input, {
+          title: "Wide Research 进度",
+          content: `子 Agent ${finished}/${items.length} ${result.status === "completed" ? "完成" : "跳过"}：${item}`,
+          payload: {
+            tool: "spawn_sub_agents",
+            phase: "sub_agent_finished",
+            current: finished,
+            total: items.length,
+            item,
+            subAgentId: result.id,
+            status: result.status,
+            attempts: result.attempts
+          }
+        });
+      }
+    })
+  );
+
+  const durationMs = Date.now() - startedAt;
+  const completed = results.filter((result) => result.status === "completed");
+  const skipped = results.filter((result) => result.status === "skipped");
+  const report = wideResearchMarkdown(input.prompt, results, {
+    concurrencyLimit,
+    requestedCount,
+    capped,
+    durationMs
+  });
+  const json = JSON.stringify(
+    {
+      taskId: input.taskId,
+      generatedAt: new Date().toISOString(),
+      mode: "local_virtual_sub_agents_mvp",
+      requestedCount,
+      actualCount: results.length,
+      maxSubAgents,
+      concurrencyLimit,
+      capped,
+      durationMs,
+      completed: completed.length,
+      skipped: skipped.length,
+      mergeStrategy: "structured_merge",
+      throttle: {
+        enabled: items.length > concurrencyLimit,
+        reason:
+          items.length > concurrencyLimit
+            ? "子 Agent 数超过并发池，已自动排队节流。"
+            : "子 Agent 数未超过并发池。"
+      },
+      results
+    },
+    null,
+    2
+  );
+  const csv = wideResearchCsv(results);
+  const zip = makeZip([
+    { name: "wide-research-report.md", data: Buffer.from(report) },
+    { name: "wide-research-results.json", data: Buffer.from(json) },
+    { name: "wide-research-results.csv", data: Buffer.from(csv) }
+  ]);
+  await writeFile(join(artifacts, "wide-research-report.md"), report);
+  await writeFile(join(artifacts, "wide-research-results.json"), json);
+  await writeFile(join(artifacts, "wide-research-results.csv"), csv);
+  await writeFile(join(artifacts, "wide-research-package.zip"), zip);
+
+  await emitToolProgress(input, {
+    title: "Wide Research 汇总",
+    content: `已完成 ${completed.length}/${results.length} 个子 Agent，跳过 ${skipped.length} 个，并生成结构化汇总包。`,
+    payload: {
+      tool: "spawn_sub_agents",
+      phase: "merged",
+      completed: completed.length,
+      skipped: skipped.length,
+      durationMs
+    }
+  });
+
+  return {
+    toolName: "spawn_sub_agents",
+    ok: completed.length > 0,
+    observation: `Wide Research 已启动 ${results.length} 个子 Agent：完成 ${completed.length} 个，跳过 ${skipped.length} 个；并发池 ${concurrencyLimit}，已按 structured_merge 汇总为报告、JSON、CSV 和 ZIP。`,
+    payload: {
+      wideResearch: {
+        mode: "local_virtual_sub_agents_mvp",
+        requestedCount,
+        actualCount: results.length,
+        maxSubAgents,
+        concurrencyLimit,
+        capped,
+        durationMs,
+        completed: completed.length,
+        skipped: skipped.length,
+        results
+      },
+      generatedArtifacts: [
+        {
+          name: "wide-research-report.md",
+          type: "md",
+          mimeType: "text/markdown; charset=utf-8",
+          content: report
+        },
+        {
+          name: "wide-research-results.json",
+          type: "json",
+          mimeType: "application/json; charset=utf-8",
+          content: json
+        },
+        {
+          name: "wide-research-results.csv",
+          type: "csv",
+          mimeType: "text/csv; charset=utf-8",
+          content: csv
+        },
+        {
+          name: "wide-research-package.zip",
+          type: "zip",
+          mimeType: "application/zip",
+          content: zip.toString("base64"),
+          contentEncoding: "base64"
+        }
+      ]
+    }
+  };
+}
+
 async function runDataAnalysis(input: AgentToolInput): Promise<AgentToolResult> {
   const dimensions = ["目标", "资料", "分析", "交付", "风险"];
   return {
@@ -2766,6 +3234,8 @@ export async function executeAgentTool(
   switch (toolName) {
     case "task_planner":
       return runTaskPlanner(input);
+    case "spawn_sub_agents":
+      return runSpawnSubAgents(input);
     case "web_research":
       return runWebResearch(input);
     case "web_fetch":

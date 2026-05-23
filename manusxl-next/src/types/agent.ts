@@ -127,6 +127,82 @@ export interface AuditVerifyResult {
   error?: string;
 }
 
+export type NotificationChannel = "email" | "webhook" | "slack";
+export type NotificationLogStatus = "sent" | "development" | "skipped" | "failed";
+
+export interface NotificationSettings {
+  ownerId: string;
+  emailEnabled: boolean;
+  webhookEnabled: boolean;
+  slackEnabled: boolean;
+  webhookUrl?: string;
+  slackWebhookUrl?: string;
+  notifyOnCompleted: boolean;
+  notifyOnFailed: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface NotificationLog {
+  id: string;
+  ownerId: string;
+  taskId?: string;
+  channel: NotificationChannel;
+  status: NotificationLogStatus;
+  target?: string;
+  title: string;
+  message: string;
+  error?: string;
+  createdAt: string;
+}
+
+export type ScheduledTaskStatus = "active" | "paused";
+export type ScheduledTaskKind = "interval" | "cron";
+export type ScheduledTaskTriggerType = "schedule" | "manual" | "mail" | "slack";
+export type ScheduledTaskRunStatus = "created" | "skipped" | "failed";
+
+export interface ScheduledTask {
+  id: string;
+  ownerId: string;
+  name: string;
+  prompt: string;
+  model: string;
+  status: ScheduledTaskStatus;
+  kind: ScheduledTaskKind;
+  intervalMinutes?: number;
+  cronExpression?: string;
+  timezone: string;
+  nextRunAt?: string;
+  lastRunAt?: string;
+  lastTaskId?: string;
+  runCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ScheduledTaskRunLog {
+  id: string;
+  ownerId: string;
+  scheduledTaskId?: string;
+  taskId?: string;
+  triggerType: ScheduledTaskTriggerType;
+  status: ScheduledTaskRunStatus;
+  source: string;
+  message: string;
+  createdAt: string;
+}
+
+export interface CreateScheduledTaskRequest {
+  name?: string;
+  prompt: string;
+  model?: string;
+  status?: ScheduledTaskStatus;
+  kind: ScheduledTaskKind;
+  intervalMinutes?: number;
+  cronExpression?: string;
+  timezone?: string;
+}
+
 export type MyComputerBridgeType = "next-local" | "electron" | "tauri";
 
 export type MyComputerOperationKind =
@@ -365,6 +441,73 @@ export interface BillingSummary {
   byDay: BillingGroupSummary[];
 }
 
+export type ModelRouterTaskType =
+  | "research"
+  | "data"
+  | "file"
+  | "browser"
+  | "design"
+  | "coding"
+  | "general";
+
+export type ModelRouterStage = "planning" | "execution" | "final_answer";
+
+export interface ModelRouterStageRecommendation {
+  stage: ModelRouterStage;
+  model: string;
+  reason: string;
+  confidence: number;
+  sampleSize: number;
+  averageCostUsd: number;
+  successRate: number;
+  source: "history" | "fallback" | "manual";
+}
+
+export interface ModelRouterPolicySnapshot {
+  planning: ModelRouterStageRecommendation;
+  execution: ModelRouterStageRecommendation;
+  finalAnswer: ModelRouterStageRecommendation;
+}
+
+export interface ModelRouterTaskTypeRecommendation {
+  taskType: ModelRouterTaskType;
+  label: string;
+  taskCount: number;
+  metricCount: number;
+  dataSufficient: boolean;
+  policy: ModelRouterPolicySnapshot;
+}
+
+export interface ModelRouterAbTestSnapshot {
+  sampleSize: number;
+  baselineCostUsd: number;
+  candidateCostUsd: number;
+  costSavingsRate: number;
+  baselineQualityScore: number;
+  candidateQualityScore: number;
+  qualityDelta: number;
+  winner: "candidate" | "baseline" | "insufficient_data";
+  notes: string[];
+}
+
+export interface ModelRouterOptimizerResponse {
+  generatedAt: string;
+  selectedTaskType: ModelRouterTaskType;
+  selectedLabel: string;
+  latencyMs: number;
+  currentPolicy: {
+    baseModel: string;
+    planningModel: string;
+    executionModel: string;
+    finalModel: string;
+    manualOverride: boolean;
+  };
+  recommendation: ModelRouterTaskTypeRecommendation;
+  byTaskType: ModelRouterTaskTypeRecommendation[];
+  abTest: ModelRouterAbTestSnapshot;
+  fallbackReason?: string;
+}
+
 export interface ConfigResponse {
   model: string;
   baseUrl: string;
@@ -553,6 +696,17 @@ export interface TaskTemplate {
   id: string;
   ownerId?: string;
   isPublic?: boolean;
+  sourceTemplateId?: string;
+  category?: string;
+  creatorName?: string;
+  ratingAverage?: number;
+  ratingCount?: number;
+  forkCount?: number;
+  runCount?: number;
+  reviewStatus?: "draft" | "approved" | "rejected";
+  rejectionReason?: string;
+  marketplaceFeatured?: boolean;
+  publishedAt?: string;
   name: string;
   description: string;
   promptTemplate: string;
@@ -569,6 +723,7 @@ export interface CreateTemplateRequest {
   defaultModel?: string;
   tags?: string[];
   isPublic?: boolean;
+  category?: string;
 }
 
 export interface AgentSkill {

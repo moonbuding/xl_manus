@@ -206,6 +206,46 @@ npm run e2e:my-computer
 
 该脚本会验证 My Computer 本地桥接、允许目录、文件扫描、分类 dry-run + 授权执行、文件操作撤销、内容查重 dry-run、应用启动/关闭授权、macOS Calculator 真实启动与关闭、剪贴板真实读写、Always Allow 免确认、鼠标动作授权、安全 terminal 命令、路径越权拦截和审计日志。Settings / My Computer 面板可配置允许目录、暂停本机动作、撤销最近文件操作，并查看最近操作。
 
+模板市场验收：
+
+```bash
+npm run e2e:marketplace
+```
+
+该脚本会验证 Library / 模板市场至少 10 个公开模板、Fork 到个人 Library、评分改变排序、私有模板发布审核，以及恶意 prompt 模板被拒绝。
+
+通知链路验收：
+
+```bash
+npm run e2e:notifications
+```
+
+该脚本会验证 Settings 通知偏好、开发环境 Email 通知日志、关闭完成通知后不再发送，以及失败通知标题。任务进入 `completed` / `failed` / `cancelled` / `timeout` 后会异步触发通知；通知链接使用 `?taskId=` 直达任务详情。
+
+模型路由优化验收：
+
+```bash
+npm run e2e:router-optimizer
+```
+
+该脚本会验证 `/api/model-router/optimizer` 的登录保护后推荐、调研类任务类型识别、强规划模型 fallback、A/B 成本回放，以及推荐策略写入 Settings 后立即生效。Settings / 模型路由优化面板可查看每阶段模型推荐、置信度和最近任务回放结果。
+
+Scheduled / Mail / Slack 验收：
+
+```bash
+npm run e2e:scheduled
+```
+
+该脚本会创建一个短间隔计划任务，等待到期后触发新 Agent 任务，并通过 Mail Manus 入站 webhook 与 Slack Events webhook 各触发一个任务，最后检查三类触发日志。Settings / Scheduled / Mail / Slack 面板可创建 interval/cron 计划，任务详情页可把历史任务设为定时任务。
+
+Wide Research 验收：
+
+```bash
+npm run e2e:wide-research
+```
+
+该脚本会创建“并行调研 50 家公司”任务，验证 `spawn_sub_agents` 工具调用、子 Agent 并发池、失败重试后跳过、主 Agent 汇总，以及 Markdown / JSON / CSV / ZIP 交付物。
+
 批量文件处理验收：
 
 ```bash
@@ -230,6 +270,11 @@ npm run e2e:batch
 - Prometheus / Grafana / AlertManager observability profile 与 dashboard provisioning 模板
 - 审计日志、CSV 导出和 hash chain 校验
 - 批量文件重命名/分类 dry-run 清单与可下载批处理包
+- 模板市场：公开模板、Fork 到个人 Library、评分排序和基础 prompt 注入审核
+- 任务完成/失败通知：Email、Webhook、Slack 偏好、通知日志和开发环境测试发送
+- 动态模型路由优化：基于历史 Context 指标推荐规划/执行/总结模型，展示 A/B 回放并支持一键应用覆盖
+- Scheduled Tasks + Mail Manus + Manus for Slack MVP：interval/cron 触发、入站邮件 webhook、Slack Events webhook 统一创建 Agent 任务
+- Wide Research MVP：`spawn_sub_agents` 并行拆分横向调研对象、并发池节流、失败重试/跳过、主 Agent structured_merge 汇总和多格式结果包
 - stdio MCP Server 接入、工具发现、工具调用和 Agent `mcp_call`
 - Docker Compose 一键启动
 - E2E 演示验收脚本

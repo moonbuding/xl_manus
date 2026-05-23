@@ -172,6 +172,21 @@ function ensureMcpStep(prompt: string, plan: string[]) {
   return ["调用已启用的 MCP 工具获取外部上下文", ...plan].slice(0, 6);
 }
 
+function ensureWideResearchStep(prompt: string, plan: string[]) {
+  if (
+    !/wide research|横向调研|并行.*调研|批量调研|子\s*agent|sub[-\s]?agent|spawn_sub_agents|调研\s*(?:前)?(?:\d+|[一二两三四五六七八九十百]+)\s*(?:家|个|双|款|家公司|公司|品牌|供应商|对象)|(?:前|top\s*)(?:\d+|[一二两三四五六七八九十百]+)\s*(?:家|个|双|款|家公司|公司|品牌|供应商|对象)/i.test(
+      prompt
+    )
+  ) {
+    return plan;
+  }
+  if (plan.some((step) => /spawn_sub_agents|wide research|横向调研|子\s*agent|sub[-\s]?agent/i.test(step))) {
+    return plan;
+  }
+
+  return ["使用 spawn_sub_agents 并行拆分调研对象，并等待子 Agent 汇总结果", ...plan].slice(0, 6);
+}
+
 function ensureBatchFileOpsStep(prompt: string, plan: string[]) {
   if (!/批量|重命名|分类|移动|整理文件|rename|classify/i.test(prompt)) return plan;
   if (plan.some((step) => /批量|重命名|分类|移动|整理文件|batch_file_ops|rename|classify/i.test(step))) {
@@ -249,17 +264,20 @@ async function generatePlan(
   return ensureSkillRunnerStep(
     intent,
     ownerId,
-    ensureMapStep(
+    ensureWideResearchStep(
       intent,
-      ensureMcpStep(
+      ensureMapStep(
         intent,
-        ensureBatchFileOpsStep(
+        ensureMcpStep(
           intent,
-          ensureImageOcrStep(
+          ensureBatchFileOpsStep(
             intent,
-            ensureImageProcessStep(
+            ensureImageOcrStep(
               intent,
-              ensureFileReadingStep(prompt, parsePlan(raw, config.maxSteps), uploadedFileIds)
+              ensureImageProcessStep(
+                intent,
+                ensureFileReadingStep(prompt, parsePlan(raw, config.maxSteps), uploadedFileIds)
+              )
             )
           )
         )
@@ -404,9 +422,9 @@ export async function runAgentTask(taskId: string, options: { resumed?: boolean 
     const memoryPath = await ensureTaskMemory(taskId, task.prompt, task.ownerId);
     let enabledTools = selectToolsForPrompt(task.prompt, task.ownerId);
     const initialToolMasking = estimateToolMaskingSavings(enabledTools);
-    const planningRoute = routeModel("planning", task.prompt);
-    const executionRoute = routeModel("execution", task.prompt);
-    const finalRoute = routeModel("final_answer", task.prompt);
+    const planningRoute = routeModel("planning", task.prompt, task.ownerId);
+    const executionRoute = routeModel("execution", task.prompt, task.ownerId);
+    const finalRoute = routeModel("final_answer", task.prompt, task.ownerId);
     addTaskEvent(taskId, {
       type: "thinking",
       stepIndex: 0,

@@ -1,4 +1,5 @@
 import { getAppConfig } from "@/server/config/app-config";
+import { recommendDynamicModelRoute } from "@/server/llm/router-optimizer";
 
 export type ModelRouteStage = "planning" | "execution" | "final_answer";
 
@@ -6,6 +7,10 @@ export interface ModelRouteDecision {
   stage: ModelRouteStage;
   model: string;
   reason: string;
+  source?: "static" | "optimizer" | "manual";
+  taskType?: string;
+  confidence?: number;
+  sampleSize?: number;
 }
 
 export interface ModelRoutePolicy {
@@ -42,16 +47,47 @@ export function routeModelWithPolicy(
   return {
     stage,
     model,
-    reason
+    reason,
+    source: "static"
   };
 }
 
-export function routeModel(stage: ModelRouteStage, prompt: string): ModelRouteDecision {
+export function routeModel(stage: ModelRouteStage, prompt: string, ownerId?: string): ModelRouteDecision {
   const config = getAppConfig();
-  return routeModelWithPolicy(stage, prompt, {
+  const staticDecision = routeModelWithPolicy(stage, prompt, {
     baseModel: config.model,
     planningModel: config.planningModel,
     executionModel: config.executionModel,
     finalModel: config.finalModel
   });
+  const manualOverride =
+    config.planningModel !== config.model ||
+    config.executionModel !== config.model ||
+    config.finalModel !== config.model;
+
+  if (manualOverride) {
+    return {
+      ...staticDecision,
+      source: "manual"
+    };
+  }
+
+  const dynamicRoute = recommendDynamicModelRoute(stage, prompt, ownerId);
+  if (!dynamicRoute || dynamicRoute.model === staticDecision.model) {
+    return {
+      ...staticDecision,
+      source: dynamicRoute?.source === "manual" ? "manual" : staticDecision.source,
+      confidence: dynamicRoute?.confidence,
+      sampleSize: dynamicRoute?.sampleSize
+    };
+  }
+
+  return {
+    stage,
+    model: dynamicRoute.model,
+    reason: `动态优化：${dynamicRoute.reason}`,
+    source: "optimizer",
+    confidence: dynamicRoute.confidence,
+    sampleSize: dynamicRoute.sampleSize
+  };
 }

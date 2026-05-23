@@ -303,3 +303,38 @@ export async function sendVerificationEmail(input: {
     };
   }
 }
+
+export async function sendPlainEmail(input: {
+  to: string;
+  subject: string;
+  text: string;
+}): Promise<EmailDeliveryResult> {
+  const config = smtpConfig();
+  const verificationCodeExposed = shouldExposeVerificationCode();
+  if (!config) {
+    return {
+      ok: true,
+      mode: "development",
+      sent: false,
+      verificationCodeExposed
+    };
+  }
+
+  try {
+    await sendSmtpMail(config, input);
+    return {
+      ok: true,
+      mode: "smtp",
+      sent: true,
+      verificationCodeExposed
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      mode: "smtp",
+      sent: false,
+      verificationCodeExposed,
+      error: error instanceof Error ? error.message : "邮件发送失败"
+    };
+  }
+}

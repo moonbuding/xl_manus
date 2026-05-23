@@ -3,6 +3,7 @@
 import Image from "next/image";
 import {
   Archive,
+  Bell,
   BookmarkPlus,
   Bot,
   Brain,
@@ -62,6 +63,7 @@ import type {
   LocalBrowserStatus,
   McpCatalogItem,
   McpServer,
+  ModelRouterOptimizerResponse,
   MyComputerFileEntry,
   MyComputerFilePlanMode,
   MyComputerFilePlanResponse,
@@ -69,6 +71,11 @@ import type {
   MyComputerOperation,
   MyComputerOperationKind,
   MyComputerStatus,
+  NotificationLog,
+  NotificationSettings,
+  ScheduledTask,
+  ScheduledTaskRunLog,
+  ScheduledTaskKind,
   Task,
   TaskTemplate,
   TaskStatus,
@@ -178,6 +185,7 @@ const statusText: Record<TaskStatus, string> = {
 
 type NavigationView = "workspace" | "agent" | "library" | "settings";
 type AuthMode = "phone" | "email-login" | "email-register";
+type MarketplaceSort = "featured" | "popular" | "topRated" | "latest";
 
 interface SandboxStatus {
   mode: string;
@@ -454,6 +462,7 @@ export function AgentWorkspace() {
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFileSummary[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [templates, setTemplates] = useState<TaskTemplate[]>([]);
+  const [marketplaceTemplates, setMarketplaceTemplates] = useState<TaskTemplate[]>([]);
   const [skills, setSkills] = useState<AgentSkill[]>([]);
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
   const [mcpCatalog, setMcpCatalog] = useState<McpCatalogItem[]>([]);
@@ -461,6 +470,11 @@ export function AgentWorkspace() {
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [auditVerify, setAuditVerify] = useState<AuditVerifyResult | null>(null);
+  const [notificationSettings, setNotificationSettings] = useState<NotificationSettings | null>(null);
+  const [notificationLogs, setNotificationLogs] = useState<NotificationLog[]>([]);
+  const [scheduledTasks, setScheduledTasks] = useState<ScheduledTask[]>([]);
+  const [scheduledLogs, setScheduledLogs] = useState<ScheduledTaskRunLog[]>([]);
+  const [scheduledMailbox, setScheduledMailbox] = useState("");
   const [authDraft, setAuthDraft] = useState({
     phone: "",
     email: "",
@@ -477,6 +491,7 @@ export function AgentWorkspace() {
   const [activeNav, setActiveNav] = useState<NavigationView>("workspace");
   const [config, setConfig] = useState<ConfigResponse | null>(null);
   const [contextMetrics, setContextMetrics] = useState<ContextMetricsSummary | null>(null);
+  const [routerOptimizer, setRouterOptimizer] = useState<ModelRouterOptimizerResponse | null>(null);
   const [billingSummary, setBillingSummary] = useState<BillingSummary | null>(null);
   const [sandboxStatus, setSandboxStatus] = useState<SandboxStatus | null>(null);
   const [sandboxSelfTest, setSandboxSelfTest] = useState<SandboxSelfTestResult | null>(null);
@@ -499,9 +514,11 @@ export function AgentWorkspace() {
   } | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isUploadingFile, setIsUploadingFile] = useState(false);
+  const [isForkingTemplate, setIsForkingTemplate] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [taskQuery, setTaskQuery] = useState("");
   const [templateTagFilter, setTemplateTagFilter] = useState("all");
+  const [marketplaceSort, setMarketplaceSort] = useState<MarketplaceSort>("featured");
   const [settingsDraft, setSettingsDraft] = useState({
     apiKey: "",
     model: "deepseek-v4-flash",
@@ -516,7 +533,28 @@ export function AgentWorkspace() {
     localBrowserDomainAllowlist: "",
     myComputerAllowedRoots: ""
   });
+  const [notificationDraft, setNotificationDraft] = useState({
+    emailEnabled: false,
+    webhookEnabled: false,
+    slackEnabled: false,
+    webhookUrl: "",
+    slackWebhookUrl: "",
+    notifyOnCompleted: true,
+    notifyOnFailed: true
+  });
+  const [scheduledDraft, setScheduledDraft] = useState({
+    name: "",
+    prompt: "",
+    kind: "interval" as ScheduledTaskKind,
+    intervalMinutes: "60",
+    cronExpression: "0 9 * * 1"
+  });
   const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [isApplyingRouterPolicy, setIsApplyingRouterPolicy] = useState(false);
+  const [isSavingNotifications, setIsSavingNotifications] = useState(false);
+  const [isTestingNotifications, setIsTestingNotifications] = useState(false);
+  const [isCreatingScheduledTask, setIsCreatingScheduledTask] = useState(false);
+  const [isRunningScheduledTask, setIsRunningScheduledTask] = useState(false);
   const [isUploadingSkill, setIsUploadingSkill] = useState(false);
   const [isRunningSandboxTest, setIsRunningSandboxTest] = useState(false);
   const [isCheckingDatabase, setIsCheckingDatabase] = useState(false);
@@ -574,6 +612,7 @@ export function AgentWorkspace() {
   const eventSourceRef = useRef<EventSource | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const skillInputRef = useRef<HTMLInputElement | null>(null);
+  const initialTaskParamRef = useRef<string | null>(null);
   const activeTaskId = activeTask?.id;
   const activeTaskStatus = activeTask?.status;
 
@@ -663,6 +702,54 @@ export function AgentWorkspace() {
     }
   }, []);
 
+  const refreshNotifications = useCallback(async () => {
+    try {
+      const [settingsResponse, logsResponse] = await Promise.all([
+        fetch("/api/notifications/settings", { cache: "no-store" }),
+        fetch("/api/notifications/logs?limit=8", { cache: "no-store" })
+      ]);
+      if (settingsResponse.ok) {
+        const data = await readJson<{ settings: NotificationSettings }>(settingsResponse);
+        setNotificationSettings(data.settings);
+        setNotificationDraft({
+          emailEnabled: data.settings.emailEnabled,
+          webhookEnabled: data.settings.webhookEnabled,
+          slackEnabled: data.settings.slackEnabled,
+          webhookUrl: data.settings.webhookUrl ?? "",
+          slackWebhookUrl: data.settings.slackWebhookUrl ?? "",
+          notifyOnCompleted: data.settings.notifyOnCompleted,
+          notifyOnFailed: data.settings.notifyOnFailed
+        });
+      }
+      if (logsResponse.ok) {
+        const data = await readJson<{ logs: NotificationLog[] }>(logsResponse, { logs: [] });
+        setNotificationLogs(data.logs);
+      }
+    } catch {
+      setNotificationSettings(null);
+      setNotificationLogs([]);
+    }
+  }, []);
+
+  const refreshScheduledTasks = useCallback(async () => {
+    try {
+      const response = await fetch("/api/scheduled-tasks", { cache: "no-store" });
+      if (!response.ok) return;
+      const data = await readJson<{
+        mailbox: string;
+        tasks: ScheduledTask[];
+        logs: ScheduledTaskRunLog[];
+      }>(response, { mailbox: "", tasks: [], logs: [] });
+      setScheduledMailbox(data.mailbox);
+      setScheduledTasks(data.tasks);
+      setScheduledLogs(data.logs);
+    } catch {
+      setScheduledMailbox("");
+      setScheduledTasks([]);
+      setScheduledLogs([]);
+    }
+  }, []);
+
   const refreshContextMetrics = useCallback(async (taskId?: string) => {
     try {
       const suffix = taskId ? `?taskId=${encodeURIComponent(taskId)}` : "";
@@ -671,6 +758,17 @@ export function AgentWorkspace() {
       setContextMetrics(await readJson<ContextMetricsSummary>(response));
     } catch {
       setContextMetrics(null);
+    }
+  }, []);
+
+  const refreshRouterOptimizer = useCallback(async (nextPrompt = "") => {
+    try {
+      const suffix = nextPrompt.trim() ? `?prompt=${encodeURIComponent(nextPrompt.trim())}` : "";
+      const response = await fetch(`/api/model-router/optimizer${suffix}`, { cache: "no-store" });
+      if (!response.ok) return;
+      setRouterOptimizer(await readJson<ModelRouterOptimizerResponse>(response));
+    } catch {
+      setRouterOptimizer(null);
     }
   }, []);
 
@@ -1083,9 +1181,9 @@ export function AgentWorkspace() {
       setTasks(data.tasks);
       setActiveTask((current) => {
         if (current) {
-          return data.tasks.find((task) => task.id === current.id) ?? current;
+          return data.tasks.find((task) => task.id === current.id) ?? null;
         }
-        return data.tasks[0] ?? null;
+        return null;
       });
     } catch (caught) {
       setError(getErrorMessage(caught, "刷新任务失败"));
@@ -1100,6 +1198,17 @@ export function AgentWorkspace() {
       setTemplates(data.templates);
     } catch {
       setTemplates([]);
+    }
+  }, []);
+
+  const refreshMarketplaceTemplates = useCallback(async (sort: MarketplaceSort = "featured") => {
+    try {
+      const response = await fetch(`/api/marketplace/templates?sort=${sort}`, { cache: "no-store" });
+      if (!response.ok) return;
+      const data = await readJson<{ templates: TaskTemplate[] }>(response, { templates: [] });
+      setMarketplaceTemplates(data.templates);
+    } catch {
+      setMarketplaceTemplates([]);
     }
   }, []);
 
@@ -1156,6 +1265,7 @@ export function AgentWorkspace() {
           source.close();
           eventSourceRef.current = null;
           void refreshTasks();
+          void refreshRouterOptimizer();
         }
       });
 
@@ -1164,7 +1274,23 @@ export function AgentWorkspace() {
         eventSourceRef.current = null;
       };
     },
-    [closeStream, refreshTasks]
+    [closeStream, refreshRouterOptimizer, refreshTasks]
+  );
+
+  const selectTask = useCallback(
+    async (taskId: string) => {
+      const response = await fetch(`/api/tasks/${taskId}`, { cache: "no-store" });
+      if (!response.ok) return;
+      const task = await readJson<Task>(response);
+      setActiveTask(task);
+      setActiveNav("agent");
+      if (task.status === "running" || task.status === "queued") {
+        connectStream(task.id);
+      } else {
+        closeStream();
+      }
+    },
+    [closeStream, connectStream]
   );
 
   const resumePendingTasks = useCallback(async () => {
@@ -1191,11 +1317,15 @@ export function AgentWorkspace() {
         await refreshTasks();
         void refreshAuthStatus();
         void refreshAudit();
+        void refreshNotifications();
+        void refreshScheduledTasks();
         void refreshTemplates();
+        void refreshMarketplaceTemplates();
         void refreshSkills();
         void refreshMcpServers();
         void refreshMcpCatalog();
         void refreshBilling();
+        void refreshRouterOptimizer();
         void refreshSandboxStatus();
         void refreshDatabaseStatus();
         void refreshLocalBrowserStatus();
@@ -1247,16 +1377,39 @@ export function AgentWorkspace() {
     refreshLocalBrowserSafety,
     refreshLocalBrowserPairing,
     refreshLocalBrowserStatus,
+    refreshMarketplaceTemplates,
     refreshMyComputerStatus,
     refreshMcpCatalog,
     refreshMcpServers,
     refreshOcrStatus,
+    refreshNotifications,
+    refreshScheduledTasks,
+    refreshRouterOptimizer,
     refreshSandboxStatus,
     resumePendingTasks,
     refreshSkills,
     refreshTasks,
     refreshTemplates
   ]);
+
+  useEffect(() => {
+    if (!authUser) return;
+    const timer = window.setTimeout(() => {
+      void refreshMarketplaceTemplates(marketplaceSort);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [authUser, marketplaceSort, refreshMarketplaceTemplates]);
+
+  useEffect(() => {
+    if (!authUser || initialTaskParamRef.current) return;
+    const taskId = new URLSearchParams(window.location.search).get("taskId");
+    if (!taskId) return;
+    initialTaskParamRef.current = taskId;
+    const timer = window.setTimeout(() => {
+      void selectTask(taskId);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [authUser, selectTask]);
 
   useEffect(() => {
     if (!activeTaskId || (activeTaskStatus !== "running" && activeTaskStatus !== "queued")) return;
@@ -1350,6 +1503,7 @@ export function AgentWorkspace() {
         await resumePendingTasks();
         await refreshTasks();
         await refreshTemplates();
+        await refreshScheduledTasks();
         await refreshSkills();
         await refreshMcpServers();
         await refreshBilling();
@@ -1370,6 +1524,9 @@ export function AgentWorkspace() {
     setTasks([]);
     setActiveTask(null);
     setContextMetrics(null);
+    setScheduledTasks([]);
+    setScheduledLogs([]);
+    setScheduledMailbox("");
     setBillingSummary(null);
     setSandboxStatus(null);
     setSandboxSelfTest(null);
@@ -1421,6 +1578,7 @@ export function AgentWorkspace() {
       setActiveNav("agent");
       setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
       connectStream(task.id);
+      void refreshRouterOptimizer(trimmed);
     } catch (caught) {
       setError(getErrorMessage(caught, "创建任务失败"));
     } finally {
@@ -1459,19 +1617,6 @@ export function AgentWorkspace() {
       setError(getErrorMessage(caught, "文件上传失败"));
     } finally {
       setIsUploadingFile(false);
-    }
-  }
-
-  async function selectTask(taskId: string) {
-    const response = await fetch(`/api/tasks/${taskId}`, { cache: "no-store" });
-    if (!response.ok) return;
-    const task = await readJson<Task>(response);
-    setActiveTask(task);
-    setActiveNav("agent");
-    if (task.status === "running" || task.status === "queued") {
-      connectStream(task.id);
-    } else {
-      closeStream();
     }
   }
 
@@ -1547,8 +1692,37 @@ export function AgentWorkspace() {
         localBrowserDomainAllowlist: data.localBrowserDomainAllowlist.join("\n"),
         myComputerAllowedRoots: data.myComputerAllowedRoots.join("\n")
       }));
+      void refreshRouterOptimizer();
     } finally {
       setIsSavingSettings(false);
+    }
+  }
+
+  async function applyRouterRecommendation() {
+    if (!routerOptimizer) return;
+    setIsApplyingRouterPolicy(true);
+    try {
+      const policy = routerOptimizer.recommendation.policy;
+      const response = await fetch("/api/config", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          planningModel: policy.planning.model,
+          executionModel: policy.execution.model,
+          finalModel: policy.finalAnswer.model
+        })
+      });
+      const data = await readJson<ConfigResponse>(response);
+      setConfig(data);
+      setSettingsDraft((current) => ({
+        ...current,
+        planningModel: data.planningModel,
+        executionModel: data.executionModel,
+        finalModel: data.finalModel
+      }));
+      await refreshRouterOptimizer();
+    } finally {
+      setIsApplyingRouterPolicy(false);
     }
   }
 
@@ -1574,6 +1748,113 @@ export function AgentWorkspace() {
     } finally {
       setIsSavingLocalBrowserAllowlist(false);
     }
+  }
+
+  async function saveNotificationSettings() {
+    setIsSavingNotifications(true);
+    try {
+      const response = await fetch("/api/notifications/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(notificationDraft)
+      });
+      if (!response.ok) throw new Error("通知配置保存失败");
+      await refreshNotifications();
+    } catch (caught) {
+      setError(getErrorMessage(caught, "通知配置保存失败"));
+    } finally {
+      setIsSavingNotifications(false);
+    }
+  }
+
+  async function sendNotificationTest(status: "completed" | "failed" = "completed") {
+    setIsTestingNotifications(true);
+    try {
+      const response = await fetch("/api/notifications/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status })
+      });
+      if (!response.ok) throw new Error("通知测试失败");
+      await refreshNotifications();
+    } catch (caught) {
+      setError(getErrorMessage(caught, "通知测试失败"));
+    } finally {
+      setIsTestingNotifications(false);
+    }
+  }
+
+  async function createScheduledTaskFromDraft() {
+    const promptText = scheduledDraft.prompt.trim();
+    if (!promptText) return;
+    setIsCreatingScheduledTask(true);
+    try {
+      const response = await fetch("/api/scheduled-tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: scheduledDraft.name || undefined,
+          prompt: promptText,
+          model: config?.model,
+          kind: scheduledDraft.kind,
+          intervalMinutes: Number(scheduledDraft.intervalMinutes),
+          cronExpression: scheduledDraft.cronExpression
+        })
+      });
+      const data = await readJson<{ error?: string }>(response, {});
+      if (!response.ok) throw new Error(data.error ?? "创建定时任务失败");
+      setScheduledDraft((current) => ({ ...current, name: "", prompt: "" }));
+      await refreshScheduledTasks();
+    } catch (caught) {
+      setError(getErrorMessage(caught, "创建定时任务失败"));
+    } finally {
+      setIsCreatingScheduledTask(false);
+    }
+  }
+
+  async function scheduleTaskFromHistory(task: Task) {
+    setIsCreatingScheduledTask(true);
+    try {
+      const response = await fetch("/api/scheduled-tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: task.prompt.slice(0, 48),
+          prompt: task.prompt,
+          model: task.model,
+          kind: "cron",
+          cronExpression: "0 9 * * 1"
+        })
+      });
+      const data = await readJson<{ error?: string }>(response, {});
+      if (!response.ok) throw new Error(data.error ?? "设置定时任务失败");
+      setActiveNav("settings");
+      await refreshScheduledTasks();
+    } catch (caught) {
+      setError(getErrorMessage(caught, "设置定时任务失败"));
+    } finally {
+      setIsCreatingScheduledTask(false);
+    }
+  }
+
+  async function runScheduledTaskNow(scheduleId: string) {
+    setIsRunningScheduledTask(true);
+    try {
+      const response = await fetch(`/api/scheduled-tasks/${scheduleId}/run`, { method: "POST" });
+      const data = await readJson<{ error?: string }>(response, {});
+      if (!response.ok) throw new Error(data.error ?? "运行定时任务失败");
+      await refreshScheduledTasks();
+      await refreshTasks();
+    } catch (caught) {
+      setError(getErrorMessage(caught, "运行定时任务失败"));
+    } finally {
+      setIsRunningScheduledTask(false);
+    }
+  }
+
+  async function deleteScheduledTaskById(scheduleId: string) {
+    const response = await fetch(`/api/scheduled-tasks/${scheduleId}`, { method: "DELETE" });
+    if (response.ok) await refreshScheduledTasks();
   }
 
   async function runSandboxSelfTest() {
@@ -1625,6 +1906,45 @@ export function AgentWorkspace() {
     const response = await fetch(`/api/templates/${templateId}`, { method: "DELETE" });
     if (response.ok) {
       await refreshTemplates();
+    }
+  }
+
+  async function publishTemplateToMarketplace(templateId: string) {
+    const response = await fetch(`/api/templates/${templateId}/publish`, { method: "POST" });
+    if (!response.ok) {
+      const data = await readJson<{ error?: string }>(response, {});
+      setError(data.error ?? "模板发布审核未通过");
+      await refreshTemplates();
+      return;
+    }
+    await refreshTemplates();
+    await refreshMarketplaceTemplates(marketplaceSort);
+  }
+
+  async function forkMarketplaceTemplate(templateId: string) {
+    setIsForkingTemplate(true);
+    try {
+      const response = await fetch(`/api/marketplace/templates/${templateId}/fork`, { method: "POST" });
+      if (!response.ok) {
+        const data = await readJson<{ error?: string }>(response, {});
+        setError(data.error ?? "Fork 模板失败");
+        return;
+      }
+      await refreshTemplates();
+      await refreshMarketplaceTemplates(marketplaceSort);
+    } finally {
+      setIsForkingTemplate(false);
+    }
+  }
+
+  async function rateMarketplaceTemplate(templateId: string, rating: number) {
+    const response = await fetch(`/api/marketplace/templates/${templateId}/rating`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rating })
+    });
+    if (response.ok) {
+      await refreshMarketplaceTemplates(marketplaceSort);
     }
   }
 
@@ -1860,6 +2180,7 @@ export function AgentWorkspace() {
           canSave={activeTask?.status === "completed"}
           onSave={() => void saveActiveTaskAsTemplate()}
           onUse={useTemplate}
+          onPublish={(templateId) => void publishTemplateToMarketplace(templateId)}
           onDelete={(templateId) => void deleteTemplate(templateId)}
         />
         <TemplateVariablePanel
@@ -1878,6 +2199,20 @@ export function AgentWorkspace() {
           onCancel={() => setTemplateRun(null)}
         />
       </>
+    );
+  }
+
+  function renderMarketplacePanel() {
+    return (
+      <MarketplaceTemplateList
+        templates={marketplaceTemplates}
+        sort={marketplaceSort}
+        isForking={isForkingTemplate}
+        onSortChange={setMarketplaceSort}
+        onUse={useTemplate}
+        onFork={(templateId) => void forkMarketplaceTemplate(templateId)}
+        onRate={(templateId, rating) => void rateMarketplaceTemplate(templateId, rating)}
+      />
     );
   }
 
@@ -2003,6 +2338,103 @@ export function AgentWorkspace() {
     );
   }
 
+  function renderModelRouterOptimizerPanel() {
+    if (!routerOptimizer) {
+      return (
+        <div className="router-optimizer empty-state-inline">
+          <p>还没有路由优化数据。创建几个任务后，这里会根据 Context 指标推荐模型组合。</p>
+          <button type="button" className="secondary-button compact-button" onClick={() => void refreshRouterOptimizer()}>
+            <RefreshCw size={14} />
+            刷新
+          </button>
+        </div>
+      );
+    }
+
+    const policyRows = [
+      routerOptimizer.recommendation.policy.planning,
+      routerOptimizer.recommendation.policy.execution,
+      routerOptimizer.recommendation.policy.finalAnswer
+    ];
+    const stageLabel: Record<string, string> = {
+      planning: "规划",
+      execution: "执行",
+      final_answer: "总结"
+    };
+    const ab = routerOptimizer.abTest;
+
+    return (
+      <div className="router-optimizer">
+        <div className="router-summary">
+          <div>
+            <span className="mini-label">当前识别</span>
+            <strong>{routerOptimizer.selectedLabel}</strong>
+            <small>
+              {routerOptimizer.currentPolicy.manualOverride ? "手动覆盖已生效" : "自动优化可接管默认模型"}
+              {" · "}
+              {routerOptimizer.latencyMs}ms
+            </small>
+          </div>
+          <div className="router-actions">
+            <button type="button" className="secondary-button compact-button" onClick={() => void refreshRouterOptimizer(prompt)}>
+              <RefreshCw size={14} />
+              刷新
+            </button>
+            <button
+              type="button"
+              className="primary-button compact-button"
+              disabled={isApplyingRouterPolicy}
+              onClick={() => void applyRouterRecommendation()}
+            >
+              <Sparkles size={14} />
+              {isApplyingRouterPolicy ? "应用中" : "应用推荐"}
+            </button>
+          </div>
+        </div>
+
+        <div className="router-policy-grid">
+          {policyRows.map((item) => (
+            <div className="router-policy-item" key={item.stage}>
+              <span className="mini-label">{stageLabel[item.stage]}</span>
+              <strong>{item.model}</strong>
+              <small>
+                {item.source === "history" ? `${item.sampleSize} 个样本` : "规则回退"}
+                {" · "}
+                置信度 {formatPercent(item.confidence)}
+              </small>
+            </div>
+          ))}
+        </div>
+
+        <div className="router-ab">
+          <div>
+            <span className="mini-label">A/B 回放</span>
+            <strong>
+              {ab.winner === "candidate"
+                ? `推荐策略预计节省 ${formatPercent(ab.costSavingsRate)}`
+                : ab.winner === "baseline"
+                  ? "当前策略更稳"
+                  : "样本不足"}
+            </strong>
+            <small>
+              样本 {ab.sampleSize} 个 · 当前 {formatUsd(ab.baselineCostUsd)} · 推荐 {formatUsd(ab.candidateCostUsd)}
+            </small>
+          </div>
+          <div className="router-quality">
+            <span>{ab.baselineQualityScore.toFixed(1)}</span>
+            <small>当前质量分</small>
+            <span>{ab.candidateQualityScore.toFixed(1)}</span>
+            <small>推荐质量分</small>
+          </div>
+        </div>
+
+        {routerOptimizer.fallbackReason ? (
+          <p className="muted-note">{routerOptimizer.fallbackReason}</p>
+        ) : null}
+      </div>
+    );
+  }
+
   function renderLibraryView() {
     return (
       <div className="view-page">
@@ -2053,6 +2485,14 @@ export function AgentWorkspace() {
 
         <section className="section-panel">
           <div className="panel-title">
+            <Sparkles size={14} />
+            模板市场
+          </div>
+          {renderMarketplacePanel()}
+        </section>
+
+        <section className="section-panel">
+          <div className="panel-title">
             <FileSpreadsheet size={14} />
             Billing
           </div>
@@ -2085,6 +2525,14 @@ export function AgentWorkspace() {
 
           <section className="section-panel">
             <div className="panel-title">
+              <Gauge size={14} />
+              模型路由优化
+            </div>
+            {renderModelRouterOptimizerPanel()}
+          </section>
+
+          <section className="section-panel">
+            <div className="panel-title">
               <CheckCircle2 size={14} />
               认证
             </div>
@@ -2105,6 +2553,22 @@ export function AgentWorkspace() {
               审计日志
             </div>
             {renderAuditPanel()}
+          </section>
+
+          <section className="section-panel">
+            <div className="panel-title">
+              <Bell size={14} />
+              通知
+            </div>
+            {renderNotificationPanel()}
+          </section>
+
+          <section className="section-panel">
+            <div className="panel-title">
+              <Clock3 size={14} />
+              Scheduled / Mail / Slack
+            </div>
+            {renderScheduledTaskPanel()}
           </section>
 
           <section className="section-panel">
@@ -2343,6 +2807,310 @@ export function AgentWorkspace() {
             导出 CSV
           </a>
         </div>
+      </div>
+    );
+  }
+
+  function renderNotificationPanel() {
+    const enabledChannels = [
+      notificationSettings?.emailEnabled ? "Email" : null,
+      notificationSettings?.webhookEnabled ? "Webhook" : null,
+      notificationSettings?.slackEnabled ? "Slack" : null
+    ].filter(Boolean);
+
+    return (
+      <div className="sandbox-panel">
+        <div className="metric-list compact">
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">渠道</span>
+              <span className="metric-meta">任务完成/失败后异步发送，不阻塞 Agent。</span>
+            </div>
+            <strong>{enabledChannels.length ? enabledChannels.join("+") : "off"}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">触发</span>
+              <span className="metric-meta">
+                completed {notificationSettings?.notifyOnCompleted ? "on" : "off"} · failed{" "}
+                {notificationSettings?.notifyOnFailed ? "on" : "off"}
+              </span>
+            </div>
+            <strong>{notificationLogs.length}</strong>
+          </div>
+        </div>
+
+        <div className="settings-grid notification-grid">
+          <label className="setting-row checkbox-row">
+            <span>Email</span>
+            <input
+              type="checkbox"
+              checked={notificationDraft.emailEnabled}
+              onChange={(event) =>
+                setNotificationDraft((current) => ({ ...current, emailEnabled: event.target.checked }))
+              }
+            />
+          </label>
+          <label className="setting-row checkbox-row">
+            <span>完成时通知</span>
+            <input
+              type="checkbox"
+              checked={notificationDraft.notifyOnCompleted}
+              onChange={(event) =>
+                setNotificationDraft((current) => ({
+                  ...current,
+                  notifyOnCompleted: event.target.checked
+                }))
+              }
+            />
+          </label>
+          <label className="setting-row checkbox-row">
+            <span>失败时通知</span>
+            <input
+              type="checkbox"
+              checked={notificationDraft.notifyOnFailed}
+              onChange={(event) =>
+                setNotificationDraft((current) => ({ ...current, notifyOnFailed: event.target.checked }))
+              }
+            />
+          </label>
+          <label className="setting-row checkbox-row">
+            <span>Webhook</span>
+            <input
+              type="checkbox"
+              checked={notificationDraft.webhookEnabled}
+              onChange={(event) =>
+                setNotificationDraft((current) => ({ ...current, webhookEnabled: event.target.checked }))
+              }
+            />
+          </label>
+          <label className="settings-field">
+            <span>Webhook URL</span>
+            <input
+              value={notificationDraft.webhookUrl}
+              onChange={(event) =>
+                setNotificationDraft((current) => ({ ...current, webhookUrl: event.target.value }))
+              }
+              placeholder="https://example.com/manusxl-webhook"
+            />
+          </label>
+          <label className="setting-row checkbox-row">
+            <span>Slack</span>
+            <input
+              type="checkbox"
+              checked={notificationDraft.slackEnabled}
+              onChange={(event) =>
+                setNotificationDraft((current) => ({ ...current, slackEnabled: event.target.checked }))
+              }
+            />
+          </label>
+          <label className="settings-field">
+            <span>Slack Webhook</span>
+            <input
+              value={notificationDraft.slackWebhookUrl}
+              onChange={(event) =>
+                setNotificationDraft((current) => ({ ...current, slackWebhookUrl: event.target.value }))
+              }
+              placeholder="https://hooks.slack.com/services/..."
+            />
+          </label>
+        </div>
+
+        {notificationLogs.length ? (
+          <div className="browser-operation-list">
+            {notificationLogs.slice(0, 6).map((log) => (
+              <div className="browser-operation-item" key={log.id}>
+                <div>
+                  <span>{log.title}</span>
+                  <small>
+                    {log.channel} · {log.status} · {new Date(log.createdAt).toLocaleTimeString()}
+                  </small>
+                </div>
+                <strong className={`operation-status is-${log.status === "failed" ? "failed" : "completed"}`}>
+                  {log.status}
+                </strong>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="muted-note">暂无通知记录。</p>
+        )}
+
+        <div className="panel-actions">
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isSavingNotifications}
+            onClick={() => void saveNotificationSettings()}
+          >
+            {isSavingNotifications ? <Loader2 size={15} className="spin" /> : <CheckCircle2 size={15} />}
+            保存通知
+          </button>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isTestingNotifications}
+            onClick={() => void sendNotificationTest("completed")}
+          >
+            {isTestingNotifications ? <Loader2 size={15} className="spin" /> : <Send size={15} />}
+            测试完成通知
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  function renderScheduledTaskPanel() {
+    const activeCount = scheduledTasks.filter((task) => task.status === "active").length;
+
+    return (
+      <div className="sandbox-panel">
+        <div className="metric-list compact">
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">Mail Manus 地址</span>
+              <span className="metric-meta">{scheduledMailbox || "登录后生成"}</span>
+            </div>
+            <strong>{scheduledMailbox ? "ready" : "local"}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">计划任务</span>
+              <span className="metric-meta">定时器会创建新任务并进入现有 Agent 队列。</span>
+            </div>
+            <strong>{activeCount}/{scheduledTasks.length}</strong>
+          </div>
+        </div>
+
+        <div className="settings-grid notification-grid">
+          <label className="settings-field">
+            <span>名称</span>
+            <input
+              value={scheduledDraft.name}
+              onChange={(event) => setScheduledDraft((current) => ({ ...current, name: event.target.value }))}
+              placeholder="每周竞品简报"
+            />
+          </label>
+          <label className="settings-field">
+            <span>模式</span>
+            <select
+              value={scheduledDraft.kind}
+              onChange={(event) =>
+                setScheduledDraft((current) => ({
+                  ...current,
+                  kind: event.target.value as ScheduledTaskKind
+                }))
+              }
+            >
+              <option value="interval">Interval</option>
+              <option value="cron">Cron</option>
+            </select>
+          </label>
+          {scheduledDraft.kind === "interval" ? (
+            <label className="settings-field">
+              <span>间隔分钟</span>
+              <input
+                type="number"
+                min="0.02"
+                step="0.1"
+                value={scheduledDraft.intervalMinutes}
+                onChange={(event) =>
+                  setScheduledDraft((current) => ({ ...current, intervalMinutes: event.target.value }))
+                }
+              />
+            </label>
+          ) : (
+            <label className="settings-field">
+              <span>Cron 表达式</span>
+              <input
+                value={scheduledDraft.cronExpression}
+                onChange={(event) =>
+                  setScheduledDraft((current) => ({ ...current, cronExpression: event.target.value }))
+                }
+                placeholder="0 9 * * 1"
+              />
+            </label>
+          )}
+          <label className="settings-field wide-field">
+            <span>Prompt</span>
+            <textarea
+              value={scheduledDraft.prompt}
+              onChange={(event) => setScheduledDraft((current) => ({ ...current, prompt: event.target.value }))}
+              placeholder="每周一 9 点调研本周 AI Agent 行业新闻，输出简报。"
+            />
+          </label>
+        </div>
+
+        <div className="panel-actions">
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isCreatingScheduledTask || !scheduledDraft.prompt.trim()}
+            onClick={() => void createScheduledTaskFromDraft()}
+          >
+            {isCreatingScheduledTask ? <Loader2 size={15} className="spin" /> : <Clock3 size={15} />}
+            创建计划
+          </button>
+          <button type="button" className="secondary-button" onClick={() => void refreshScheduledTasks()}>
+            <RefreshCw size={15} />
+            刷新
+          </button>
+        </div>
+
+        {scheduledTasks.length ? (
+          <div className="browser-operation-list">
+            {scheduledTasks.slice(0, 8).map((task) => (
+              <div className="browser-operation-item" key={task.id}>
+                <div>
+                  <span>{task.name}</span>
+                  <small>
+                    {task.kind === "cron" ? task.cronExpression : `${task.intervalMinutes} min`} · next{" "}
+                    {task.nextRunAt ? formatDate(task.nextRunAt) : "paused"} · runs {task.runCount}
+                  </small>
+                </div>
+                <div className="panel-actions compact-actions">
+                  <button
+                    type="button"
+                    className="secondary-button compact-button"
+                    disabled={isRunningScheduledTask}
+                    onClick={() => void runScheduledTaskNow(task.id)}
+                  >
+                    <Play size={13} />
+                    运行
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost-button compact-button"
+                    onClick={() => void deleteScheduledTaskById(task.id)}
+                  >
+                    <Trash2 size={13} />
+                    删除
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="muted-note">还没有计划任务。也可以在任务详情页把历史任务设为定时任务。</p>
+        )}
+
+        {scheduledLogs.length ? (
+          <div className="browser-operation-list">
+            {scheduledLogs.slice(0, 6).map((log) => (
+              <div className="browser-operation-item" key={log.id}>
+                <div>
+                  <span>{log.source}</span>
+                  <small>
+                    {log.triggerType} · {log.status} · {new Date(log.createdAt).toLocaleTimeString()}
+                  </small>
+                </div>
+                <strong className={`operation-status is-${log.status === "failed" ? "failed" : "completed"}`}>
+                  {log.status}
+                </strong>
+              </div>
+            ))}
+          </div>
+        ) : null}
       </div>
     );
   }
@@ -3276,7 +4044,17 @@ export function AgentWorkspace() {
   function renderMainContent() {
     if (activeNav === "library") return renderLibraryView();
     if (activeNav === "settings") return renderSettingsView();
-    if (activeNav === "agent") return activeTask ? <TaskDetail task={activeTask} /> : renderAgentEmptyView();
+    if (activeNav === "agent") {
+      return activeTask ? (
+        <TaskDetail
+          task={activeTask}
+          isScheduling={isCreatingScheduledTask}
+          onSchedule={(task) => void scheduleTaskFromHistory(task)}
+        />
+      ) : (
+        renderAgentEmptyView()
+      );
+    }
     return <EmptyState onPick={(value) => void submitTask(value)} />;
   }
 
@@ -3800,7 +4578,15 @@ function EmptyState({ onPick }: { onPick: (prompt: string) => void }) {
   );
 }
 
-function TaskDetail({ task }: { task: Task }) {
+function TaskDetail({
+  task,
+  isScheduling,
+  onSchedule
+}: {
+  task: Task;
+  isScheduling: boolean;
+  onSchedule: (task: Task) => void;
+}) {
   return (
     <div className="task-detail">
       <div className="task-heading">
@@ -3811,6 +4597,15 @@ function TaskDetail({ task }: { task: Task }) {
             {task.id} · {statusText[task.status]} · {task.model}
           </p>
         </div>
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={isScheduling}
+          onClick={() => onSchedule(task)}
+        >
+          {isScheduling ? <Loader2 size={15} className="spin" /> : <Clock3 size={15} />}
+          设为定时任务
+        </button>
       </div>
 
       <div className="step-timeline">
@@ -3884,6 +4679,7 @@ function TemplateList({
   canSave,
   onSave,
   onUse,
+  onPublish,
   onDelete
 }: {
   templates: TaskTemplate[];
@@ -3893,6 +4689,7 @@ function TemplateList({
   canSave: boolean;
   onSave: () => void;
   onUse: (template: TaskTemplate) => void;
+  onPublish: (templateId: string) => void;
   onDelete: (templateId: string) => void;
 }) {
   return (
@@ -3940,15 +4737,105 @@ function TemplateList({
                   公
                 </span>
               ) : (
-                <button
-                  className="icon-button"
-                  aria-label={`删除模板 ${template.name}`}
-                  onClick={() => onDelete(template.id)}
-                >
-                  <Trash2 size={14} />
-                </button>
+                <>
+                  <button
+                    className="icon-button"
+                    aria-label={`发布模板 ${template.name}`}
+                    title={template.reviewStatus === "rejected" ? template.rejectionReason : "发布到模板市场"}
+                    onClick={() => onPublish(template.id)}
+                  >
+                    <Sparkles size={14} />
+                  </button>
+                  <button
+                    className="icon-button"
+                    aria-label={`删除模板 ${template.name}`}
+                    onClick={() => onDelete(template.id)}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </>
               )}
             </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MarketplaceTemplateList({
+  templates,
+  sort,
+  isForking,
+  onSortChange,
+  onUse,
+  onFork,
+  onRate
+}: {
+  templates: TaskTemplate[];
+  sort: MarketplaceSort;
+  isForking: boolean;
+  onSortChange: (sort: MarketplaceSort) => void;
+  onUse: (template: TaskTemplate) => void;
+  onFork: (templateId: string) => void;
+  onRate: (templateId: string, rating: number) => void;
+}) {
+  const sortOptions: Array<{ value: MarketplaceSort; label: string }> = [
+    { value: "featured", label: "精选" },
+    { value: "popular", label: "热门" },
+    { value: "topRated", label: "高分" },
+    { value: "latest", label: "最新" }
+  ];
+
+  return (
+    <div className="marketplace-panel">
+      <div className="template-tags" aria-label="模板市场排序">
+        {sortOptions.map((option) => (
+          <button
+            key={option.value}
+            className={sort === option.value ? "template-tag active" : "template-tag"}
+            onClick={() => onSortChange(option.value)}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+      {templates.length === 0 ? (
+        <p className="muted-note">模板市场还没有可用模板。</p>
+      ) : (
+        <div className="marketplace-grid">
+          {templates.slice(0, 10).map((template) => (
+            <article key={template.id} className="marketplace-item">
+              <button className="marketplace-main" onClick={() => onUse(template)}>
+                <span className="template-name">{template.name}</span>
+                <span className="template-meta">
+                  {[
+                    template.category ?? "general",
+                    `评分 ${(template.ratingAverage ?? 0).toFixed(1)}(${template.ratingCount ?? 0})`,
+                    `Fork ${template.forkCount ?? 0}`
+                  ].join(" · ")}
+                </span>
+                <span className="marketplace-description">{template.description}</span>
+              </button>
+              <div className="marketplace-actions">
+                <button
+                  type="button"
+                  className="secondary-button compact-button"
+                  disabled={isForking}
+                  onClick={() => onFork(template.id)}
+                >
+                  <Plus size={13} />
+                  Fork
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button compact-button"
+                  onClick={() => onRate(template.id, 5)}
+                >
+                  5 分
+                </button>
+              </div>
+            </article>
           ))}
         </div>
       )}

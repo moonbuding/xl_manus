@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { byteSize, createId } from "@/lib/id";
 import { safeRecordAuditLog } from "@/server/audit/audit-store";
 import { dataPath } from "@/server/data-root";
+import { queueTaskNotification } from "@/server/notifications/notification-store";
 import {
   canUsePostgresRuntime,
   checkPsqlCli,
@@ -694,10 +695,18 @@ export function createTask(
 export function updateTaskStatus(taskId: string, status: TaskStatus, error?: string) {
   const task = getTask(taskId);
   if (!task) return;
+  const previousStatus = task.status;
   task.status = status;
   task.error = error;
   task.updatedAt = new Date().toISOString();
   persistTask(task);
+  if (
+    task.ownerId &&
+    previousStatus !== status &&
+    ["completed", "failed", "cancelled", "timeout"].includes(status)
+  ) {
+    queueTaskNotification({ ...task });
+  }
 }
 
 export function setFinalAnswer(taskId: string, finalAnswer: string) {
