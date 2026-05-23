@@ -208,6 +208,16 @@ const organizationRoleText: Record<OrganizationRole, string> = {
 type NavigationView = "workspace" | "agent" | "library" | "settings";
 type AuthMode = "phone" | "email-login" | "email-register";
 type MarketplaceSort = "featured" | "popular" | "topRated" | "latest";
+type SettingsSectionId =
+  | "model"
+  | "account"
+  | "agent"
+  | "my-computer"
+  | "browser"
+  | "execution"
+  | "data";
+
+const marketplacePageSize = 10;
 
 interface SandboxStatus {
   mode: string;
@@ -703,8 +713,12 @@ export function AgentWorkspace() {
   const [isForkingTemplate, setIsForkingTemplate] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [taskQuery, setTaskQuery] = useState("");
+  const [settingsSearch, setSettingsSearch] = useState("");
+  const [activeSettingsSection, setActiveSettingsSection] = useState<SettingsSectionId>("model");
   const [templateTagFilter, setTemplateTagFilter] = useState("all");
   const [marketplaceSort, setMarketplaceSort] = useState<MarketplaceSort>("featured");
+  const [marketplacePage, setMarketplacePage] = useState(1);
+  const [marketplaceTotal, setMarketplaceTotal] = useState(0);
   const [settingsDraft, setSettingsDraft] = useState({
     apiKey: "",
     model: "deepseek-v4-flash",
@@ -1596,14 +1610,24 @@ export function AgentWorkspace() {
     }
   }, []);
 
-  const refreshMarketplaceTemplates = useCallback(async (sort: MarketplaceSort = "featured") => {
+  const refreshMarketplaceTemplates = useCallback(async (sort: MarketplaceSort = "featured", page = 1) => {
     try {
-      const response = await fetch(`/api/marketplace/templates?sort=${sort}`, { cache: "no-store" });
+      const params = new URLSearchParams({
+        sort,
+        page: String(page),
+        limit: String(marketplacePageSize)
+      });
+      const response = await fetch(`/api/marketplace/templates?${params.toString()}`, { cache: "no-store" });
       if (!response.ok) return;
-      const data = await readJson<{ templates: TaskTemplate[] }>(response, { templates: [] });
+      const data = await readJson<{ templates: TaskTemplate[]; total?: number }>(response, { templates: [] });
       setMarketplaceTemplates(data.templates);
+      const total = data.total ?? data.templates.length;
+      setMarketplaceTotal(total);
+      const totalPages = Math.max(1, Math.ceil(total / marketplacePageSize));
+      if (page > totalPages) setMarketplacePage(totalPages);
     } catch {
       setMarketplaceTemplates([]);
+      setMarketplaceTotal(0);
     }
   }, []);
 
@@ -1717,7 +1741,7 @@ export function AgentWorkspace() {
         void refreshScheduledTasks();
         void refreshOrganizations();
         void refreshTemplates();
-        void refreshMarketplaceTemplates();
+        void refreshMarketplaceTemplates("featured", 1);
         void refreshSkills();
         void refreshMcpServers();
         void refreshMcpCatalog();
@@ -1797,10 +1821,10 @@ export function AgentWorkspace() {
   useEffect(() => {
     if (!authUser) return;
     const timer = window.setTimeout(() => {
-      void refreshMarketplaceTemplates(marketplaceSort);
+      void refreshMarketplaceTemplates(marketplaceSort, marketplacePage);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [authUser, marketplaceSort, refreshMarketplaceTemplates]);
+  }, [authUser, marketplacePage, marketplaceSort, refreshMarketplaceTemplates]);
 
   useEffect(() => {
     if (!authUser) return;
@@ -2470,6 +2494,38 @@ export function AgentWorkspace() {
     }
   }
 
+  async function deleteTaskFromLibrary(taskId: string) {
+    const task = tasks.find((item) => item.id === taskId);
+    const title = task ? getUserVisiblePrompt(task.prompt) : "这个任务";
+    if (!window.confirm(`确认删除「${title}」？任务交付物也会从本地库中移除。`)) return;
+    const response = await fetch(`/api/tasks/${taskId}`, { method: "DELETE" });
+    if (!response.ok) {
+      const data = await readJson<{ error?: string }>(response, {});
+      setError(data.error ?? "删除任务失败");
+      return;
+    }
+    setTasks((current) => current.filter((item) => item.id !== taskId));
+    setActiveTask((current) => (current?.id === taskId ? null : current));
+  }
+
+  async function deleteUploadedFileFromLibrary(fileId: string) {
+    const file = libraryFiles.find((item) => item.id === fileId);
+    if (!window.confirm(`确认删除「${file?.name ?? "这个文件"}」？`)) return;
+    const response = await fetch(`/api/files/${fileId}`, { method: "DELETE" });
+    if (!response.ok) {
+      const data = await readJson<{ error?: string }>(response, {});
+      setError(data.error ?? "删除上传文件失败");
+      return;
+    }
+    setLibraryFiles((current) => current.filter((item) => item.id !== fileId));
+    setUploadedFiles((current) => current.filter((item) => item.id !== fileId));
+  }
+
+  function changeMarketplaceSort(sort: MarketplaceSort) {
+    setMarketplaceSort(sort);
+    setMarketplacePage(1);
+  }
+
   async function publishTemplateToMarketplace(templateId: string) {
     const response = await fetch(`/api/templates/${templateId}/publish`, { method: "POST" });
     if (!response.ok) {
@@ -2479,7 +2535,18 @@ export function AgentWorkspace() {
       return;
     }
     await refreshTemplates();
-    await refreshMarketplaceTemplates(marketplaceSort);
+    await refreshMarketplaceTemplates(marketplaceSort, marketplacePage);
+  }
+
+  async function unpublishTemplateFromMarketplace(templateId: string) {
+    const response = await fetch(`/api/templates/${templateId}/publish`, { method: "DELETE" });
+    if (!response.ok) {
+      const data = await readJson<{ error?: string }>(response, {});
+      setError(data.error ?? "模板下架失败");
+      return;
+    }
+    await refreshTemplates();
+    await refreshMarketplaceTemplates(marketplaceSort, marketplacePage);
   }
 
   async function forkMarketplaceTemplate(templateId: string) {
@@ -2492,7 +2559,7 @@ export function AgentWorkspace() {
         return;
       }
       await refreshTemplates();
-      await refreshMarketplaceTemplates(marketplaceSort);
+      await refreshMarketplaceTemplates(marketplaceSort, marketplacePage);
     } finally {
       setIsForkingTemplate(false);
     }
@@ -2505,7 +2572,7 @@ export function AgentWorkspace() {
       body: JSON.stringify({ rating })
     });
     if (response.ok) {
-      await refreshMarketplaceTemplates(marketplaceSort);
+      await refreshMarketplaceTemplates(marketplaceSort, marketplacePage);
     }
   }
 
@@ -2700,44 +2767,55 @@ export function AgentWorkspace() {
     return `panel-section ${activeNav === view ? "is-focused" : ""}`;
   }
 
-  function renderTaskLibrary(limit = 12) {
+  function renderTaskLibrary() {
     if (tasks.length === 0) {
       return <p className="muted-note">还没有历史任务，先从工作台创建一个新任务。</p>;
     }
 
     return (
-      <div className="task-library-list">
-        {tasks.slice(0, limit).map((task) => (
-          <button
-            key={task.id}
-            type="button"
-            className={`task-library-item ${activeTask?.id === task.id ? "is-active" : ""}`}
-            onClick={() => {
-              setActiveNav("agent");
-              void selectTask(task.id);
-            }}
-          >
-            <span className={`status-dot ${task.status}`} />
-            <span>
-              <strong>{getUserVisiblePrompt(task.prompt)}</strong>
-              <small>
-                {statusText[task.status]} · {task.model} · {formatDate(task.createdAt)}
-              </small>
-            </span>
-          </button>
+      <div className="task-library-list library-scroll-list">
+        {tasks.map((task) => (
+          <div key={task.id} className={`task-library-item ${activeTask?.id === task.id ? "is-active" : ""}`}>
+            <button
+              type="button"
+              className="task-library-main"
+              onClick={() => {
+                setActiveNav("agent");
+                void selectTask(task.id);
+              }}
+            >
+              <span className={`status-dot ${task.status}`} />
+              <span>
+                <strong>{getUserVisiblePrompt(task.prompt)}</strong>
+                <small>
+                  {statusText[task.status]} · {task.model} · {formatDate(task.createdAt)}
+                </small>
+              </span>
+            </button>
+            <button
+              type="button"
+              className="icon-button library-delete-button"
+              aria-label={`删除任务 ${getUserVisiblePrompt(task.prompt)}`}
+              disabled={task.status === "running" || task.status === "queued"}
+              title={task.status === "running" || task.status === "queued" ? "运行中的任务需要先停止" : "删除任务"}
+              onClick={() => void deleteTaskFromLibrary(task.id)}
+            >
+              <Trash2 size={14} />
+            </button>
+          </div>
         ))}
       </div>
     );
   }
 
-  function renderUploadedFileLibrary(limit = 12) {
+  function renderUploadedFileLibrary() {
     if (libraryFiles.length === 0) {
       return <p className="muted-note">还没有上传文件。桌面端同步或聊天框上传的文件会出现在这里。</p>;
     }
 
     return (
-      <div className="file-library-list">
-        {libraryFiles.slice(0, limit).map((file) => {
+      <div className="file-library-list library-scroll-list">
+        {libraryFiles.map((file) => {
           const expiresAt = file.expiresAt ? formatDate(file.expiresAt) : "未设置 TTL";
           const source = file.metadata.source === "desktop-sync" ? "My Computer" : "Web Upload";
           return (
@@ -2745,13 +2823,21 @@ export function AgentWorkspace() {
               <span className="file-library-icon">
                 <FileText size={15} />
               </span>
-              <span>
+              <span className="file-library-content">
                 <strong>{file.name}</strong>
                 <small>
                   {source} · {formatSize(file.size)} · {expiresAt}
                 </small>
                 <em>{file.summary}</em>
               </span>
+              <button
+                type="button"
+                className="icon-button library-delete-button"
+                aria-label={`删除上传文件 ${file.name}`}
+                onClick={() => void deleteUploadedFileFromLibrary(file.id)}
+              >
+                <Trash2 size={14} />
+              </button>
             </div>
           );
         })}
@@ -2766,11 +2852,13 @@ export function AgentWorkspace() {
           templates={visibleTemplates}
           allTags={templateTags}
           activeTag={templateTagFilter}
+          currentUserId={authUser?.id}
           onTagChange={setTemplateTagFilter}
           canSave={activeTask?.status === "completed"}
           onSave={() => void saveActiveTaskAsTemplate()}
           onUse={useTemplate}
           onPublish={(templateId) => void publishTemplateToMarketplace(templateId)}
+          onUnpublish={(templateId) => void unpublishTemplateFromMarketplace(templateId)}
           onDelete={(templateId) => void deleteTemplate(templateId)}
         />
         <TemplateVariablePanel
@@ -2796,11 +2884,17 @@ export function AgentWorkspace() {
     return (
       <MarketplaceTemplateList
         templates={marketplaceTemplates}
+        total={marketplaceTotal}
+        page={marketplacePage}
+        pageSize={marketplacePageSize}
         sort={marketplaceSort}
         isForking={isForkingTemplate}
-        onSortChange={setMarketplaceSort}
+        currentUserId={authUser?.id}
+        onPageChange={setMarketplacePage}
+        onSortChange={changeMarketplaceSort}
         onUse={useTemplate}
         onFork={(templateId) => void forkMarketplaceTemplate(templateId)}
+        onUnpublish={(templateId) => void unpublishTemplateFromMarketplace(templateId)}
         onRate={(templateId, rating) => void rateMarketplaceTemplate(templateId, rating)}
       />
     );
@@ -3344,14 +3438,14 @@ export function AgentWorkspace() {
         <div className="view-grid two-columns">
           <section className="section-panel">
             <div className="panel-title">历史任务</div>
-            {renderTaskLibrary(16)}
+            {renderTaskLibrary()}
           </section>
           <section className="section-panel">
             <div className="panel-title">
               <FileText size={14} />
               上传文件
             </div>
-            {renderUploadedFileLibrary(16)}
+            {renderUploadedFileLibrary()}
           </section>
         </div>
 
@@ -3385,115 +3479,117 @@ export function AgentWorkspace() {
   }
 
   function renderSettingsView() {
-    return (
-      <div className="view-page">
-        <div className="view-header">
-          <div>
-            <div className="empty-kicker">Settings</div>
-            <h1>系统设置</h1>
-            <p>配置模型、预算、Skills、MCP Server 和 Agent 可调用能力。</p>
-          </div>
-          <span className="status-chip">
-            {config?.hasApiKey ? <CheckCircle2 size={14} /> : <Clock3 size={14} />}
-            {config?.hasApiKey ? "API Key 已配置" : "使用本地回退"}
-          </span>
-        </div>
-
-        <div className="settings-page-grid">
-          <section className="section-panel settings-model-panel">
-            <div className="panel-title">模型与预算</div>
+    const sandboxLabel = sandboxStatus
+      ? sandboxStatus.mode === "local"
+        ? "local"
+        : sandboxStatus.dockerAvailable && sandboxStatus.imageAvailable
+          ? "ready"
+          : "check"
+      : "loading";
+    const myComputerLabel = myComputerStatus?.connected
+      ? hasOnlineDesktop
+        ? "online"
+        : "bridge"
+      : "offline";
+    const localBrowserLabel = localBrowserStatus?.connected ? "connected" : "offline";
+    const mcpEnabledCount = mcpServers.filter((server) => server.enabled).length;
+    const databaseLabel = databaseStatus
+      ? databaseStatus.activeProvider === "postgres"
+        ? "postgres"
+        : "sqlite"
+      : "loading";
+    const settingsStatusCards = [
+      {
+        label: "API Key",
+        value: config?.hasApiKey ? "ready" : "local",
+        meta: config?.model ?? "deepseek-v4-flash",
+        icon: <Sparkles size={15} />
+      },
+      {
+        label: "沙盒",
+        value: sandboxLabel,
+        meta: sandboxStatus?.image ?? "等待检测",
+        icon: <SquareTerminal size={15} />
+      },
+      {
+        label: "My Computer",
+        value: myComputerLabel,
+        meta: hasOnlineDesktop ? "桌面端在线" : myComputerStatus?.bridge ?? "未连接",
+        icon: <Home size={15} />
+      },
+      {
+        label: "MCP",
+        value: `${mcpEnabledCount}/${mcpServers.length}`,
+        meta: mcpServers.length ? "server enabled" : "未接入 server",
+        icon: <Brain size={15} />
+      },
+      {
+        label: "数据",
+        value: databaseLabel,
+        meta: databaseStatus?.note ?? "SQLite 本地存储",
+        icon: <Database size={15} />
+      }
+    ];
+    const settingsSections: Array<{
+      id: SettingsSectionId;
+      label: string;
+      description: string;
+      keywords: string[];
+      status: string;
+      icon: ReactNode;
+      render: () => ReactNode;
+    }> = [
+      {
+        id: "model",
+        label: "模型与预算",
+        description: "DeepSeek、API Key、预算、Prompt Cache、模型路由和图片 Provider。",
+        keywords: ["model", "模型", "deepseek", "api key", "预算", "prompt cache", "路由", "图片", "provider"],
+        status: config?.hasApiKey ? "ready" : "local",
+        icon: <Sparkles size={15} />,
+        render: () => (
+          <>
             {renderSettingsControls()}
-          </section>
-
-          <section className="section-panel">
+            <div className="settings-divider" />
             <div className="panel-title">
               <Gauge size={14} />
               模型路由优化
             </div>
             {renderModelRouterOptimizerPanel()}
-          </section>
-
-          <section className="section-panel">
+          </>
+        )
+      },
+      {
+        id: "account",
+        label: "账号与组织",
+        description: "登录认证、验证码、OAuth、组织空间、成员邀请和权限管理。",
+        keywords: ["auth", "认证", "登录", "账号", "组织", "权限", "成员", "invite", "oauth"],
+        status: authStatus ? "ready" : "loading",
+        icon: <ShieldCheck size={15} />,
+        render: () => (
+          <>
             <div className="panel-title">
               <CheckCircle2 size={14} />
               认证
             </div>
             {renderAuthPanel()}
-          </section>
-
-          <section className="section-panel settings-model-panel">
+            <div className="settings-divider" />
             <div className="panel-title">
               <ShieldCheck size={14} />
               组织与权限
             </div>
             {renderOrganizationPanel()}
-          </section>
-
-          <section className="section-panel">
-            <div className="panel-title">
-              <Database size={14} />
-              数据库
-            </div>
-            {renderDatabasePanel()}
-          </section>
-
-          <section className="section-panel">
-            <div className="panel-title">
-              <ShieldCheck size={14} />
-              审计日志
-            </div>
-            {renderAuditPanel()}
-          </section>
-
-          <section className="section-panel">
-            <div className="panel-title">
-              <Bell size={14} />
-              通知
-            </div>
-            {renderNotificationPanel()}
-          </section>
-
-          <section className="section-panel">
-            <div className="panel-title">
-              <Clock3 size={14} />
-              Scheduled / Mail / Slack
-            </div>
-            {renderScheduledTaskPanel()}
-          </section>
-
-          <section className="section-panel">
-            <div className="panel-title">
-              <SquareTerminal size={14} />
-              沙盒
-            </div>
-            {renderSandboxPanel()}
-          </section>
-
-          <section className="section-panel">
-            <div className="panel-title">
-              <Globe size={14} />
-              本地浏览器
-            </div>
-            {renderLocalBrowserPanel()}
-          </section>
-
-          <section className="section-panel">
-            <div className="panel-title">
-              <Home size={14} />
-              My Computer
-            </div>
-            {renderMyComputerPanel()}
-          </section>
-
-          <section className="section-panel">
-            <div className="panel-title">
-              <FileText size={14} />
-              OCR
-            </div>
-            {renderOcrPanel()}
-          </section>
-
-          <section className="section-panel">
+          </>
+        )
+      },
+      {
+        id: "agent",
+        label: "Agent 能力",
+        description: "Skills、MCP Server、工具开关和可调用能力目录。",
+        keywords: ["agent", "skills", "skill", "mcp", "工具", "server", "catalog", "能力"],
+        status: `${skills.filter((skill) => skill.enabled).length}/${skills.length}`,
+        icon: <Brain size={15} />,
+        render: () => (
+          <>
             <div className="panel-title">
               <Brain size={14} />
               Skills
@@ -3511,9 +3607,7 @@ export function AgentWorkspace() {
               onUpload={() => skillInputRef.current?.click()}
               onToggle={(skillId, enabled) => void toggleSkill(skillId, enabled)}
             />
-          </section>
-
-          <section className="section-panel settings-mcp-panel">
+            <div className="settings-divider" />
             <div className="panel-title">
               <SquareTerminal size={14} />
               MCP Servers
@@ -3532,7 +3626,209 @@ export function AgentWorkspace() {
               onRefresh={(serverId) => void refreshMcpServerTools(serverId)}
               onToolToggle={(serverId, toolName, enabled) => void toggleMcpTool(serverId, toolName, enabled)}
             />
-          </section>
+          </>
+        )
+      },
+      {
+        id: "my-computer",
+        label: "My Computer",
+        description: "桌面端配对、本机目录授权、文件分类、查重、移动和动作级授权。",
+        keywords: ["my computer", "desktop", "桌面", "本机", "文件", "目录", "分类", "查重", "移动", "授权", "剪贴板", "键鼠"],
+        status: myComputerLabel,
+        icon: <Home size={15} />,
+        render: renderMyComputerPanel
+      },
+      {
+        id: "browser",
+        label: "本地浏览器",
+        description: "Chrome CDP、浏览器扩展配对、域名白名单、截图和浏览器动作。",
+        keywords: ["browser", "chrome", "cdp", "浏览器", "扩展", "域名", "截图", "rehearsal"],
+        status: localBrowserLabel,
+        icon: <Globe size={15} />,
+        render: renderLocalBrowserPanel
+      },
+      {
+        id: "execution",
+        label: "沙盒与自动化",
+        description: "Docker 沙盒、OCR、通知、定时任务、Mail Manus 和 Slack/Webhook。",
+        keywords: ["sandbox", "docker", "沙盒", "ocr", "通知", "notification", "scheduled", "定时", "mail", "slack", "webhook"],
+        status: sandboxLabel,
+        icon: <SquareTerminal size={15} />,
+        render: () => (
+          <>
+            <div className="view-grid two-columns settings-inner-grid">
+              <div>
+                <div className="panel-title">
+                  <SquareTerminal size={14} />
+                  沙盒
+                </div>
+                {renderSandboxPanel()}
+              </div>
+              <div>
+                <div className="panel-title">
+                  <FileText size={14} />
+                  OCR
+                </div>
+                {renderOcrPanel()}
+              </div>
+            </div>
+            <div className="settings-divider" />
+            <div className="view-grid two-columns settings-inner-grid">
+              <div>
+                <div className="panel-title">
+                  <Bell size={14} />
+                  通知
+                </div>
+                {renderNotificationPanel()}
+              </div>
+              <div>
+                <div className="panel-title">
+                  <Clock3 size={14} />
+                  Scheduled / Mail / Slack
+                </div>
+                {renderScheduledTaskPanel()}
+              </div>
+            </div>
+          </>
+        )
+      },
+      {
+        id: "data",
+        label: "数据与安全",
+        description: "数据库状态、PostgreSQL 检查、审计日志、Hash Chain 和 CSV 导出。",
+        keywords: ["data", "database", "数据库", "sqlite", "postgres", "pg", "审计", "audit", "安全", "csv"],
+        status: databaseLabel,
+        icon: <Database size={15} />,
+        render: () => (
+          <div className="view-grid two-columns settings-inner-grid">
+            <div>
+              <div className="panel-title">
+                <Database size={14} />
+                数据库
+              </div>
+              {renderDatabasePanel()}
+            </div>
+            <div>
+              <div className="panel-title">
+                <ShieldCheck size={14} />
+                审计日志
+              </div>
+              {renderAuditPanel()}
+            </div>
+          </div>
+        )
+      }
+    ];
+    const normalizedSettingsSearch = settingsSearch.trim().toLowerCase();
+    const activeSection =
+      settingsSections.find((section) => section.id === activeSettingsSection) ?? settingsSections[0];
+    const visibleSettingsSections = normalizedSettingsSearch
+      ? settingsSections.filter((section) =>
+          [section.label, section.description, section.status, ...section.keywords]
+            .join(" ")
+            .toLowerCase()
+            .includes(normalizedSettingsSearch)
+        )
+      : [activeSection];
+
+    return (
+      <div className="view-page">
+        <div className="view-header">
+          <div>
+            <div className="empty-kicker">Settings</div>
+            <h1>系统设置</h1>
+            <p>按模块管理模型、桌面端、本地浏览器、Skills、MCP、沙盒和数据安全。</p>
+          </div>
+          <span className="status-chip">
+            {config?.hasApiKey ? <CheckCircle2 size={14} /> : <Clock3 size={14} />}
+            {config?.hasApiKey ? "API Key 已配置" : "使用本地回退"}
+          </span>
+        </div>
+
+        <div className="settings-status-grid">
+          {settingsStatusCards.map((card) => (
+            <div className="settings-status-card" key={card.label}>
+              <span>{card.icon}</span>
+              <div>
+                <strong>{card.value}</strong>
+                <small>{card.label} · {card.meta}</small>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="settings-center-layout">
+          <aside className="settings-index" aria-label="设置目录">
+            <label className="settings-search">
+              <Search size={14} />
+              <input
+                value={settingsSearch}
+                onChange={(event) => setSettingsSearch(event.target.value)}
+                placeholder="搜索 API、MCP、Docker、桌面端"
+              />
+            </label>
+            <nav className="settings-index-list">
+              {settingsSections.map((section) => (
+                <button
+                  key={section.id}
+                  type="button"
+                  className={`settings-index-button ${
+                    !normalizedSettingsSearch && section.id === activeSection.id ? "is-active" : ""
+                  }`}
+                  onClick={() => {
+                    setActiveSettingsSection(section.id);
+                    setSettingsSearch("");
+                  }}
+                >
+                  <span>{section.icon}</span>
+                  <span>
+                    <strong>{section.label}</strong>
+                    <small>{section.description}</small>
+                  </span>
+                  <em>{section.status}</em>
+                </button>
+              ))}
+            </nav>
+          </aside>
+
+          <div className="settings-content">
+            {normalizedSettingsSearch ? (
+              <p className="settings-search-note">
+                搜索“{settingsSearch}”匹配到 {visibleSettingsSections.length} 个模块。
+              </p>
+            ) : null}
+
+            {visibleSettingsSections.length ? (
+              visibleSettingsSections.map((section) => (
+                <section
+                  key={section.id}
+                  className={`section-panel settings-section-card ${
+                    section.id === "model" ? "settings-model-panel" : ""
+                  }`}
+                >
+                  <div className="settings-section-heading">
+                    <div>
+                      <span>{section.icon}</span>
+                      <div>
+                        <strong>{section.label}</strong>
+                        <small>{section.description}</small>
+                      </div>
+                    </div>
+                    <em>{section.status}</em>
+                  </div>
+                  {section.render()}
+                </section>
+              ))
+            ) : (
+              <section className="section-panel settings-section-card">
+                <div className="settings-empty-result">
+                  <Search size={18} />
+                  <strong>没有找到相关设置</strong>
+                  <span>换个关键词试试，例如 API、MCP、Docker、桌面端、数据库。</span>
+                </div>
+              </section>
+            )}
+          </div>
         </div>
       </div>
     );
@@ -3554,7 +3850,7 @@ export function AgentWorkspace() {
         </div>
         <section className="section-panel">
           <div className="panel-title">最近任务</div>
-          {renderTaskLibrary(10)}
+          {renderTaskLibrary()}
         </section>
       </div>
     );
@@ -5169,24 +5465,6 @@ export function AgentWorkspace() {
       );
     }
 
-    if (activeNav === "library") {
-      return (
-        <>
-          <section className={panelSectionClass("library")}>
-            <div className="panel-title">
-              <FileSpreadsheet size={14} />
-              Billing
-            </div>
-            <BillingPanel summary={billingSummary} />
-          </section>
-          <section className={panelSectionClass("agent")}>
-            <div className="panel-title">当前任务交付物</div>
-            <ArtifactList artifacts={activeTask?.artifacts ?? []} />
-          </section>
-        </>
-      );
-    }
-
     return (
       <>
         <section className={panelSectionClass("agent")}>
@@ -5220,6 +5498,16 @@ export function AgentWorkspace() {
       </>
     );
   }
+
+  const hideRightRail = isHomeView || activeNav === "library" || activeNav === "settings";
+  const shellClassName = [
+    "workspace-shell",
+    isHomeView ? "is-home" : "",
+    activeNav === "library" ? "is-library" : "",
+    activeNav === "settings" ? "is-settings" : ""
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   if (isAuthLoading) {
     return (
@@ -5256,7 +5544,7 @@ export function AgentWorkspace() {
   }
 
   return (
-    <div className={`workspace-shell ${isHomeView ? "is-home" : ""}`}>
+    <div className={shellClassName}>
       <aside className="left-rail">
         <div className="brand">
           <span className="brand-mark" />
@@ -5432,7 +5720,7 @@ export function AgentWorkspace() {
         {showComposer && !isHomeView ? <footer className="composer">{renderComposer("footer")}</footer> : null}
       </main>
 
-      {!isHomeView ? <aside className="right-rail">{renderRightRail()}</aside> : null}
+      {!hideRightRail ? <aside className="right-rail">{renderRightRail()}</aside> : null}
     </div>
   );
 }
@@ -5784,25 +6072,101 @@ function ArtifactList({ artifacts }: { artifacts: Artifact[] }) {
   );
 }
 
+function PaginationControls({
+  page,
+  pageSize,
+  total,
+  onPageChange
+}: {
+  page: number;
+  pageSize: number;
+  total: number;
+  onPageChange: (page: number) => void;
+}) {
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const start = total === 0 ? 0 : (page - 1) * pageSize + 1;
+  const end = Math.min(total, page * pageSize);
+
+  if (total <= pageSize) {
+    return total > 0 ? <p className="muted-note pagination-note">显示 {total} 项</p> : null;
+  }
+
+  function submitJump(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    const rawPage = Number(formData.get("page"));
+    if (!Number.isFinite(rawPage)) return;
+    onPageChange(Math.max(1, Math.min(totalPages, Math.round(rawPage))));
+  }
+
+  return (
+    <div className="pagination-row">
+      <span>
+        {start}-{end} / {total}
+      </span>
+      <form className="pagination-jump" onSubmit={submitJump}>
+        <label>
+          <span>跳到</span>
+          <input
+            key={page}
+            name="page"
+            type="number"
+            inputMode="numeric"
+            min={1}
+            max={totalPages}
+            defaultValue={page}
+            aria-label="跳转页码"
+          />
+        </label>
+        <button type="submit" className="secondary-button compact-button">
+          跳转
+        </button>
+      </form>
+      <div>
+        <button
+          type="button"
+          className="secondary-button compact-button"
+          disabled={page <= 1}
+          onClick={() => onPageChange(Math.max(1, page - 1))}
+        >
+          上一页
+        </button>
+        <button
+          type="button"
+          className="secondary-button compact-button"
+          disabled={page >= totalPages}
+          onClick={() => onPageChange(Math.min(totalPages, page + 1))}
+        >
+          下一页
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function TemplateList({
   templates,
   allTags,
   activeTag,
+  currentUserId,
   onTagChange,
   canSave,
   onSave,
   onUse,
   onPublish,
+  onUnpublish,
   onDelete
 }: {
   templates: TaskTemplate[];
   allTags: string[];
   activeTag: string;
+  currentUserId?: string;
   onTagChange: (tag: string) => void;
   canSave: boolean;
   onSave: () => void;
   onUse: (template: TaskTemplate) => void;
   onPublish: (templateId: string) => void;
+  onUnpublish: (templateId: string) => void;
   onDelete: (templateId: string) => void;
 }) {
   return (
@@ -5833,43 +6197,64 @@ function TemplateList({
       {templates.length === 0 ? (
         <p className="muted-note">还没有模板。</p>
       ) : (
-        <div className="template-list">
-          {templates.slice(0, 8).map((template) => (
-            <div key={template.id} className="template-item">
-              <button className="template-main" onClick={() => onUse(template)}>
-                <span className="template-name">{template.name}</span>
-                <span className="template-meta">
-                  {[
-                    template.isPublic ? "公共" : "个人",
-                    template.tags.length > 0 ? template.tags.join(" · ") : "prompt template"
-                  ].join(" · ")}
-                </span>
-              </button>
-              {template.isPublic ? (
-                <span className="template-lock" aria-label="公共模板不可删除">
-                  公
-                </span>
-              ) : (
-                <>
-                  <button
-                    className="icon-button"
-                    aria-label={`发布模板 ${template.name}`}
-                    title={template.reviewStatus === "rejected" ? template.rejectionReason : "发布到模板市场"}
-                    onClick={() => onPublish(template.id)}
-                  >
-                    <Sparkles size={14} />
-                  </button>
-                  <button
-                    className="icon-button"
-                    aria-label={`删除模板 ${template.name}`}
-                    onClick={() => onDelete(template.id)}
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </>
-              )}
-            </div>
-          ))}
+        <div className="template-list library-scroll-list">
+          {templates.map((template) => {
+            const isOwnPublicTemplate = Boolean(
+              template.isPublic && currentUserId && template.ownerId === currentUserId
+            );
+            return (
+              <div key={template.id} className="template-item">
+                <button className="template-main" onClick={() => onUse(template)}>
+                  <span className="template-name">{template.name}</span>
+                  <span className="template-meta">
+                    {[
+                      template.isPublic ? "公共" : "个人",
+                      template.tags.length > 0 ? template.tags.join(" · ") : "prompt template"
+                    ].join(" · ")}
+                  </span>
+                </button>
+                {template.isPublic ? (
+                  isOwnPublicTemplate ? (
+                    <>
+                      <button
+                        className="icon-button template-unpublish-button"
+                        aria-label={`下架模板 ${template.name}`}
+                        title="从模板市场下架"
+                        onClick={() => onUnpublish(template.id)}
+                      >
+                        <XCircle size={14} />
+                      </button>
+                      <span className="template-lock" aria-label="已发布到模板市场">
+                        公
+                      </span>
+                    </>
+                  ) : (
+                    <span className="template-lock" aria-label="公共模板不可删除">
+                      公
+                    </span>
+                  )
+                ) : (
+                  <>
+                    <button
+                      className="icon-button"
+                      aria-label={`发布模板 ${template.name}`}
+                      title={template.reviewStatus === "rejected" ? template.rejectionReason : "发布到模板市场"}
+                      onClick={() => onPublish(template.id)}
+                    >
+                      <Sparkles size={14} />
+                    </button>
+                    <button
+                      className="icon-button"
+                      aria-label={`删除模板 ${template.name}`}
+                      onClick={() => onDelete(template.id)}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -5878,19 +6263,31 @@ function TemplateList({
 
 function MarketplaceTemplateList({
   templates,
+  total,
+  page,
+  pageSize,
   sort,
   isForking,
+  currentUserId,
+  onPageChange,
   onSortChange,
   onUse,
   onFork,
+  onUnpublish,
   onRate
 }: {
   templates: TaskTemplate[];
+  total: number;
+  page: number;
+  pageSize: number;
   sort: MarketplaceSort;
   isForking: boolean;
+  currentUserId?: string;
+  onPageChange: (page: number) => void;
   onSortChange: (sort: MarketplaceSort) => void;
   onUse: (template: TaskTemplate) => void;
   onFork: (templateId: string) => void;
+  onUnpublish: (templateId: string) => void;
   onRate: (templateId: string, rating: number) => void;
 }) {
   const sortOptions: Array<{ value: MarketplaceSort; label: string }> = [
@@ -5899,6 +6296,8 @@ function MarketplaceTemplateList({
     { value: "topRated", label: "高分" },
     { value: "latest", label: "最新" }
   ];
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const currentPage = Math.min(page, totalPages);
 
   return (
     <div className="marketplace-panel">
@@ -5917,46 +6316,65 @@ function MarketplaceTemplateList({
         <p className="muted-note">模板市场还没有可用模板。</p>
       ) : (
         <div className="marketplace-grid">
-          {templates.slice(0, 10).map((template) => (
-            <article key={template.id} className="marketplace-item">
-              <button className="marketplace-main" onClick={() => onUse(template)}>
-                <span className="template-name">{template.name}</span>
-                <span className="template-meta">
-                  {[
-                    template.category ?? "general",
-                    `评分 ${(template.ratingAverage ?? 0).toFixed(1)}(${template.ratingCount ?? 0})`,
-                    `Fork ${template.forkCount ?? 0}`
-                  ].join(" · ")}
-                </span>
-                <span className="marketplace-description">{template.description}</span>
-              </button>
-              <div className="marketplace-actions">
-                <button
-                  type="button"
-                  className="secondary-button compact-button"
-                  disabled={isForking}
-                  onClick={() => onFork(template.id)}
-                >
-                  <Plus size={13} />
-                  Fork
+          {templates.map((template) => {
+            const isOwnPublicTemplate = Boolean(
+              template.isPublic && currentUserId && template.ownerId === currentUserId
+            );
+            return (
+              <article key={template.id} className="marketplace-item">
+                <button className="marketplace-main" onClick={() => onUse(template)}>
+                  <span className="template-name">{template.name}</span>
+                  <span className="template-meta">
+                    {[
+                      template.category ?? "general",
+                      `评分 ${(template.ratingAverage ?? 0).toFixed(1)}(${template.ratingCount ?? 0})`,
+                      `Fork ${template.forkCount ?? 0}`
+                    ].join(" · ")}
+                  </span>
+                  <span className="marketplace-description">{template.description}</span>
                 </button>
-                <div className="rating-control" aria-label={`给模板 ${template.name} 评分`}>
-                  {[1, 2, 3, 4, 5].map((rating) => (
+                <div className="marketplace-actions">
+                  {isOwnPublicTemplate ? (
                     <button
-                      key={rating}
                       type="button"
-                      className="rating-button"
-                      onClick={() => onRate(template.id, rating)}
+                      className="secondary-button compact-button"
+                      onClick={() => onUnpublish(template.id)}
                     >
-                      {rating}
+                      <XCircle size={13} />
+                      下架
                     </button>
-                  ))}
+                  ) : (
+                    <button
+                      type="button"
+                      className="secondary-button compact-button"
+                      disabled={isForking}
+                      onClick={() => onFork(template.id)}
+                    >
+                      <Plus size={13} />
+                      Fork
+                    </button>
+                  )}
+                  <div className="rating-control" aria-label={`给模板 ${template.name} 评分`}>
+                    {[1, 2, 3, 4, 5].map((rating) => (
+                      <button
+                        key={rating}
+                        type="button"
+                        className={`rating-button ${template.myRating === rating ? "is-active" : ""}`}
+                        title={template.myRating ? `你已评分 ${template.myRating} 分，点击可修改` : `评分 ${rating} 分`}
+                        onClick={() => onRate(template.id, rating)}
+                      >
+                        {rating}
+                      </button>
+                    ))}
+                  </div>
+                  {template.myRating ? <span className="rating-user-note">我的评分 {template.myRating}</span> : null}
                 </div>
-              </div>
-            </article>
-          ))}
+              </article>
+            );
+          })}
         </div>
       )}
+      <PaginationControls page={currentPage} pageSize={pageSize} total={total} onPageChange={onPageChange} />
     </div>
   );
 }
@@ -6238,8 +6656,8 @@ function BillingPanel({ summary }: { summary: BillingSummary | null }) {
           <div className="stat-label">调用</div>
         </div>
       </div>
-      <div className="metric-list">
-        {summary.byTask.slice(0, 5).map((task) => (
+      <div className="metric-list library-scroll-list">
+        {summary.byTask.map((task) => (
           <div key={task.taskId} className="metric-item">
             <div>
               <span className="metric-name">{getUserVisiblePrompt(task.prompt).slice(0, 34)}</span>

@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { byteSize, createId } from "@/lib/id";
 import { safeRecordAuditLog } from "@/server/audit/audit-store";
@@ -46,6 +46,7 @@ interface TaskPersistenceAdapter {
   readTasks: () => Map<string, Task>;
   persistTask: (task: Task) => void;
   insertFile: (artifact: Artifact, ownerId?: string) => void;
+  deleteTask: (taskId: string, ownerId?: string) => boolean;
   flushEvents: (
     events: Array<{ event: AgentEvent; ownerId?: string }>,
     tasks: Task[]
@@ -55,8 +56,12 @@ interface TaskPersistenceAdapter {
 const dataFile = dataPath("tasks.json");
 const workspaceRoot = dataPath("workspaces");
 
+function taskWorkspaceDir(taskId: string, ownerId?: string) {
+  return ownerId ? join(workspaceRoot, ownerId, taskId) : join(workspaceRoot, taskId);
+}
+
 function taskArtifactDir(taskId: string, ownerId?: string) {
-  return ownerId ? join(workspaceRoot, ownerId, taskId, "artifacts") : join(workspaceRoot, taskId, "artifacts");
+  return join(taskWorkspaceDir(taskId, ownerId), "artifacts");
 }
 
 function sanitizeFilename(value: string) {
@@ -134,6 +139,26 @@ function createSqlitePersistence(): TaskPersistenceAdapter {
     readTasks: () => readSqliteTasks(db),
     persistTask: (task) => upsertTask(db, task),
     insertFile: (artifact, ownerId) => insertFile(db, artifact, ownerId),
+    deleteTask: (taskId, ownerId) => {
+      db.exec("BEGIN");
+      try {
+        if (ownerId) {
+          db.prepare("DELETE FROM task_files WHERE task_id = ? AND owner_id = ?").run(taskId, ownerId);
+          db.prepare("DELETE FROM task_steps WHERE task_id = ? AND owner_id = ?").run(taskId, ownerId);
+          const result = db.prepare("DELETE FROM tasks WHERE id = ? AND owner_id = ?").run(taskId, ownerId);
+          db.exec("COMMIT");
+          return result.changes > 0;
+        }
+        db.prepare("DELETE FROM task_files WHERE task_id = ?").run(taskId);
+        db.prepare("DELETE FROM task_steps WHERE task_id = ?").run(taskId);
+        const result = db.prepare("DELETE FROM tasks WHERE id = ?").run(taskId);
+        db.exec("COMMIT");
+        return result.changes > 0;
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
     flushEvents: (events, tasks) => {
       db.exec("BEGIN");
       try {
@@ -392,6 +417,29 @@ function createPostgresPersistence(): TaskPersistenceAdapter {
     },
     insertFile: (artifact, ownerId) => {
       runPsql(["-c", fileInsertSql(artifact, ownerId)]);
+    },
+    deleteTask: (taskId, ownerId) => {
+      const taskWhere = ownerId
+        ? `id = ${postgresValue(taskId)} AND owner_id = ${postgresValue(ownerId)}`
+        : `id = ${postgresValue(taskId)}`;
+      const childWhere = ownerId
+        ? `task_id = ${postgresValue(taskId)} AND owner_id = ${postgresValue(ownerId)}`
+        : `task_id = ${postgresValue(taskId)}`;
+      const output = runPsql([
+        "-At",
+        "-c",
+        `
+          BEGIN;
+          DELETE FROM task_files WHERE ${childWhere};
+          DELETE FROM task_steps WHERE ${childWhere};
+          WITH deleted AS (
+            DELETE FROM tasks WHERE ${taskWhere} RETURNING id
+          )
+          SELECT COUNT(*) FROM deleted;
+          COMMIT;
+        `
+      ]);
+      return Number.parseInt(output.trim().split(/\s+/).find((part) => /^\d+$/.test(part)) ?? "0", 10) > 0;
     },
     flushEvents: (events, tasks) => {
       const sql = [
@@ -816,4 +864,24 @@ export function cancelTask(taskId: string, ownerId?: string) {
     content: "用户取消了当前任务。"
   });
   return getTask(taskId);
+}
+
+export function deleteTask(taskId: string, ownerId?: string) {
+  const state = getState();
+  const task = getTask(taskId, ownerId);
+  if (!task) return { ok: false as const, status: 404, error: "Task not found" };
+  if (task.status === "queued" || task.status === "running") {
+    return { ok: false as const, status: 409, error: "运行中的任务不能删除，请先停止任务。" };
+  }
+
+  const deleted = state.persistence.deleteTask(taskId, ownerId);
+  if (!deleted) return { ok: false as const, status: 404, error: "Task not found" };
+
+  state.tasks.delete(taskId);
+  state.pendingTaskIds.delete(taskId);
+  state.pendingEvents = state.pendingEvents.filter((item) => item.event.taskId !== taskId);
+  state.subscribers.delete(taskId);
+  rmSync(taskWorkspaceDir(taskId, task.ownerId), { recursive: true, force: true });
+
+  return { ok: true as const, task };
 }

@@ -363,6 +363,15 @@ export async function listUploadedFilesForOwner(ownerId: string, limit = 80) {
     .filter((record) => !isUploadExpired(record));
 }
 
+export async function deleteUploadedFileForOwner(fileId: string, ownerId: string) {
+  const store = getUploadStore();
+  const record = store.get(fileId, ownerId);
+  if (!record) return undefined;
+  store.delete(fileId, ownerId);
+  await unlink(record.storedPath).catch(() => undefined);
+  return record;
+}
+
 function sanitizeFilename(value: string) {
   return basename(value)
     .replace(/[/:*?"<>|\\]/g, "_")

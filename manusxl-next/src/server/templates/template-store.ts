@@ -92,6 +92,19 @@ function marketplaceDefaults(template: TaskTemplate): TaskTemplate {
   };
 }
 
+function ratingByUser(template: TaskTemplate) {
+  return template.ratingByUser && typeof template.ratingByUser === "object" ? template.ratingByUser : {};
+}
+
+function marketplaceTemplateForViewer(template: TaskTemplate, viewerId?: string): TaskTemplate {
+  const publicTemplate = { ...template };
+  delete publicTemplate.ratingByUser;
+  return {
+    ...publicTemplate,
+    myRating: viewerId ? ratingByUser(template)[viewerId] : undefined
+  };
+}
+
 function publicTemplates() {
   const now = "2026-05-23T00:00:00.000Z";
   return [
@@ -607,6 +620,7 @@ export interface MarketplaceTemplateQuery {
   tag?: string;
   category?: string;
   sort?: MarketplaceTemplateSort;
+  viewerId?: string;
 }
 
 const dangerousTemplatePatterns = [
@@ -695,7 +709,9 @@ export function listMarketplaceTemplates(input: MarketplaceTemplateQuery = {}) {
       normalizedCategory ? normalizeCategory(template.category) === normalizedCategory : true
     );
 
-  return sortMarketplaceTemplates(templates, sort);
+  return sortMarketplaceTemplates(templates, sort).map((template) =>
+    marketplaceTemplateForViewer(template, input.viewerId)
+  );
 }
 
 export function publishTemplate(templateId: string, ownerId: string, creatorName?: string) {
@@ -733,6 +749,28 @@ export function publishTemplate(templateId: string, ownerId: string, creatorName
   return { ok: true as const, template: published };
 }
 
+export function unpublishTemplate(templateId: string, ownerId: string) {
+  claimLegacyTemplates(ownerId);
+  const template = getTemplateStore()
+    .listRows(ownerId)
+    .map(rowToTemplate)
+    .find((candidate) => candidate.id === templateId && candidate.ownerId === ownerId);
+  if (!template) return { ok: false as const, status: 404, error: "Template not found" };
+
+  const unpublished = marketplaceDefaults({
+    ...template,
+    isPublic: false,
+    marketplaceFeatured: false,
+    publishedAt: undefined,
+    reviewStatus: "draft",
+    rejectionReason: undefined,
+    updatedAt: new Date().toISOString(),
+    tags: normalizeTags(template.tags.filter((tag) => tag.toLowerCase() !== "public"))
+  });
+  getTemplateStore().create(unpublished);
+  return { ok: true as const, template: unpublished };
+}
+
 export function forkMarketplaceTemplate(templateId: string, ownerId: string) {
   const source = getTemplateById(templateId);
   if (!source?.isPublic || source.reviewStatus === "rejected") return undefined;
@@ -763,20 +801,29 @@ export function forkMarketplaceTemplate(templateId: string, ownerId: string) {
   return forked;
 }
 
-export function rateMarketplaceTemplate(templateId: string, rating: number) {
+export function rateMarketplaceTemplate(templateId: string, rating: number, userId?: string) {
   const source = getTemplateById(templateId);
   if (!source?.isPublic || source.reviewStatus === "rejected") return undefined;
   const safeRating = Math.max(1, Math.min(5, Math.round(rating)));
-  const currentCount = source.ratingCount ?? 0;
-  const currentAverage = source.ratingAverage ?? 0;
-  const nextCount = currentCount + 1;
-  const nextAverage = Number(((currentAverage * currentCount + safeRating) / nextCount).toFixed(2));
+  const ratings = ratingByUser(source);
+  if (userId) {
+    ratings[userId] = safeRating;
+  } else {
+    ratings[`anonymous-${createId("rating")}`] = safeRating;
+  }
+  const values = Object.values(ratings).filter((value) => Number.isFinite(value));
+  const nextCount = values.length;
+  const nextAverage =
+    nextCount > 0
+      ? Number((values.reduce((sum, value) => sum + value, 0) / nextCount).toFixed(2))
+      : 0;
   const updated = marketplaceDefaults({
     ...source,
     ratingAverage: nextAverage,
     ratingCount: nextCount,
+    ratingByUser: ratings,
     updatedAt: new Date().toISOString()
   });
   getTemplateStore().create(updated);
-  return updated;
+  return marketplaceTemplateForViewer(updated, userId);
 }

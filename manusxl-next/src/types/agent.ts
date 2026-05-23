@@ -844,6 +844,8 @@ export interface TaskTemplate {
   creatorName?: string;
   ratingAverage?: number;
   ratingCount?: number;
+  myRating?: number;
+  ratingByUser?: Record<string, number>;
   forkCount?: number;
   runCount?: number;
   reviewStatus?: "draft" | "approved" | "rejected";
