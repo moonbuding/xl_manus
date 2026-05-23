@@ -71,7 +71,7 @@ function pngChunk(type: string, data: Buffer) {
   return output;
 }
 
-function makePng(
+export function makePng(
   width: number,
   height: number,
   draw: (canvas: {

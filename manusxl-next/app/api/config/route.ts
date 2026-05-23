@@ -23,6 +23,9 @@ export function GET(request: Request) {
     localBrowserDomainAllowlist: config.localBrowserDomainAllowlist,
     myComputerAllowedRoots: user ? config.myComputerAllowedRoots : [],
     myComputerPaused: user ? config.myComputerPaused : true,
+    designImageProvider: user ? config.designImageProvider : "local",
+    designImageMaxPerTask: user ? config.designImageMaxPerTask : 4,
+    hasDesignImageApiKey: user ? Boolean(config.designImageApiKey) : false,
     hasApiKey: Boolean(config.apiKey)
   });
 }
@@ -45,6 +48,9 @@ export async function PATCH(request: Request) {
     localBrowserDomainAllowlist?: string[];
     myComputerAllowedRoots?: string[];
     myComputerPaused?: boolean;
+    designImageProvider?: string;
+    designImageApiKey?: string;
+    designImageMaxPerTask?: number;
   };
   const config = updateAppConfig({
     apiKey: body.apiKey,
@@ -59,7 +65,10 @@ export async function PATCH(request: Request) {
     promptCacheEnabled: body.promptCacheEnabled,
     localBrowserDomainAllowlist: body.localBrowserDomainAllowlist,
     myComputerAllowedRoots: body.myComputerAllowedRoots,
-    myComputerPaused: body.myComputerPaused
+    myComputerPaused: body.myComputerPaused,
+    designImageProvider: body.designImageProvider,
+    designImageApiKey: body.designImageApiKey,
+    designImageMaxPerTask: body.designImageMaxPerTask
   });
   safeRecordAuditLog({
     userId: user.id,
@@ -86,6 +95,9 @@ export async function PATCH(request: Request) {
     localBrowserDomainAllowlist: config.localBrowserDomainAllowlist,
     myComputerAllowedRoots: config.myComputerAllowedRoots,
     myComputerPaused: config.myComputerPaused,
+    designImageProvider: config.designImageProvider,
+    designImageMaxPerTask: config.designImageMaxPerTask,
+    hasDesignImageApiKey: Boolean(config.designImageApiKey),
     hasApiKey: Boolean(config.apiKey)
   });
 }

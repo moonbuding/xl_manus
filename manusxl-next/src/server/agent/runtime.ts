@@ -187,6 +187,43 @@ function ensureWideResearchStep(prompt: string, plan: string[]) {
   return ["使用 spawn_sub_agents 并行拆分调研对象，并等待子 Agent 汇总结果", ...plan].slice(0, 6);
 }
 
+function ensureSlideDeckStep(prompt: string, plan: string[]) {
+  if (!/pptx?|powerpoint|slides?|slide deck|幻灯片|演示文稿|路演|bp|投资人|融资|商业计划书|汇报材料|演讲稿/i.test(prompt)) {
+    return plan;
+  }
+  if (plan.some((step) => /slide_deck_builder|pptx?|slides?|幻灯片|演示文稿|配图|讲稿/i.test(step))) {
+    return plan;
+  }
+
+  return ["使用 slide_deck_builder 生成 5 页以上 PPTX、配图素材、讲稿和结构化大纲", ...plan].slice(0, 6);
+}
+
+function ensureWebAppBuilderStep(prompt: string, plan: string[]) {
+  if (!/web app|app builder|全栈|可部署|部署|预览|preview|todo|crm|客户管理|后台|管理系统|登录|auth|jwt|react|tailwind|vercel|cloudflare|render/i.test(prompt)) {
+    return plan;
+  }
+  if (plan.some((step) => /web_app_builder|web app|源码包|可预览|部署|登录|todo|crm|全栈/i.test(step))) {
+    return plan;
+  }
+
+  return ["使用 web_app_builder 生成可预览 Web App、源码包、数据库 schema 和部署重试清单", ...plan].slice(0, 6);
+}
+
+function ensureImageGenerationStep(prompt: string, plan: string[]) {
+  if (
+    !/ai design|generate_image|图片生成|生成.*(图片|图像|插图|配图|海报|封面|视觉|logo)|设计.*(图片|图像|插图|配图|海报|封面|视觉)|商务风格的咖啡店外观|视频生成|3d\s*资产|3D 资产|poster|illustration|image asset/i.test(
+      prompt
+    )
+  ) {
+    return plan;
+  }
+  if (plan.some((step) => /image_generator|generate_image|图片生成|插图|配图|海报|封面|视觉|AI Design/i.test(step))) {
+    return plan;
+  }
+
+  return ["使用 image_generator 生成 AI Design 图片素材，并输出 PNG/SVG/manifest 交付物", ...plan].slice(0, 6);
+}
+
 function ensureBatchFileOpsStep(prompt: string, plan: string[]) {
   if (!/批量|重命名|分类|移动|整理文件|rename|classify/i.test(prompt)) return plan;
   if (plan.some((step) => /批量|重命名|分类|移动|整理文件|batch_file_ops|rename|classify/i.test(step))) {
@@ -264,19 +301,28 @@ async function generatePlan(
   return ensureSkillRunnerStep(
     intent,
     ownerId,
-    ensureWideResearchStep(
+    ensureWebAppBuilderStep(
       intent,
-      ensureMapStep(
+      ensureImageGenerationStep(
         intent,
-        ensureMcpStep(
+        ensureSlideDeckStep(
           intent,
-          ensureBatchFileOpsStep(
+          ensureWideResearchStep(
             intent,
-            ensureImageOcrStep(
+            ensureMapStep(
               intent,
-              ensureImageProcessStep(
+              ensureMcpStep(
                 intent,
-                ensureFileReadingStep(prompt, parsePlan(raw, config.maxSteps), uploadedFileIds)
+                ensureBatchFileOpsStep(
+                  intent,
+                  ensureImageOcrStep(
+                    intent,
+                    ensureImageProcessStep(
+                      intent,
+                      ensureFileReadingStep(prompt, parsePlan(raw, config.maxSteps), uploadedFileIds)
+                    )
+                  )
+                )
               )
             )
           )

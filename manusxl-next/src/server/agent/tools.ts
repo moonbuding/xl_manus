@@ -2,7 +2,8 @@ import { execFile } from "node:child_process";
 import { appendFile, cp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { makeZip } from "@/server/artifacts/generators";
+import { makePng, makeZip } from "@/server/artifacts/generators";
+import { getAppConfig } from "@/server/config/app-config";
 import { listUploadedFileRecords, type UploadedFileRecord } from "@/server/files/readers";
 import { getOcrStatus } from "@/server/ocr/status";
 import {
@@ -150,6 +151,9 @@ export type AgentToolName =
   | "data_analysis"
   | "map_planner"
   | "chart_generator"
+  | "slide_deck_builder"
+  | "web_app_builder"
+  | "image_generator"
   | "artifact_writer";
 
 export interface AgentToolInput {
@@ -306,6 +310,24 @@ export const TOOL_METADATA: AgentToolMetadata[] = [
     fallbackTools: ["data_analysis", "artifact_writer"]
   },
   {
+    name: "slide_deck_builder",
+    namespace: "artifact",
+    description: "生成 Manus 级 AI Slides：5 页以上 PPTX、主题模板、配图素材、讲稿和结构化 manifest。",
+    fallbackTools: ["artifact_writer", "data_analysis"]
+  },
+  {
+    name: "web_app_builder",
+    namespace: "code",
+    description: "基于成熟模板生成可预览 Web App、Next.js 源码包、数据库 schema 和部署/重试清单。",
+    fallbackTools: ["artifact_writer", "file_workspace", "data_analysis"]
+  },
+  {
+    name: "image_generator",
+    namespace: "artifact",
+    description: "生成 AI Design 图片素材，支持 provider 选择、本地安全回退、PNG/SVG/manifest 输出。",
+    fallbackTools: ["artifact_writer", "data_analysis"]
+  },
+  {
     name: "artifact_writer",
     namespace: "artifact",
     description: "准备 Markdown、CSV、XLSX、PPTX、PDF、HTML、ZIP 交付物上下文。",
@@ -331,6 +353,24 @@ function isWideResearchIntent(value: string) {
   );
 }
 
+function isSlideDeckIntent(value: string) {
+  return /pptx?|powerpoint|slides?|slide deck|幻灯片|演示文稿|路演|bp|投资人|融资|商业计划书|汇报材料|演讲稿/i.test(
+    value
+  );
+}
+
+function isWebAppBuilderIntent(value: string) {
+  return /web app|app builder|全栈|可部署|部署|预览|preview|todo|crm|客户管理|后台|管理系统|登录|auth|jwt|react|tailwind|vercel|cloudflare|render/i.test(
+    value
+  );
+}
+
+function isImageGenerationIntent(value: string) {
+  return /ai design|generate_image|图片生成|生成.*(图片|图像|插图|配图|海报|封面|视觉|logo)|设计.*(图片|图像|插图|配图|海报|封面|视觉)|商务风格的咖啡店外观|视频生成|3d\s*资产|3D 资产|poster|illustration|image asset/i.test(
+    value
+  );
+}
+
 export function selectToolsForPrompt(prompt: string, ownerId?: string): AgentToolName[] {
   const intent = taskIntentText(prompt);
   const lower = intent.toLowerCase();
@@ -338,6 +378,15 @@ export function selectToolsForPrompt(prompt: string, ownerId?: string): AgentToo
 
   if (isWideResearchIntent(intent)) {
     selected.push("spawn_sub_agents", "web_research", "data_analysis", "artifact_writer");
+  }
+  if (isSlideDeckIntent(intent)) {
+    selected.push("slide_deck_builder", "artifact_writer", "data_analysis");
+  }
+  if (isWebAppBuilderIntent(intent)) {
+    selected.push("web_app_builder", "file_workspace", "artifact_writer", "data_analysis");
+  }
+  if (isImageGenerationIntent(intent)) {
+    selected.push("image_generator", "artifact_writer", "data_analysis");
   }
   if (/http|网页|搜索|调研|竞品|市场|news|web|research|browser/.test(lower)) {
     selected.push("web_research", "web_fetch");
@@ -394,6 +443,9 @@ export function inferToolsForStep(step: string): AgentToolName[] {
   }
 
   if (isWideResearchIntent(step)) candidates.push("spawn_sub_agents");
+  if (isSlideDeckIntent(step)) candidates.push("slide_deck_builder");
+  if (isWebAppBuilderIntent(step)) candidates.push("web_app_builder");
+  if (isImageGenerationIntent(step)) candidates.push("image_generator");
   if (/python|脚本|代码|计算|统计|notebook/.test(lower)) candidates.push("python_execute");
   if (/shell|bash|命令|终端|目录|workspace|文件检查/.test(lower)) candidates.push("shell_execute");
   if (/mcp|github|slack|notion|filesystem|外部工具|第三方工具/.test(lower)) {
@@ -489,6 +541,15 @@ function htmlEscape(value: string) {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+}
+
+function xmlEscape(value: string) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
 }
 
 function decodeDuckDuckGoUrl(value: string) {
@@ -3147,6 +3208,828 @@ async function runSpawnSubAgents(input: AgentToolInput): Promise<AgentToolResult
   };
 }
 
+const AI_SLIDE_TEMPLATES = [
+  "Investor Narrative",
+  "Market Research",
+  "Product Launch",
+  "Academic Defense",
+  "Sales Enablement",
+  "Strategy Review",
+  "Creative Portfolio",
+  "Operational Weekly",
+  "Data Story",
+  "Executive Briefing"
+];
+
+function inferDeckTheme(prompt: string) {
+  const lower = prompt.toLowerCase();
+  if (/投资|融资|bp|路演|investor/.test(lower)) {
+    return {
+      name: "Investor Narrative",
+      primary: "111827",
+      accent: "16a34a",
+      secondary: "dbeafe",
+      tone: "投资人叙事"
+    };
+  }
+  if (/学术|论文|答辩|academic/.test(lower)) {
+    return {
+      name: "Academic Defense",
+      primary: "1f2937",
+      accent: "2563eb",
+      secondary: "e0f2fe",
+      tone: "学术答辩"
+    };
+  }
+  if (/创意|设计|品牌|creative/.test(lower)) {
+    return {
+      name: "Creative Portfolio",
+      primary: "18181b",
+      accent: "f97316",
+      secondary: "ffedd5",
+      tone: "创意展示"
+    };
+  }
+  return {
+    name: "Executive Briefing",
+    primary: "1f2937",
+    accent: "0f766e",
+    secondary: "ccfbf1",
+    tone: "商业汇报"
+  };
+}
+
+function deckBullets(prompt: string, plan: string[]) {
+  const intent = taskIntentText(prompt).slice(0, 160);
+  return [
+    ["目标与机会", `围绕「${intent}」建立清晰叙事。`, "明确受众、场景和成功标准。"],
+    ["用户痛点", "把需求压缩成 3 个高频问题。", "用可验证事实替代空泛描述。"],
+    ["方案架构", "产品能力、数据流和交付路径统一呈现。", "突出 Agent 自动拆解、执行和沉淀结果。"],
+    ["商业价值", "说明效率、成本、体验和可扩展性收益。", "给出可落地的里程碑。"],
+    ["下一步", ...plan.slice(0, 4).map((step, index) => `${index + 1}. ${step}`)]
+  ];
+}
+
+function slideParagraphs(lines: string[], color = "1f2937", fontSize = 2050) {
+  return lines
+    .slice(0, 8)
+    .map(
+      (line) =>
+        `<a:p><a:r><a:rPr sz="${fontSize}" dirty="0"><a:solidFill><a:srgbClr val="${color}"/></a:solidFill></a:rPr><a:t>${xmlEscape(line)}</a:t></a:r></a:p>`
+    )
+    .join("");
+}
+
+function deckVisualSvg(prompt: string, theme: ReturnType<typeof inferDeckTheme>) {
+  const title = taskIntentText(prompt).slice(0, 52) || "ManusXL Deck";
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+  <rect width="1280" height="720" fill="#f8fafc"/>
+  <rect x="78" y="82" width="1124" height="556" rx="28" fill="#${theme.secondary}" stroke="#${theme.accent}" stroke-width="6"/>
+  <circle cx="1010" cy="210" r="112" fill="#${theme.accent}" opacity=".92"/>
+  <circle cx="890" cy="365" r="72" fill="#${theme.primary}" opacity=".86"/>
+  <path d="M180 510 C320 330 420 398 555 288 S830 145 1040 470" fill="none" stroke="#${theme.primary}" stroke-width="22" stroke-linecap="round"/>
+  <rect x="170" y="156" width="430" height="58" rx="18" fill="#ffffff" opacity=".86"/>
+  <rect x="170" y="244" width="345" height="34" rx="12" fill="#ffffff" opacity=".72"/>
+  <rect x="170" y="302" width="510" height="34" rx="12" fill="#ffffff" opacity=".72"/>
+  <text x="170" y="585" font-family="Inter, Arial, sans-serif" font-size="34" font-weight="700" fill="#${theme.primary}">${xmlEscape(title)}</text>
+</svg>`;
+}
+
+function deckSlideXml(
+  title: string,
+  bullets: string[],
+  theme: ReturnType<typeof inferDeckTheme>,
+  options: { visual?: boolean; slideNumber: number }
+) {
+  const visual = options.visual
+    ? `<p:pic><p:nvPicPr><p:cNvPr id="8" name="deck-visual.svg"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed="rIdVisual"/><a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr><a:xfrm><a:off x="4572000" y="1143000"/><a:ext cx="3657600" cy="2286000"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic>`
+    : "";
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:cSld><p:spTree>
+    <p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>
+    <p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>
+    <p:sp><p:nvSpPr><p:cNvPr id="2" name="Background"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="9144000" cy="5143500"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="f8fafc"/></a:solidFill></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/><a:p/></p:txBody></p:sp>
+    <p:sp><p:nvSpPr><p:cNvPr id="3" name="Accent"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="9144000" cy="205740"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="${theme.accent}"/></a:solidFill></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/><a:p/></p:txBody></p:sp>
+    <p:sp><p:nvSpPr><p:cNvPr id="4" name="Title"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="548640" y="548640"/><a:ext cx="7863840" cy="731520"/></a:xfrm></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr sz="3400" b="1"><a:solidFill><a:srgbClr val="${theme.primary}"/></a:solidFill></a:rPr><a:t>${xmlEscape(title)}</a:t></a:r></a:p></p:txBody></p:sp>
+    <p:sp><p:nvSpPr><p:cNvPr id="5" name="Body"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="640080" y="1516380"/><a:ext cx="${options.visual ? 3474720 : 7863840}" cy="2834640"/></a:xfrm></p:spPr><p:txBody><a:bodyPr wrap="square"/><a:lstStyle/>${slideParagraphs(bullets, theme.primary)}</p:txBody></p:sp>
+    <p:sp><p:nvSpPr><p:cNvPr id="6" name="Footer"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="640080" y="4594860"/><a:ext cx="7863840" cy="274320"/></a:xfrm></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr sz="1250"><a:solidFill><a:srgbClr val="64748b"/></a:solidFill></a:rPr><a:t>ManusXL AI Slides · ${xmlEscape(theme.tone)} · ${options.slideNumber}</a:t></a:r></a:p></p:txBody></p:sp>
+    ${visual}
+  </p:spTree></p:cSld>
+  <p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr>
+</p:sld>`;
+}
+
+function makeAiSlidesPptx(prompt: string, plan: string[]) {
+  const theme = inferDeckTheme(prompt);
+  const sections = deckBullets(prompt, plan);
+  const coverSvg = deckVisualSvg(prompt, theme);
+  const slides = sections.map(([title, ...bullets], index) =>
+    deckSlideXml(title, bullets, theme, { visual: index === 0, slideNumber: index + 1 })
+  );
+  const contentTypes = slides
+    .map(
+      (_slide, index) =>
+        `<Override PartName="/ppt/slides/slide${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>`
+    )
+    .join("\n  ");
+  const slideIds = slides
+    .map((_slide, index) => `<p:sldId id="${256 + index}" r:id="rId${index + 1}"/>`)
+    .join("");
+  const rels = slides
+    .map(
+      (_slide, index) =>
+        `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide${index + 1}.xml"/>`
+    )
+    .join("\n  ");
+
+  return {
+    theme,
+    coverSvg,
+    pptx: makeZip([
+      {
+        name: "[Content_Types].xml",
+        data: Buffer.from(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Default Extension="svg" ContentType="image/svg+xml"/>
+  <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
+  ${contentTypes}
+</Types>`)
+      },
+      {
+        name: "_rels/.rels",
+        data: Buffer.from(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
+</Relationships>`)
+      },
+      {
+        name: "ppt/presentation.xml",
+        data: Buffer.from(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:sldIdLst>${slideIds}</p:sldIdLst>
+  <p:sldSz cx="9144000" cy="5143500" type="screen16x9"/><p:notesSz cx="6858000" cy="9144000"/>
+</p:presentation>`)
+      },
+      {
+        name: "ppt/_rels/presentation.xml.rels",
+        data: Buffer.from(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  ${rels}
+</Relationships>`)
+      },
+      {
+        name: "ppt/slides/_rels/slide1.xml.rels",
+        data: Buffer.from(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdVisual" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/cover-visual.svg"/>
+</Relationships>`)
+      },
+      ...slides.map((slide, index) => ({
+        name: `ppt/slides/slide${index + 1}.xml`,
+        data: Buffer.from(slide)
+      })),
+      { name: "ppt/media/cover-visual.svg", data: Buffer.from(coverSvg) }
+    ])
+  };
+}
+
+function slideSpeakerNotes(prompt: string, plan: string[]) {
+  return [
+    "# AI Slides Speaker Notes",
+    "",
+    `任务：${taskIntentText(prompt)}`,
+    "",
+    "## 讲稿",
+    ...deckBullets(prompt, plan).flatMap(([title, ...bullets], index) => [
+      "",
+      `### ${index + 1}. ${title}`,
+      ...bullets.map((bullet) => `- ${bullet}`)
+    ])
+  ].join("\n");
+}
+
+async function runSlideDeckBuilder(input: AgentToolInput): Promise<AgentToolResult> {
+  const { artifacts } = await ensureTaskWorkspace(input.taskId, input.ownerId);
+  const existingManifestPath = join(artifacts, "ai-slides-manifest.json");
+
+  try {
+    const existingManifest = JSON.parse(await readFile(existingManifestPath, "utf8")) as {
+      template?: string;
+      templateLibrarySize?: number;
+      slideCount?: number;
+      visualAssets?: string[];
+    };
+    return {
+      toolName: "slide_deck_builder",
+      ok: true,
+      observation: `AI Slides 已在前序步骤完成：${existingManifest.slideCount ?? 5} 页 PPTX，模板 ${existingManifest.template ?? "unknown"}；本步骤复用已有结果。`,
+      payload: {
+        slideDeck: existingManifest,
+        reused: true,
+        generatedArtifacts: []
+      }
+    };
+  } catch {
+    // No previous AI Slides output for this task. Continue with first generation.
+  }
+
+  const { theme, coverSvg, pptx } = makeAiSlidesPptx(input.prompt, input.plan);
+  const notes = slideSpeakerNotes(input.prompt, input.plan);
+  const manifest = JSON.stringify(
+    {
+      taskId: input.taskId,
+      generatedAt: new Date().toISOString(),
+      tool: "slide_deck_builder",
+      template: theme.name,
+      templateLibrarySize: AI_SLIDE_TEMPLATES.length,
+      templates: AI_SLIDE_TEMPLATES,
+      slideCount: 5,
+      visualAssets: ["cover-visual.svg"],
+      theme,
+      source: "ManusXL local AI Slides builder MVP"
+    },
+    null,
+    2
+  );
+
+  await writeFile(join(artifacts, "ai-slides-deck.pptx"), pptx);
+  await writeFile(join(artifacts, "ai-slides-cover-visual.svg"), coverSvg);
+  await writeFile(join(artifacts, "ai-slides-speaker-notes.md"), notes);
+  await writeFile(join(artifacts, "ai-slides-manifest.json"), manifest);
+
+  return {
+    toolName: "slide_deck_builder",
+    ok: true,
+    observation: `已生成 AI Slides：使用 ${theme.name} 模板，输出 5 页 PPTX、配图 SVG、讲稿和 manifest。`,
+    payload: {
+      slideDeck: {
+        template: theme.name,
+        templateLibrarySize: AI_SLIDE_TEMPLATES.length,
+        slideCount: 5,
+        visualAssets: ["cover-visual.svg"]
+      },
+      generatedArtifacts: [
+        {
+          name: "ai-slides-deck.pptx",
+          type: "pptx",
+          mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+          content: pptx.toString("base64"),
+          contentEncoding: "base64"
+        },
+        {
+          name: "ai-slides-cover-visual.svg",
+          type: "txt",
+          mimeType: "image/svg+xml; charset=utf-8",
+          content: coverSvg
+        },
+        {
+          name: "ai-slides-speaker-notes.md",
+          type: "md",
+          mimeType: "text/markdown; charset=utf-8",
+          content: notes
+        },
+        {
+          name: "ai-slides-manifest.json",
+          type: "json",
+          mimeType: "application/json; charset=utf-8",
+          content: manifest
+        }
+      ]
+    }
+  };
+}
+
+function slugifyAppName(value: string) {
+  const ascii = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 42);
+  if (ascii) return ascii;
+  return `manusxl-app-${hashText(value).toString(16).slice(0, 6)}`;
+}
+
+function inferWebAppSpec(prompt: string) {
+  const lower = prompt.toLowerCase();
+  const isCrm = /crm|客户|customer/.test(lower);
+  const isTodo = /todo|待办|任务清单/.test(lower);
+  const appTitle = isCrm ? "ManusXL CRM" : isTodo ? "ManusXL Todo" : "ManusXL Workspace App";
+  const entity = isCrm ? "客户" : isTodo ? "待办" : "记录";
+  const features = isCrm
+    ? ["手机号/邮箱登录", "客户列表", "跟进备注", "状态分组", "本地预览部署清单"]
+    : isTodo
+      ? ["手机号/邮箱登录", "待办列表", "优先级", "完成状态", "本地预览部署清单"]
+      : ["登录", "列表管理", "备注", "状态跟踪", "本地预览部署清单"];
+  return {
+    appTitle,
+    slug: slugifyAppName(appTitle),
+    entity,
+    features,
+    tableName: isCrm ? "customers" : isTodo ? "todos" : "items"
+  };
+}
+
+function webAppPreviewHtml(prompt: string, spec: ReturnType<typeof inferWebAppSpec>) {
+  const sampleRows =
+    spec.tableName === "customers"
+      ? [
+          ["星河科技", "试用中", "需要下周二回访"],
+          ["北辰零售", "已签约", "准备二期扩容方案"],
+          ["青桐教育", "评估中", "关注数据权限"]
+        ]
+      : [
+          ["整理需求池", "进行中", "P1"],
+          ["验证登录流程", "待处理", "P0"],
+          ["准备部署清单", "已完成", "P1"]
+        ];
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${htmlEscape(spec.appTitle)}</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;background:#f8fafc;color:#17211b;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.app{min-height:100vh;display:grid;grid-template-columns:280px 1fr}.side{background:#17211b;color:#f8fafc;padding:28px}.brand{font-size:25px;font-weight:800;margin-bottom:30px}.side button{width:100%;border:0;border-radius:8px;padding:13px 14px;margin:8px 0;text-align:left;background:#263229;color:#dce8de;font-weight:700}.main{padding:34px}.top{display:flex;justify-content:space-between;align-items:center;gap:18px;margin-bottom:26px}.login{display:flex;gap:10px}.login input{border:1px solid #ccd8ce;border-radius:8px;padding:11px 12px;min-width:220px}.login button,.primary{border:0;border-radius:8px;background:#17211b;color:white;padding:11px 16px;font-weight:800}.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-bottom:22px}.metric,.panel{background:white;border:1px solid #d8e4da;border-radius:8px;padding:18px}.metric strong{font-size:28px;display:block}.panel h2{margin:0 0 14px}.row{display:grid;grid-template-columns:1.2fr .7fr 1.3fr;gap:12px;align-items:center;border-top:1px solid #e3ece5;padding:14px 0}.tag{display:inline-flex;border-radius:999px;background:#e9f7ee;color:#24603a;padding:5px 10px;font-size:13px;font-weight:800}.muted{color:#667568}.hidden{display:none}@media(max-width:860px){.app{grid-template-columns:1fr}.side{display:none}.grid{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}.row{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="side"><div class="brand">${htmlEscape(spec.appTitle)}</div><button>工作台</button><button>${htmlEscape(spec.entity)}管理</button><button>设置</button></aside>
+    <main class="main">
+      <div class="top">
+        <div><div class="muted">Generated by ManusXL Web App Builder</div><h1>${htmlEscape(spec.entity)}工作台</h1></div>
+        <form class="login" onsubmit="event.preventDefault();document.querySelector('#auth').textContent='已登录 demo@manusxl.local';document.querySelector('#content').classList.remove('hidden')">
+          <input aria-label="email" value="demo@manusxl.local" />
+          <button>登录预览</button>
+        </form>
+      </div>
+      <div class="grid">
+        <div class="metric"><span class="muted">总数</span><strong>${sampleRows.length}</strong></div>
+        <div class="metric"><span class="muted">本周新增</span><strong>2</strong></div>
+        <div class="metric"><span class="muted">部署状态</span><strong>Preview</strong></div>
+      </div>
+      <section class="panel"><h2 id="auth">未登录预览</h2><p class="muted">${htmlEscape(taskIntentText(prompt))}</p></section>
+      <section id="content" class="panel hidden"><h2>${htmlEscape(spec.entity)}列表</h2>${sampleRows
+        .map(
+          ([name, status, note]) =>
+            `<div class="row"><strong>${htmlEscape(name)}</strong><span class="tag">${htmlEscape(status)}</span><span>${htmlEscape(note)}</span></div>`
+        )
+        .join("")}<button class="primary" onclick="alert('MVP 预览：真实写入请部署源码包并连接数据库')">新增${htmlEscape(spec.entity)}</button></section>
+    </main>
+  </div>
+</body>
+</html>`;
+}
+
+function webAppSourceFiles(prompt: string, spec: ReturnType<typeof inferWebAppSpec>) {
+  const packageJson = JSON.stringify(
+    {
+      scripts: {
+        dev: "next dev",
+        build: "next build",
+        start: "next start",
+        "deploy:vercel": "vercel --prod"
+      },
+      dependencies: {
+        "@vercel/postgres": "latest",
+        bcryptjs: "latest",
+        jose: "latest",
+        next: "latest",
+        react: "latest",
+        "react-dom": "latest",
+        zod: "latest"
+      },
+      devDependencies: {
+        "@types/node": "latest",
+        "@types/react": "latest",
+        typescript: "latest"
+      }
+    },
+    null,
+    2
+  );
+  const pageTsx = [
+    '"use client";',
+    'import { useState } from "react";',
+    "",
+    "const rows = [",
+    `  { name: "${spec.entity} A", status: "进行中", note: "由 ManusXL 模板生成" },`,
+    `  { name: "${spec.entity} B", status: "已完成", note: "连接 API 后可持久化" }`,
+    "];",
+    "",
+    "export default function Page() {",
+    "  const [signedIn, setSignedIn] = useState(false);",
+    "  return (",
+    "    <main className=\"min-h-screen bg-slate-50 p-8 text-slate-900\">",
+    `      <h1 className=\"text-3xl font-bold\">${spec.appTitle}</h1>`,
+    "      <form className=\"mt-6 flex gap-3\" onSubmit={(event) => { event.preventDefault(); setSignedIn(true); }}>",
+    "        <input className=\"rounded border px-3 py-2\" defaultValue=\"demo@manusxl.local\" />",
+    "        <button className=\"rounded bg-slate-900 px-4 py-2 font-semibold text-white\">登录</button>",
+    "      </form>",
+    "      {signedIn && <section className=\"mt-8 grid gap-3\">{rows.map((row) => <article key={row.name} className=\"rounded border bg-white p-4\"><strong>{row.name}</strong><p>{row.status} · {row.note}</p></article>)}</section>}",
+    "    </main>",
+    "  );",
+    "}"
+  ].join("\n");
+  const loginRoute = [
+    'import { NextResponse } from "next/server";',
+    "",
+    "export async function POST() {",
+    "  return NextResponse.json({ token: \"dev-jwt-placeholder\", user: { email: \"demo@manusxl.local\" } });",
+    "}"
+  ].join("\n");
+  const itemsRoute = [
+    'import { NextResponse } from "next/server";',
+    "",
+    "const rows = [{ id: 1, name: \"Demo\", status: \"active\" }];",
+    "",
+    "export async function GET() {",
+    "  return NextResponse.json({ rows });",
+    "}",
+    "",
+    "export async function POST(request: Request) {",
+    "  const body = await request.json();",
+    "  return NextResponse.json({ row: { id: Date.now(), ...body } }, { status: 201 });",
+    "}"
+  ].join("\n");
+  const schema = [
+    "create table users (",
+    "  id uuid primary key default gen_random_uuid(),",
+    "  email text unique not null,",
+    "  password_hash text not null,",
+    "  created_at timestamptz not null default now()",
+    ");",
+    "",
+    `create table ${spec.tableName} (`,
+    "  id uuid primary key default gen_random_uuid(),",
+    "  owner_id uuid references users(id),",
+    "  name text not null,",
+    "  status text not null default 'active',",
+    "  note text,",
+    "  created_at timestamptz not null default now()",
+    ");"
+  ].join("\n");
+  const readme = [
+    `# ${spec.appTitle}`,
+    "",
+    "Generated by ManusXL Web App Builder.",
+    "",
+    "## Run",
+    "```bash",
+    "npm install",
+    "npm run dev",
+    "```",
+    "",
+    "## Deploy",
+    "Set `VERCEL_TOKEN` and database env vars, then run `npm run deploy:vercel`.",
+    "",
+    "## Original Prompt",
+    taskIntentText(prompt)
+  ].join("\n");
+
+  return [
+    { name: "package.json", data: Buffer.from(packageJson) },
+    { name: "README.md", data: Buffer.from(readme) },
+    { name: "app/page.tsx", data: Buffer.from(pageTsx) },
+    { name: "app/api/auth/login/route.ts", data: Buffer.from(loginRoute) },
+    { name: "app/api/items/route.ts", data: Buffer.from(itemsRoute) },
+    { name: "db/schema.sql", data: Buffer.from(schema) },
+    {
+      name: "deploy/vercel.json",
+      data: Buffer.from(JSON.stringify({ framework: "nextjs", buildCommand: "npm run build" }, null, 2))
+    }
+  ];
+}
+
+async function runWebAppBuilder(input: AgentToolInput): Promise<AgentToolResult> {
+  const { artifacts } = await ensureTaskWorkspace(input.taskId, input.ownerId);
+  const existingManifestPath = join(artifacts, "web-app-deploy-manifest.json");
+
+  try {
+    const existingManifest = JSON.parse(await readFile(existingManifestPath, "utf8")) as {
+      appTitle?: string;
+      framework?: string;
+      generatedFiles?: string[];
+      externalDeploy?: { status?: string };
+    };
+    return {
+      toolName: "web_app_builder",
+      ok: true,
+      observation: `Web App Builder 已在前序步骤生成 ${existingManifest.appTitle ?? "应用"} 的预览、源码包和部署清单；本步骤复用已有结果。`,
+      payload: {
+        webApp: {
+          title: existingManifest.appTitle,
+          framework: existingManifest.framework,
+          sourceFiles: existingManifest.generatedFiles ?? [],
+          deployStatus: existingManifest.externalDeploy?.status ?? "unknown"
+        },
+        reused: true,
+        generatedArtifacts: []
+      }
+    };
+  } catch {
+    // No previous Web App output for this task. Continue with first generation.
+  }
+
+  const spec = inferWebAppSpec(input.prompt);
+  const preview = webAppPreviewHtml(input.prompt, spec);
+  const sourceFiles = webAppSourceFiles(input.prompt, spec);
+  const sourceZip = makeZip(sourceFiles);
+  const deployManifest = JSON.stringify(
+    {
+      taskId: input.taskId,
+      generatedAt: new Date().toISOString(),
+      appTitle: spec.appTitle,
+      framework: "Next.js App Router + TypeScript",
+      database: "PostgreSQL schema.sql",
+      auth: "JWT template",
+      preview: {
+        status: "ready",
+        artifact: "web-app-preview.html"
+      },
+      externalDeploy: {
+        provider: "Vercel",
+        status: process.env.VERCEL_TOKEN ? "ready_to_deploy" : "blocked",
+        error: process.env.VERCEL_TOKEN ? null : "未配置 VERCEL_TOKEN，本次仅生成本地预览和源码包。",
+        retry: "配置 VERCEL_TOKEN / DATABASE_URL 后运行 npm run deploy:vercel，或重新执行 web_app_builder。"
+      },
+      generatedFiles: sourceFiles.map((file) => file.name)
+    },
+    null,
+    2
+  );
+
+  await writeFile(join(artifacts, "web-app-preview.html"), preview);
+  await writeFile(join(artifacts, "web-app-source.zip"), sourceZip);
+  await writeFile(join(artifacts, "web-app-deploy-manifest.json"), deployManifest);
+
+  return {
+    toolName: "web_app_builder",
+    ok: true,
+    observation: `已生成 ${spec.appTitle}：包含可访问 HTML 预览、Next.js + TypeScript 源码包、PostgreSQL schema 和部署失败/重试清单。`,
+    payload: {
+      webApp: {
+        title: spec.appTitle,
+        slug: spec.slug,
+        framework: "Next.js App Router + TypeScript",
+        sourceFiles: sourceFiles.map((file) => file.name),
+        deployStatus: process.env.VERCEL_TOKEN ? "ready_to_deploy" : "blocked_missing_token"
+      },
+      generatedArtifacts: [
+        {
+          name: "web-app-preview.html",
+          type: "html",
+          mimeType: "text/html; charset=utf-8",
+          content: preview
+        },
+        {
+          name: "web-app-source.zip",
+          type: "zip",
+          mimeType: "application/zip",
+          content: sourceZip.toString("base64"),
+          contentEncoding: "base64"
+        },
+        {
+          name: "web-app-deploy-manifest.json",
+          type: "json",
+          mimeType: "application/json; charset=utf-8",
+          content: deployManifest
+        }
+      ]
+    }
+  };
+}
+
+type DesignProvider = "local" | "dall-e-3" | "stable-diffusion" | "tongyi-wanxiang" | "wenxin-yige";
+
+function normalizeDesignProvider(value: string | undefined): DesignProvider {
+  const lower = (value ?? "local").trim().toLowerCase();
+  if (lower.includes("dall") || lower.includes("openai")) return "dall-e-3";
+  if (lower.includes("stable") || lower.includes("sd")) return "stable-diffusion";
+  if (lower.includes("tongyi") || lower.includes("通义")) return "tongyi-wanxiang";
+  if (lower.includes("wenxin") || lower.includes("文心")) return "wenxin-yige";
+  return "local";
+}
+
+function parseDesignStyle(prompt: string) {
+  if (/商务|business|咖啡店|cafe|coffee/i.test(prompt)) return "business";
+  if (/插画|illustration|手绘/i.test(prompt)) return "illustration";
+  if (/科技|tech|未来|sci-fi/i.test(prompt)) return "tech";
+  if (/极简|minimal/i.test(prompt)) return "minimal";
+  return "editorial";
+}
+
+function parseDesignSize(prompt: string) {
+  const lower = prompt.toLowerCase();
+  if (/16[:：]9|wide|ppt|slide|横版/.test(lower)) return { width: 1280, height: 720, label: "16:9" };
+  if (/1[:：]1|square|头像|logo|方图/.test(lower)) return { width: 1024, height: 1024, label: "1:1" };
+  if (/9[:：]16|poster|海报|竖版/.test(lower)) return { width: 900, height: 1200, label: "9:16" };
+  return { width: 1024, height: 768, label: "4:3" };
+}
+
+function designPalette(style: string) {
+  if (style === "business") {
+    return {
+      background: [248, 250, 247] as [number, number, number],
+      primary: [31, 41, 35] as [number, number, number],
+      accent: [36, 114, 73] as [number, number, number],
+      warm: [188, 137, 83] as [number, number, number],
+      soft: [220, 231, 220] as [number, number, number]
+    };
+  }
+  if (style === "tech") {
+    return {
+      background: [244, 248, 251] as [number, number, number],
+      primary: [28, 43, 67] as [number, number, number],
+      accent: [34, 116, 181] as [number, number, number],
+      warm: [82, 168, 132] as [number, number, number],
+      soft: [210, 228, 241] as [number, number, number]
+    };
+  }
+  if (style === "minimal") {
+    return {
+      background: [250, 250, 248] as [number, number, number],
+      primary: [39, 39, 42] as [number, number, number],
+      accent: [99, 102, 91] as [number, number, number],
+      warm: [178, 162, 125] as [number, number, number],
+      soft: [232, 230, 221] as [number, number, number]
+    };
+  }
+  return {
+    background: [248, 250, 252] as [number, number, number],
+    primary: [32, 35, 31] as [number, number, number],
+    accent: [29, 111, 95] as [number, number, number],
+    warm: [185, 135, 39] as [number, number, number],
+    soft: [222, 232, 226] as [number, number, number]
+  };
+}
+
+function rgbHex(color: [number, number, number]) {
+  return color.map((part) => part.toString(16).padStart(2, "0")).join("");
+}
+
+function extractDesignPrompt(prompt: string) {
+  const intent = taskIntentText(prompt)
+    .replace(/请|帮我|生成|设计|输出|一张|图片|图像|插图|配图|海报|封面|AI Design|generate_image/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return intent || taskIntentText(prompt).slice(0, 120) || "ManusXL design asset";
+}
+
+function makeDesignPng(prompt: string, style: string, size: ReturnType<typeof parseDesignSize>) {
+  const palette = designPalette(style);
+  const seed = hashText(`${prompt}:${style}:${size.label}`);
+  const width = Math.min(1280, size.width);
+  const height = Math.min(1200, size.height);
+
+  return makePng(width, height, (canvas) => {
+    canvas.fillRect(0, 0, width, height, palette.background);
+    canvas.fillRect(width * 0.08, height * 0.12, width * 0.84, height * 0.68, palette.soft);
+    canvas.fillRect(width * 0.08, height * 0.77, width * 0.84, height * 0.08, palette.primary);
+    canvas.fillCircle(width * 0.72, height * 0.27, Math.min(width, height) * 0.13, palette.accent);
+    canvas.fillCircle(width * 0.58, height * 0.38, Math.min(width, height) * 0.08, palette.warm);
+    canvas.drawLine(width * 0.18, height * 0.65, width * 0.38, height * 0.42, palette.primary, 12);
+    canvas.drawLine(width * 0.38, height * 0.42, width * 0.52, height * 0.55, palette.primary, 12);
+    canvas.drawLine(width * 0.52, height * 0.55, width * 0.82, height * 0.3, palette.primary, 12);
+    Array.from({ length: 8 }).forEach((_, index) => {
+      const x = width * (0.16 + ((seed + index * 17) % 70) / 100);
+      const y = height * (0.18 + ((seed + index * 23) % 50) / 100);
+      const radius = 8 + ((seed + index * 11) % 26);
+      canvas.fillCircle(x, y, radius, index % 2 ? palette.accent : palette.warm);
+    });
+    canvas.fillRect(width * 0.17, height * 0.2, width * 0.28, height * 0.045, [255, 255, 255]);
+    canvas.fillRect(width * 0.17, height * 0.29, width * 0.42, height * 0.022, [255, 255, 255]);
+    canvas.fillRect(width * 0.17, height * 0.35, width * 0.34, height * 0.022, [255, 255, 255]);
+  });
+}
+
+function makeDesignSvg(prompt: string, style: string, size: ReturnType<typeof parseDesignSize>) {
+  const palette = designPalette(style);
+  const title = extractDesignPrompt(prompt).slice(0, 66);
+  const width = size.width;
+  const height = size.height;
+  const primary = rgbHex(palette.primary);
+  const accent = rgbHex(palette.accent);
+  const warm = rgbHex(palette.warm);
+  const soft = rgbHex(palette.soft);
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+  <rect width="${width}" height="${height}" fill="#${rgbHex(palette.background)}"/>
+  <rect x="${width * 0.08}" y="${height * 0.12}" width="${width * 0.84}" height="${height * 0.68}" rx="28" fill="#${soft}" stroke="#${accent}" stroke-width="8"/>
+  <circle cx="${width * 0.72}" cy="${height * 0.28}" r="${Math.min(width, height) * 0.14}" fill="#${accent}" opacity=".92"/>
+  <circle cx="${width * 0.57}" cy="${height * 0.39}" r="${Math.min(width, height) * 0.08}" fill="#${warm}" opacity=".9"/>
+  <path d="M ${width * 0.18} ${height * 0.66} C ${width * 0.32} ${height * 0.42}, ${width * 0.45} ${height * 0.58}, ${width * 0.58} ${height * 0.42} S ${width * 0.76} ${height * 0.22}, ${width * 0.84} ${height * 0.38}" fill="none" stroke="#${primary}" stroke-width="22" stroke-linecap="round"/>
+  <rect x="${width * 0.16}" y="${height * 0.2}" width="${width * 0.34}" height="${height * 0.06}" rx="14" fill="#fff" opacity=".86"/>
+  <rect x="${width * 0.16}" y="${height * 0.31}" width="${width * 0.5}" height="${height * 0.035}" rx="10" fill="#fff" opacity=".68"/>
+  <rect x="${width * 0.16}" y="${height * 0.38}" width="${width * 0.42}" height="${height * 0.035}" rx="10" fill="#fff" opacity=".68"/>
+  <text x="${width * 0.12}" y="${height * 0.91}" font-family="Inter, Arial, sans-serif" font-size="${Math.max(26, Math.round(width / 32))}" font-weight="800" fill="#${primary}">${xmlEscape(title)}</text>
+  <text x="${width * 0.12}" y="${height * 0.965}" font-family="Inter, Arial, sans-serif" font-size="${Math.max(18, Math.round(width / 54))}" fill="#${accent}">AI Design · ${xmlEscape(style)} · ManusXL</text>
+</svg>`;
+}
+
+async function runImageGenerator(input: AgentToolInput): Promise<AgentToolResult> {
+  const { artifacts } = await ensureTaskWorkspace(input.taskId, input.ownerId);
+  const config = getAppConfig();
+  const provider = normalizeDesignProvider(config.designImageProvider);
+  const style = parseDesignStyle(input.prompt);
+  const size = parseDesignSize(input.prompt);
+  const prompt = extractDesignPrompt(input.prompt);
+  const needsExternal = provider !== "local";
+  const usedProvider = needsExternal && !config.designImageApiKey ? "local" : provider;
+  const fallbackUsed = usedProvider === "local" && provider !== "local";
+  const png = makeDesignPng(input.prompt, style, size);
+  const svg = makeDesignSvg(input.prompt, style, size);
+  const videoStub = /视频|video/i.test(input.prompt);
+  const threeDStub = /3d|3D|三维|模型/i.test(input.prompt);
+  const manifest = JSON.stringify(
+    {
+      taskId: input.taskId,
+      generatedAt: new Date().toISOString(),
+      tool: "image_generator",
+      requestedProvider: provider,
+      usedProvider,
+      fallbackUsed,
+      fallbackReason: fallbackUsed ? `${provider} 未配置 API Key，已使用本地生成器保证任务不中断。` : null,
+      prompt,
+      style,
+      size,
+      maxImagesPerTask: config.designImageMaxPerTask,
+      artifacts: ["ai-design-image.png", "ai-design-image.svg"],
+      video: {
+        requested: videoStub,
+        status: videoStub ? "stub_pending_provider" : "not_requested"
+      },
+      threeD: {
+        requested: threeDStub,
+        status: threeDStub ? "stub_pending_provider" : "not_requested"
+      },
+      pptConsumption: "slide_deck_builder 会生成并嵌入同一视觉语言的 SVG 配图；后续可直接复用 ai-design-image.svg。"
+    },
+    null,
+    2
+  );
+  const zip = makeZip([
+    { name: "ai-design-image.png", data: png },
+    { name: "ai-design-image.svg", data: Buffer.from(svg) },
+    { name: "ai-design-manifest.json", data: Buffer.from(manifest) }
+  ]);
+
+  await writeFile(join(artifacts, "ai-design-image.png"), png);
+  await writeFile(join(artifacts, "ai-design-image.svg"), svg);
+  await writeFile(join(artifacts, "ai-design-manifest.json"), manifest);
+  await writeFile(join(artifacts, "ai-design-assets.zip"), zip);
+
+  return {
+    toolName: "image_generator",
+    ok: true,
+    observation: fallbackUsed
+      ? `已生成 AI Design 图片素材：请求 ${provider}，因未配置图片 API Key 自动回退本地生成，输出 PNG/SVG/manifest/ZIP。`
+      : `已生成 AI Design 图片素材：provider=${usedProvider}，style=${style}，size=${size.label}，输出 PNG/SVG/manifest/ZIP。`,
+    payload: {
+      imageGeneration: {
+        requestedProvider: provider,
+        usedProvider,
+        fallbackUsed,
+        style,
+        size,
+        prompt,
+        videoStub,
+        threeDStub
+      },
+      generatedArtifacts: [
+        {
+          name: "ai-design-image.png",
+          type: "png",
+          mimeType: "image/png",
+          content: png.toString("base64"),
+          contentEncoding: "base64"
+        },
+        {
+          name: "ai-design-image.svg",
+          type: "txt",
+          mimeType: "image/svg+xml; charset=utf-8",
+          content: svg
+        },
+        {
+          name: "ai-design-manifest.json",
+          type: "json",
+          mimeType: "application/json; charset=utf-8",
+          content: manifest
+        },
+        {
+          name: "ai-design-assets.zip",
+          type: "zip",
+          mimeType: "application/zip",
+          content: zip.toString("base64"),
+          contentEncoding: "base64"
+        }
+      ]
+    }
+  };
+}
+
 async function runDataAnalysis(input: AgentToolInput): Promise<AgentToolResult> {
   const dimensions = ["目标", "资料", "分析", "交付", "风险"];
   return {
@@ -3268,6 +4151,12 @@ export async function executeAgentTool(
       return runMapPlanner(input);
     case "chart_generator":
       return runChartGenerator(input);
+    case "slide_deck_builder":
+      return runSlideDeckBuilder(input);
+    case "web_app_builder":
+      return runWebAppBuilder(input);
+    case "image_generator":
+      return runImageGenerator(input);
     case "artifact_writer":
       return runArtifactWriter(input);
   }
