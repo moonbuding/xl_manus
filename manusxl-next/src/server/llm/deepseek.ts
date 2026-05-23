@@ -104,7 +104,10 @@ export function getDeepSeekConfig() {
     localBrowserDomainAllowlist: config.localBrowserDomainAllowlist,
     myComputerAllowedRoots: config.myComputerAllowedRoots,
     myComputerPaused: config.myComputerPaused,
-    myComputerAlwaysAllowRules: config.myComputerAlwaysAllowRules
+    myComputerAlwaysAllowRules: config.myComputerAlwaysAllowRules,
+    designImageProvider: config.designImageProvider,
+    designImageApiKey: config.designImageApiKey,
+    designImageMaxPerTask: config.designImageMaxPerTask
   };
 }
 

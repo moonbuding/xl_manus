@@ -246,6 +246,22 @@ npm run e2e:wide-research
 
 该脚本会创建“并行调研 50 家公司”任务，验证 `spawn_sub_agents` 工具调用、子 Agent 并发池、失败重试后跳过、主 Agent 汇总，以及 Markdown / JSON / CSV / ZIP 交付物。
 
+AI Slides + Web App Builder 验收：
+
+```bash
+npm run e2e:app-builder
+```
+
+该脚本会分别创建“5 页投资人 BP”和“todo 应用带登录”任务，验证 `slide_deck_builder` 生成含配图的 PPTX、讲稿和 manifest，以及 `web_app_builder` 生成可访问 HTML 预览、Next.js + TypeScript 源码包、PostgreSQL schema 和部署失败重试说明。
+
+AI Design 验收：
+
+```bash
+npm run e2e:design
+```
+
+该脚本会验证 Settings 图片 provider 配置、`image_generator` 工具调用、本地 PNG/SVG/manifest/ZIP 交付物，以及外部 provider 未配置 API Key 时自动回退本地生成，确保 PPT/网页素材生成不会阻塞主任务。
+
 批量文件处理验收：
 
 ```bash
@@ -275,6 +291,8 @@ npm run e2e:batch
 - 动态模型路由优化：基于历史 Context 指标推荐规划/执行/总结模型，展示 A/B 回放并支持一键应用覆盖
 - Scheduled Tasks + Mail Manus + Manus for Slack MVP：interval/cron 触发、入站邮件 webhook、Slack Events webhook 统一创建 Agent 任务
 - Wide Research MVP：`spawn_sub_agents` 并行拆分横向调研对象、并发池节流、失败重试/跳过、主 Agent structured_merge 汇总和多格式结果包
+- AI Slides + Web App Builder MVP：5 页 PPTX、配图素材、讲稿、可访问 Web App 预览、Next.js + TypeScript 源码包、PostgreSQL schema 和部署重试清单
+- AI Design MVP：Settings 图片 provider/API Key/单任务上限配置、`image_generator` 本地 PNG/SVG/manifest/ZIP 生成，以及外部 provider 无 key 自动回退
 - stdio MCP Server 接入、工具发现、工具调用和 Agent `mcp_call`
 - Docker Compose 一键启动
 - E2E 演示验收脚本

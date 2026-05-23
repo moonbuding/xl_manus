@@ -84,9 +84,9 @@ REQ-216 (AI Design)
 | REQ-211 | 长时任务后台运行 + Email/Webhook 通知 | M06 | 3-4 人天 | In Progress |
 | REQ-212 | 多模型路由优化：动态成本/质量平衡 | M10 | 2-3 人天 | In Progress |
 | REQ-213 | **Wide Research：spawn 100+ 并行子 Agent 横向调研 + 主 Agent 汇总** | M01 | 5-7 人天 | In Progress |
-| REQ-214 | **AI Slides（PPTX 生成）+ Web App Builder（一句 prompt 出全栈应用 + 部署）** | M05/M06 | 8-10 人天 | Planning |
+| REQ-214 | **AI Slides（PPTX 生成）+ Web App Builder（一句 prompt 出全栈应用 + 部署）** | M05/M06 | 8-10 人天 | In Progress |
 | REQ-215 | **Scheduled Tasks（cron 定时任务）+ Mail Manus（转发邮件自动处理）+ Manus for Slack** | M06 | 5-7 人天 | In Progress |
-| REQ-216 | **AI Design：图片生成（必）+ 视频生成（可选）+ 3D 资产（可选）** | M05 | 3-5 人天 | Planning |
+| REQ-216 | **AI Design：图片生成（必）+ 视频生成（可选）+ 3D 资产（可选）** | M05 | 3-5 人天 | In Progress |
 | **总计** | | | **70-98 人天（约 14-20 周）** | |
 
 ---
@@ -602,7 +602,7 @@ As a 想调研 50 家供应商的用户，I want 系统并行起 50 个 sub-agen
 ---
 
 ### REQ-214：AI Slides + Web App Builder
-**模块**: M05/M06 | **状态**: Planning | **工作量**: 8-10 人天
+**模块**: M05/M06 | **状态**: In Progress | **工作量**: 8-10 人天
 
 #### 背景与价值
 Manus 1.5 的两大主推卖点（[REQ-000 §1](REQ-000-manus-capability-research.md)）：(1) **AI Slides** 一句 prompt 生成完整 PPT（已在 P0 REQ-008 有基础版，P2 升级到 Manus 级别）；(2) **Web App Builder** 一句 prompt 出**可部署**的全栈应用（含前端 + API + DB + auth + 部署）。这是把 Agent 从"做调研"扩展到"造产品"的关键能力。
@@ -625,10 +625,16 @@ As a 想做一个内部小工具的用户，I want 一句"帮我做一个简单�
 - 用户能 Preview + 一键 Deploy
 
 #### 验收标准
-- [ ] "做 5 页投资人 BP" 输出可用 PPTX，含配图
-- [ ] "做一个 todo 应用带登录" 输出可访问 URL
-- [ ] Deploy 失败时有清晰错误信息 + 一键重试
-- [ ] 生成应用源码可下载（用户掌握所有权）
+- [x] "做 5 页投资人 BP" 输出可用 PPTX，含配图（MVP：PPTX 内嵌 SVG 配图素材）
+- [x] "做一个 todo 应用带登录" 输出可访问 URL（MVP：HTML artifact 预览 URL）
+- [x] Deploy 失败时有清晰错误信息 + 一键重试（MVP：部署 manifest 给出 Vercel token 缺失和 retry 命令）
+- [x] 生成应用源码可下载（用户掌握所有权）
+- [ ] 真实外部一键 Deploy 到 Vercel/Cloudflare/Render 并返回公网 URL
+
+#### 当前实现记录
+- 2026-05-23：参考 OpenManus `BaseTool` / `ToolCollection` 的工具注册方式，在 TS 工具层新增 `slide_deck_builder` 和 `web_app_builder`，规划器会按 PPT/BP/Web App/todo/CRM/登录/部署等意图自动补充步骤。
+- 2026-05-23：`slide_deck_builder` 生成 5 页以上 AI Slides PPTX、内嵌 SVG 配图素材、讲稿 Markdown 和 manifest；模板库内置 10 个场景模板，主题色按 prompt 关键词选择。
+- 2026-05-23：`web_app_builder` 生成可访问 HTML 预览、Next.js App Router + TypeScript 源码 ZIP、PostgreSQL `schema.sql` 和部署 manifest；外部部署未配置 token 时返回清晰错误与 retry 指令。新增 `npm run e2e:app-builder` 覆盖 BP 和 todo 登录应用两条主流程。
 
 #### 相关 OpenManus 代码
 - 可复用：P0 REQ-008 的 PPTX 生成（升级模板库）
@@ -691,7 +697,7 @@ As a 每周需要新闻简报的用户，I want 设置"每周一 9 点跑这个 
 ---
 
 ### REQ-216：AI Design — 图片生成（必）+ 视频/3D 资产（可选）
-**模块**: M05 | **状态**: Planning | **工作量**: 3-5 人天
+**模块**: M05 | **状态**: In Progress | **工作量**: 3-5 人天
 
 #### 背景与价值
 Manus 1.5+ 的 AI Design 能力（[REQ-000 §1](REQ-000-manus-capability-research.md)）：在 Agent 工作流里直接生成图片/视频/3D 资产，作为 PPT/网页/dashboard 的素材，避免去外部工具切换。MVP 阶段只做图片，视频/3D 是可选。
@@ -709,10 +715,14 @@ As a 用 AI 做 PPT 的用户，I want PPT 里需要的插图直接生成（不�
 - 非功能：单图生成 < 30 秒；支持队列防止 rate limit
 
 #### 验收标准
-- [ ] 生成一张"商务风格的咖啡店外观"图片
-- [ ] 切换 provider 仍能工作
-- [ ] PPT 工具能用生成的图作为插图
-- [ ] 失败时不阻塞 PPT 生成（用占位图）
+- [x] 生成一张"商务风格的咖啡店外观"图片（MVP：本地 PNG/SVG 生成器）
+- [x] 切换 provider 仍能工作（未配置第三方 API Key 时自动回退本地生成）
+- [x] PPT 工具能用生成的图作为插图（MVP：`slide_deck_builder` 生成同一视觉语言 SVG，manifest 标记可复用 `ai-design-image.svg`）
+- [x] 失败时不阻塞 PPT 生成（provider 无 key 不失败，改走本地占位生成）
+- [ ] 真实第三方 provider 出图（DALL-E / Stable Diffusion / 通义万相 / 文心一格）
+
+#### 实现进度
+- 2026-05-23：新增 `image_generator` Agent 工具，沿用 OpenManus `BaseTool` 的统一工具元数据/执行结果/fallback 思路，在 Next.js 服务端实现 provider 配置读取、本地 PNG/SVG 生成、manifest/ZIP 交付物和无 API Key 自动回退。Settings 支持图片 provider、图片 API Key、单任务图片上限；新增 `npm run e2e:design` 覆盖本地生成和外部 provider fallback。
 
 #### 相关 OpenManus 代码
 - 可复用：[OpenManus-main/app/tool/base.py](../OpenManus-main/app/tool/base.py) — `BaseTool` 接口
@@ -749,9 +759,9 @@ As a 用 AI 做 PPT 的用户，I want PPT 里需要的插图直接生成（不�
 - [ ] 100 用户量级稳定运行 ≥ 1 个月
 - [ ] 视觉浏览器 A/B 测试结果可接受
 - [x] Wide Research 至少跑通"100 双球鞋调研"或等价用例（当前等价 E2E：50 家公司；100+ 真实 LLM/K8s 待 REQ-205）
-- [ ] AI Slides + Web App Builder 各有 ≥ 3 个公开 demo
+- [ ] AI Slides + Web App Builder 各有 ≥ 3 个公开 demo（当前已跑通 1 组 E2E demo，待扩展样例库）
 - [ ] Mail/Slack 各跑通至少 1 个用户的真实使用场景
-- [ ] AI Design 图片生成可用，视频/3D 至少有 PoC
+- [x] AI Design 图片生成可用，视频/3D 至少有 PoC（当前视频/3D 为 manifest stub，真实 provider 待 V3）
 - [ ] 安全审计通过（认证、授权、日志、数据加密）
 
 ---

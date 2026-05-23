@@ -27,6 +27,9 @@ export interface StoredAppConfig {
   myComputerAllowedRoots?: string[];
   myComputerPaused?: boolean;
   myComputerAlwaysAllowRules?: string[];
+  designImageProvider?: string;
+  designImageApiKey?: string;
+  designImageMaxPerTask?: number;
 }
 
 const secretFile = dataPath("config-secret");
@@ -286,6 +289,7 @@ export function getStoredAppConfig(): StoredAppConfig {
   const promptCacheEnabled = store.get("runtime.promptCacheEnabled");
   const localBrowserPaused = store.get("localBrowser.paused");
   const myComputerPaused = store.get("myComputer.paused");
+  const designImageMaxPerTask = Number(store.get("design.imageMaxPerTask"));
   const myComputerAllowedRoots = readStoredFilesystemRoots(store.get("myComputer.allowedRoots"));
   const myComputerAlwaysAllowRules = readStoredStringList(store.get("myComputer.alwaysAllowRules"));
   const localBrowserDomainAllowlist = readStoredDomainAllowlist(
@@ -307,7 +311,10 @@ export function getStoredAppConfig(): StoredAppConfig {
     localBrowserPaused: localBrowserPaused === undefined ? undefined : localBrowserPaused === "true",
     myComputerAllowedRoots,
     myComputerPaused: myComputerPaused === undefined ? undefined : myComputerPaused === "true",
-    myComputerAlwaysAllowRules
+    myComputerAlwaysAllowRules,
+    designImageProvider: store.get("design.imageProvider"),
+    designImageApiKey: decryptSecret(store.get("design.imageApiKey")),
+    designImageMaxPerTask: Number.isFinite(designImageMaxPerTask) ? designImageMaxPerTask : undefined
   };
 }
 
@@ -344,7 +351,12 @@ export function getAppConfig() {
         ? stored.myComputerAllowedRoots
         : envMyComputerAllowedRoots,
     myComputerPaused: stored.myComputerPaused ?? process.env.MANUSXL_MY_COMPUTER_PAUSED === "true",
-    myComputerAlwaysAllowRules: stored.myComputerAlwaysAllowRules ?? []
+    myComputerAlwaysAllowRules: stored.myComputerAlwaysAllowRules ?? [],
+    designImageProvider:
+      stored.designImageProvider || process.env.MANUSXL_DESIGN_IMAGE_PROVIDER || "local",
+    designImageApiKey: stored.designImageApiKey || process.env.MANUSXL_DESIGN_IMAGE_API_KEY,
+    designImageMaxPerTask:
+      stored.designImageMaxPerTask ?? Number(process.env.MANUSXL_DESIGN_IMAGE_MAX_PER_TASK ?? 4)
   };
 }
 
@@ -426,6 +438,16 @@ export function updateAppConfig(config: StoredAppConfig) {
       "myComputer.alwaysAllowRules",
       JSON.stringify(normalizeStringList(config.myComputerAlwaysAllowRules))
     );
+  }
+  if (config.designImageProvider !== undefined) {
+    store.set("design.imageProvider", config.designImageProvider.trim() || "local");
+  }
+  if (config.designImageApiKey !== undefined) {
+    const trimmed = config.designImageApiKey.trim();
+    store.set("design.imageApiKey", trimmed ? encryptSecret(trimmed) : "");
+  }
+  if (config.designImageMaxPerTask !== undefined && Number.isFinite(config.designImageMaxPerTask)) {
+    store.set("design.imageMaxPerTask", String(Math.min(20, Math.max(1, Math.round(config.designImageMaxPerTask)))));
   }
   return getAppConfig();
 }

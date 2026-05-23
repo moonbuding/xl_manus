@@ -531,7 +531,10 @@ export function AgentWorkspace() {
     finalModel: "deepseek-v4-flash",
     promptCacheEnabled: true,
     localBrowserDomainAllowlist: "",
-    myComputerAllowedRoots: ""
+    myComputerAllowedRoots: "",
+    designImageProvider: "local",
+    designImageApiKey: "",
+    designImageMaxPerTask: "4"
   });
   const [notificationDraft, setNotificationDraft] = useState({
     emailEnabled: false,
@@ -1351,7 +1354,10 @@ export function AgentWorkspace() {
             finalModel: data.finalModel,
             promptCacheEnabled: data.promptCacheEnabled,
             localBrowserDomainAllowlist: data.localBrowserDomainAllowlist.join("\n"),
-            myComputerAllowedRoots: data.myComputerAllowedRoots.join("\n")
+            myComputerAllowedRoots: data.myComputerAllowedRoots.join("\n"),
+            designImageProvider: data.designImageProvider,
+            designImageApiKey: "",
+            designImageMaxPerTask: String(data.designImageMaxPerTask)
           }));
           setMyComputerDraft((current) => ({
             ...current,
@@ -1681,7 +1687,10 @@ export function AgentWorkspace() {
           finalModel: settingsDraft.finalModel,
           promptCacheEnabled: settingsDraft.promptCacheEnabled,
           localBrowserDomainAllowlist: parseDomainAllowlist(settingsDraft.localBrowserDomainAllowlist),
-          myComputerAllowedRoots: parseFilesystemRoots(settingsDraft.myComputerAllowedRoots)
+          myComputerAllowedRoots: parseFilesystemRoots(settingsDraft.myComputerAllowedRoots),
+          designImageProvider: settingsDraft.designImageProvider,
+          designImageApiKey: settingsDraft.designImageApiKey || undefined,
+          designImageMaxPerTask: Number(settingsDraft.designImageMaxPerTask)
         })
       });
       const data = await readJson<ConfigResponse>(response);
@@ -1689,8 +1698,11 @@ export function AgentWorkspace() {
       setSettingsDraft((current) => ({
         ...current,
         apiKey: "",
+        designImageApiKey: "",
         localBrowserDomainAllowlist: data.localBrowserDomainAllowlist.join("\n"),
-        myComputerAllowedRoots: data.myComputerAllowedRoots.join("\n")
+        myComputerAllowedRoots: data.myComputerAllowedRoots.join("\n"),
+        designImageProvider: data.designImageProvider,
+        designImageMaxPerTask: String(data.designImageMaxPerTask)
       }));
       void refreshRouterOptimizer();
     } finally {
@@ -2313,6 +2325,45 @@ export function AgentWorkspace() {
                 promptCacheEnabled: event.target.checked
               }))
             }
+          />
+        </label>
+        <label className="settings-field">
+          <span>图片 Provider</span>
+          <select
+            value={settingsDraft.designImageProvider}
+            onChange={(event) =>
+              setSettingsDraft((current) => ({ ...current, designImageProvider: event.target.value }))
+            }
+          >
+            <option value="local">Local 生成</option>
+            <option value="dall-e-3">DALL-E 3</option>
+            <option value="stable-diffusion">Stable Diffusion</option>
+            <option value="tongyi-wanxiang">通义万相</option>
+            <option value="wenxin-yige">文心一格</option>
+          </select>
+        </label>
+        <label className="settings-field">
+          <span>图片上限</span>
+          <input
+            type="number"
+            min="1"
+            max="20"
+            step="1"
+            value={settingsDraft.designImageMaxPerTask}
+            onChange={(event) =>
+              setSettingsDraft((current) => ({ ...current, designImageMaxPerTask: event.target.value }))
+            }
+          />
+        </label>
+        <label className="settings-field">
+          <span>图片 API Key</span>
+          <input
+            type="password"
+            value={settingsDraft.designImageApiKey}
+            onChange={(event) =>
+              setSettingsDraft((current) => ({ ...current, designImageApiKey: event.target.value }))
+            }
+            placeholder={config?.hasDesignImageApiKey ? "已配置，输入新 key 可覆盖" : "本地生成无需填写"}
           />
         </label>
         <label className="settings-field">

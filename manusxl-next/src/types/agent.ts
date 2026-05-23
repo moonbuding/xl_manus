@@ -521,6 +521,9 @@ export interface ConfigResponse {
   localBrowserDomainAllowlist: string[];
   myComputerAllowedRoots: string[];
   myComputerPaused: boolean;
+  designImageProvider: string;
+  designImageMaxPerTask: number;
+  hasDesignImageApiKey: boolean;
   hasApiKey: boolean;
 }
 

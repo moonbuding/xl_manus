@@ -31,6 +31,9 @@ const allowedSkillTools = new Set([
   "data_analysis",
   "map_planner",
   "chart_generator",
+  "slide_deck_builder",
+  "web_app_builder",
+  "image_generator",
   "artifact_writer"
 ]);
 const allowedSkillExtensions = new Set([
