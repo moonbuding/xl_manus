@@ -690,6 +690,8 @@ export function AgentWorkspace() {
   const [myComputerScan, setMyComputerScan] = useState<MyComputerFileScanResponse | null>(null);
   const [myComputerPlan, setMyComputerPlan] = useState<MyComputerFilePlanResponse | null>(null);
   const [myComputerActionResult, setMyComputerActionResult] = useState<MyComputerOperation | null>(null);
+  const [myComputerNotice, setMyComputerNotice] = useState<string | null>(null);
+  const [myComputerError, setMyComputerError] = useState<string | null>(null);
   const [ocrStatus, setOcrStatus] = useState<OcrStatus | null>(null);
   const [templateRun, setTemplateRun] = useState<{
     template: TaskTemplate;
@@ -1183,14 +1185,19 @@ export function AgentWorkspace() {
 
   const createMyComputerDesktopPairing = useCallback(async () => {
     setIsCreatingMyComputerPairing(true);
+    setMyComputerError(null);
+    setMyComputerNotice(null);
     try {
       const response = await fetch("/api/my-computer/desktop/pairing", { method: "POST" });
-      const data = await readJson<MyComputerDesktopPairingStatus>(response);
-      if (!response.ok) throw new Error("生成桌面端配对码失败");
+      const data = await readJson<MyComputerDesktopPairingStatus & { error?: string }>(response);
+      if (!response.ok) throw new Error(data.error ?? "生成桌面端配对码失败");
       setMyComputerPairing(data);
+      setMyComputerNotice("桌面端配对码已生成，请在 ManusXL Desktop 输入。");
       await refreshMyComputerStatus();
     } catch (caught: unknown) {
-      setError(getErrorMessage(caught, "生成桌面端配对码失败"));
+      const message = getErrorMessage(caught, "生成桌面端配对码失败");
+      setMyComputerError(message);
+      setError(message);
     } finally {
       setIsCreatingMyComputerPairing(false);
     }
@@ -1302,6 +1309,8 @@ export function AgentWorkspace() {
 
   const saveMyComputerSettings = useCallback(async (paused?: boolean) => {
     setIsSavingMyComputer(true);
+    setMyComputerError(null);
+    setMyComputerNotice(null);
     try {
       const response = await fetch("/api/my-computer/settings", {
         method: "PATCH",
@@ -1311,7 +1320,8 @@ export function AgentWorkspace() {
           paused
         })
       });
-      const data = await readJson<MyComputerStatus>(response);
+      const data = await readJson<MyComputerStatus & { error?: string }>(response);
+      if (!response.ok) throw new Error(data.error ?? "保存 My Computer 设置失败");
       setMyComputerStatus(data);
       setSettingsDraft((current) => ({
         ...current,
@@ -1321,8 +1331,18 @@ export function AgentWorkspace() {
         ...current,
         root: data.allowedRoots.includes(current.root) ? current.root : data.allowedRoots[0] || current.root
       }));
+      setMyComputerNotice(
+        paused === true
+          ? "My Computer 已暂停。恢复后才能扫描目录、生成 Dry-run 或执行本机动作。"
+          : paused === false
+            ? "My Computer 已恢复，可以继续扫描目录和生成 Dry-run。"
+            : "My Computer 允许目录已保存。"
+      );
+      setError(null);
     } catch (caught: unknown) {
-      setError(getErrorMessage(caught, "保存 My Computer 设置失败"));
+      const message = getErrorMessage(caught, "保存 My Computer 设置失败");
+      setMyComputerError(message);
+      setError(message);
     } finally {
       setIsSavingMyComputer(false);
     }
@@ -1330,6 +1350,8 @@ export function AgentWorkspace() {
 
   const clearMyComputerAlwaysAllow = useCallback(async () => {
     setIsSavingMyComputer(true);
+    setMyComputerError(null);
+    setMyComputerNotice(null);
     try {
       const response = await fetch("/api/my-computer/settings", {
         method: "PATCH",
@@ -1340,16 +1362,32 @@ export function AgentWorkspace() {
           alwaysAllowRules: []
         })
       });
-      const data = await readJson<MyComputerStatus>(response);
+      const data = await readJson<MyComputerStatus & { error?: string }>(response);
+      if (!response.ok) throw new Error(data.error ?? "清空 My Computer 授权规则失败");
       setMyComputerStatus(data);
+      setMyComputerNotice("My Computer 授权规则已清空。");
+      setError(null);
     } catch (caught: unknown) {
-      setError(getErrorMessage(caught, "清空 My Computer 授权规则失败"));
+      const message = getErrorMessage(caught, "清空 My Computer 授权规则失败");
+      setMyComputerError(message);
+      setError(message);
     } finally {
       setIsSavingMyComputer(false);
     }
   }, [myComputerStatus, settingsDraft.myComputerAllowedRoots]);
 
   const scanMyComputerRoot = useCallback(async () => {
+    const root = myComputerDraft.root.trim();
+    setMyComputerError(null);
+    setMyComputerNotice(null);
+    if (myComputerStatus?.paused) {
+      setMyComputerError("My Computer 已暂停。请先点击“恢复 My Computer”，再扫描目录。");
+      return;
+    }
+    if (!root) {
+      setMyComputerError("请先填写目标目录。");
+      return;
+    }
     setIsScanningMyComputer(true);
     setMyComputerPlan(null);
     try {
@@ -1357,7 +1395,7 @@ export function AgentWorkspace() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          root: myComputerDraft.root,
+          root,
           maxFiles: 120,
           maxDepth: 2
         })
@@ -1365,22 +1403,37 @@ export function AgentWorkspace() {
       const data = await readJson<MyComputerFileScanResponse>(response);
       if (!response.ok) throw new Error((data as { error?: string }).error ?? "扫描失败");
       setMyComputerScan(data);
+      setMyComputerNotice(`扫描完成：${data.total} 项${data.truncated ? "，结果已截断" : ""}。`);
+      setError(null);
       await refreshMyComputerStatus();
     } catch (caught: unknown) {
-      setError(getErrorMessage(caught, "扫描本机目录失败"));
+      const message = getErrorMessage(caught, "扫描本机目录失败");
+      setMyComputerError(message);
+      setError(message);
     } finally {
       setIsScanningMyComputer(false);
     }
-  }, [myComputerDraft.root, refreshMyComputerStatus]);
+  }, [myComputerDraft.root, myComputerStatus?.paused, refreshMyComputerStatus]);
 
   const planMyComputerFiles = useCallback(async () => {
+    const root = myComputerDraft.root.trim();
+    setMyComputerError(null);
+    setMyComputerNotice(null);
+    if (myComputerStatus?.paused) {
+      setMyComputerError("My Computer 已暂停。请先点击“恢复 My Computer”，再生成 Dry-run。");
+      return;
+    }
+    if (!root) {
+      setMyComputerError("请先填写目标目录。");
+      return;
+    }
     setIsPlanningMyComputer(true);
     try {
       const response = await fetch("/api/my-computer/files/plan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          root: myComputerDraft.root,
+          root,
           mode: myComputerDraft.mode,
           maxFiles: 160
         })
@@ -1389,13 +1442,19 @@ export function AgentWorkspace() {
       if (!response.ok) throw new Error(data.error ?? "生成文件操作预览失败");
       setMyComputerPlan(data);
       setMyComputerActionResult(null);
+      setMyComputerNotice(
+        `Dry-run 已生成：${data.summary.actionCount} 个动作，影响 ${data.summary.affectedFiles} 个文件。`
+      );
+      setError(null);
       await refreshMyComputerStatus();
     } catch (caught: unknown) {
-      setError(getErrorMessage(caught, "生成 My Computer 文件计划失败"));
+      const message = getErrorMessage(caught, "生成 My Computer 文件计划失败");
+      setMyComputerError(message);
+      setError(message);
     } finally {
       setIsPlanningMyComputer(false);
     }
-  }, [myComputerDraft.mode, myComputerDraft.root, refreshMyComputerStatus]);
+  }, [myComputerDraft.mode, myComputerDraft.root, myComputerStatus?.paused, refreshMyComputerStatus]);
 
   const approveMyComputerOperation = useCallback(async (operationId: string, decision: "allow_once" | "always" | "deny") => {
     setIsApprovingMyComputer(true);
@@ -4560,6 +4619,18 @@ export function AgentWorkspace() {
           </button>
         </div>
 
+        {paused ? (
+          <p className="muted-note warning-note my-computer-feedback">
+            My Computer 当前已暂停。点击“恢复 My Computer”后，扫描、Dry-run 和本机动作才会继续执行。
+          </p>
+        ) : null}
+        {myComputerError ? (
+          <p className="muted-note error-note my-computer-feedback">{myComputerError}</p>
+        ) : null}
+        {myComputerNotice ? (
+          <p className="muted-note success-note my-computer-feedback">{myComputerNotice}</p>
+        ) : null}
+
         {myComputerPairing?.activeCode ? (
           <div className="pairing-code-panel">
             <strong>{myComputerPairing.activeCode.code}</strong>
@@ -4634,53 +4705,59 @@ export function AgentWorkspace() {
         </div>
 
         {myComputerScan ? (
-          <div className="browser-operation-list">
-            <div className="browser-operation-item">
-              <div>
-                <span>扫描完成</span>
-                <small>
-                  {myComputerScan.root} · {myComputerScan.total} 项
-                  {myComputerScan.truncated ? " · 已截断" : ""}
-                </small>
-              </div>
-              <strong className="operation-status is-completed">scan</strong>
-            </div>
-            {myComputerScan.entries.slice(0, 5).map((entry: MyComputerFileEntry) => (
-              <div className="browser-operation-item" key={entry.path}>
+          <div className="my-computer-result-block">
+            <span className="mini-label">扫描结果</span>
+            <div className="browser-operation-list">
+              <div className="browser-operation-item">
                 <div>
-                  <span>{entry.name}</span>
+                  <span>扫描完成</span>
                   <small>
-                    {entry.category ?? entry.kind} · {formatSize(entry.size)}
+                    {myComputerScan.root} · {myComputerScan.total} 项
+                    {myComputerScan.truncated ? " · 已截断" : ""}
                   </small>
                 </div>
-                <strong className="operation-status is-started">{entry.kind}</strong>
+                <strong className="operation-status is-completed">scan</strong>
               </div>
-            ))}
+              {myComputerScan.entries.slice(0, 5).map((entry: MyComputerFileEntry) => (
+                <div className="browser-operation-item" key={entry.path}>
+                  <div>
+                    <span>{entry.name}</span>
+                    <small>
+                      {entry.category ?? entry.kind} · {formatSize(entry.size)}
+                    </small>
+                  </div>
+                  <strong className="operation-status is-started">{entry.kind}</strong>
+                </div>
+              ))}
+            </div>
           </div>
         ) : null}
 
         {myComputerPlan ? (
-          <div className="browser-operation-list">
-            <div className="browser-operation-item">
-              <div>
-                <span>{myComputerPlan.operation.description}</span>
-                <small>
-                  {myComputerPlan.summary.actionCount} 个动作 · {myComputerPlan.summary.affectedFiles} 个文件
-                </small>
-              </div>
-              <strong className={`operation-status is-${myComputerPlan.operation.status}`}>
-                {myComputerPlan.operation.status}
-              </strong>
-            </div>
-            {myComputerPlan.operation.actions?.slice(0, 6).map((action) => (
-              <div className="browser-operation-item" key={action.id}>
+          <div className="my-computer-result-block">
+            <span className="mini-label">Dry-run 计划</span>
+            <div className="browser-operation-list">
+              <div className="browser-operation-item">
                 <div>
-                  <span>{basenameForUi(action.sourcePath)} → {basenameForUi(action.targetPath)}</span>
-                  <small>{action.reason}</small>
+                  <span>{myComputerPlan.operation.description}</span>
+                  <small>
+                    {myComputerPlan.summary.actionCount} 个动作 · {myComputerPlan.summary.affectedFiles} 个文件
+                  </small>
                 </div>
-                <strong className="operation-status is-pending_approval">{action.type}</strong>
+                <strong className={`operation-status is-${myComputerPlan.operation.status}`}>
+                  {myComputerPlan.operation.status}
+                </strong>
               </div>
-            ))}
+              {myComputerPlan.operation.actions?.slice(0, 6).map((action) => (
+                <div className="browser-operation-item" key={action.id}>
+                  <div>
+                    <span>{basenameForUi(action.sourcePath)} → {basenameForUi(action.targetPath)}</span>
+                    <small>{action.reason}</small>
+                  </div>
+                  <strong className="operation-status is-pending_approval">{action.type}</strong>
+                </div>
+              ))}
+            </div>
             {myComputerPlan.operation.status === "pending_approval" ? (
               <div className="panel-actions">
                 <button

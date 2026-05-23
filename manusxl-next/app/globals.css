@@ -1954,6 +1954,26 @@ a {
   gap: 8px;
 }
 
+.my-computer-feedback {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 9px 10px;
+}
+
+.success-note {
+  color: var(--sage);
+}
+
+.warning-note {
+  color: var(--gold);
+}
+
+.my-computer-result-block {
+  display: grid;
+  gap: 8px;
+}
+
 .browser-coordinate-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
