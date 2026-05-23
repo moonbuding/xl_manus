@@ -4,6 +4,7 @@ import { requestAuditContext, safeRecordAuditLog } from "@/server/audit/audit-st
 import { currentUserFromRequest, unauthorized } from "@/server/auth/http";
 import { listUploadedFileRecords } from "@/server/files/readers";
 import { getDeepSeekConfig } from "@/server/llm/deepseek";
+import { authorizeOrgTaskCreate, shareTaskWithOrganization } from "@/server/orgs/org-store";
 import { createTask, listTasks } from "@/server/tasks/task-store";
 import type { CreateTaskRequest } from "@/types/agent";
 
@@ -38,6 +39,14 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "部分上传文件不存在或不属于当前用户" }, { status: 400 });
     }
 
+    const orgId = body.orgId?.trim();
+    if (orgId) {
+      const authorization = authorizeOrgTaskCreate(user.id, orgId);
+      if (!authorization.ok) {
+        return NextResponse.json({ error: authorization.error }, { status: authorization.status });
+      }
+    }
+
     const model = body.model?.trim() || getDeepSeekConfig().model;
     const task = createTask(
       prompt,
@@ -45,6 +54,14 @@ export async function POST(request: Request) {
       user.id,
       uploadedFileRecords.map((file) => file.id)
     );
+    if (orgId && body.visibility !== "private") {
+      shareTaskWithOrganization({
+        orgId,
+        taskId: task.id,
+        createdByUserId: user.id,
+        visibility: body.visibility
+      });
+    }
     safeRecordAuditLog({
       userId: user.id,
       taskId: task.id,
@@ -56,6 +73,8 @@ export async function POST(request: Request) {
         model,
         promptLength: prompt.length,
         uploadedFileCount: uploadedFileRecords.length,
+        orgId,
+        visibility: orgId ? body.visibility ?? "org" : "private",
         queued: true
       }
     });

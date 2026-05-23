@@ -78,7 +78,7 @@ REQ-216 (AI Design)
 | REQ-205 | Kubernetes 部署，Sandbox 改为 K8s Job/Pod 弹性调度 | M09 | 5-7 人天 | Planning |
 | REQ-206 | 监控告警：Prometheus + Grafana + 任务失败告警 | M09 | 2-3 人天 | In Progress |
 | REQ-207 | 审计日志：所有 Agent 操作可追溯（合规需求） | M07 | 3-4 人天 | Completed |
-| REQ-208 | 团队/组织功能：多人共享任务、权限矩阵 | M07 | 5-7 人天 | Planning |
+| REQ-208 | 团队/组织功能：多人共享任务、权限矩阵 | M07 | 5-7 人天 | In Progress |
 | REQ-209 | 工作流模板市场：用户保存常用任务模板，社区分享 | M06 | 4-5 人天 | In Progress |
 | REQ-210 | Browser-Use 升级到视觉模型（截图驱动，无需 DOM 索引） | M03 | 4-5 人天 | Planning |
 | REQ-211 | 长时任务后台运行 + Email/Webhook 通知 | M06 | 3-4 人天 | In Progress |
@@ -379,7 +379,7 @@ As a 企业 admin，I want 能查谁在何时通过 Agent 做了什么操作，S
 ---
 
 ### REQ-208：团队/组织功能 — 多人共享任务、权限矩阵
-**模块**: M07 | **状态**: Planning | **工作量**: 5-7 人天
+**模块**: M07 | **状态**: In Progress | **工作量**: 5-7 人天
 
 #### 背景与价值
 P1 是单用户产品（一个账号一个 workspace）。P2 进入团队场景：多人协作同一项目、共享任务历史、按角色分权限。这是从个人订阅升级到团队订阅的关键能力（参考 Manus 1.5+ Collaboration 功能）。
@@ -397,10 +397,13 @@ As a 5 人小团队的负责人，I want 邀请同事加入组织，按角色（
 - 非功能：org 内 10 人并发跑任务不互相影响
 
 #### 验收标准
-- [ ] 邀请同事加入 org 后能在 UI 看到共享任务
-- [ ] Viewer 角色不能新建任务（只读）
-- [ ] org 配额到上限时新任务被拒
-- [ ] 用户可同时加入多个 org，UI 顶部可切换
+- [x] 邀请同事加入 org 后能通过组织任务 API 看到共享任务
+- [x] Viewer 角色不能新建任务（只读）
+- [x] org 配额到上限时新任务被拒
+- [x] 用户可同时加入多个 org（UI 顶部切换待接入）
+
+#### 实现记录
+- 2026-05-23：新增组织/成员/邀请/任务共享 SQLite 模型，支持 owner/admin/member/viewer 角色、邀请 token 接受、组织任务可见性、组织任务配额和共享任务读取 ACL。新增 `/api/orgs`、成员、邀请、组织任务列表 API，并让 `/api/tasks` 支持 `orgId` / `visibility`；新增 `npm run e2e:org` 覆盖多组织、Viewer 拦截、共享任务和配额拦截。
 
 #### 相关 OpenManus 代码
 - 需改造：P1 REQ-103 的用户隔离 — 路径加 org_id 一层 `workspace/{org_id}/{user_id}/{task_id}/`

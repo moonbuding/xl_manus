@@ -338,11 +338,61 @@ export interface CreateTaskRequest {
   prompt: string;
   model?: string;
   fileIds?: string[];
+  orgId?: string;
+  visibility?: TaskVisibility;
 }
 
 export interface CreateTaskResponse {
   taskId: string;
   status: TaskStatus;
+}
+
+export type OrganizationRole = "owner" | "admin" | "member" | "viewer";
+
+export type TaskVisibility = "private" | "team" | "org";
+
+export interface Organization {
+  id: string;
+  name: string;
+  slug: string;
+  taskQuota: number;
+  taskCount: number;
+  createdByUserId: string;
+  createdAt: string;
+  updatedAt: string;
+  role?: OrganizationRole;
+}
+
+export interface OrganizationMembership {
+  orgId: string;
+  userId: string;
+  role: OrganizationRole;
+  createdAt: string;
+  updatedAt: string;
+  user?: Pick<AuthUser, "id" | "email" | "phone" | "displayName">;
+}
+
+export interface OrganizationInvitation {
+  id: string;
+  orgId: string;
+  invitedByUserId: string;
+  email?: string;
+  phone?: string;
+  role: Exclude<OrganizationRole, "owner">;
+  token: string;
+  status: "pending" | "accepted" | "expired" | "revoked";
+  expiresAt: string;
+  createdAt: string;
+  acceptedAt?: string;
+}
+
+export interface OrganizationTaskShare {
+  orgId: string;
+  taskId: string;
+  visibility: Exclude<TaskVisibility, "private">;
+  createdByUserId: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface UploadedFileSummary {

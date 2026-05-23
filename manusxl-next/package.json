@@ -45,6 +45,7 @@
     "e2e:wide-research": "node scripts/e2e-wide-research.mjs",
     "e2e:app-builder": "node scripts/e2e-app-builder.mjs",
     "e2e:design": "node scripts/e2e-design.mjs",
+    "e2e:org": "node scripts/e2e-orgs.mjs",
     "e2e:local-browser": "node scripts/e2e-local-browser.mjs",
     "e2e:local-browser:rehearsal": "node scripts/e2e-local-browser-rehearsal.mjs",
     "e2e:skill": "node scripts/e2e-skill-runner.mjs",
