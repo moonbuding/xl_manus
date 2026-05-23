@@ -154,6 +154,12 @@ function canCreateTask(role?: OrganizationRole) {
   return role === "owner" || role === "admin" || role === "member";
 }
 
+function canManageTarget(requesterRole: OrganizationRole, targetRole: OrganizationRole) {
+  if (!isManager(requesterRole) || targetRole === "owner") return false;
+  if (requesterRole === "admin" && targetRole === "admin") return false;
+  return true;
+}
+
 function orgFromRow(row: OrgRow, role?: OrganizationRole): Organization {
   const data = JSON.parse(row.data_json) as Organization;
   return {
@@ -310,6 +316,65 @@ export function listOrganizationMembers(orgId: string, requesterUserId: string) 
       };
     })
   };
+}
+
+export function updateOrganizationMemberRole(input: {
+  orgId: string;
+  requesterUserId: string;
+  targetUserId: string;
+  role: string;
+}) {
+  const db = openOrgDb();
+  const requester = getOrganizationMembership(input.orgId, input.requesterUserId);
+  if (!requester) return { ok: false as const, status: 404, error: "Organization not found" };
+
+  const target = getOrganizationMembership(input.orgId, input.targetUserId);
+  if (!target) return { ok: false as const, status: 404, error: "成员不存在" };
+  if (target.userId === input.requesterUserId) {
+    return { ok: false as const, status: 403, error: "不能修改自己的组织角色" };
+  }
+  if (!canManageTarget(requester.role, target.role)) {
+    return { ok: false as const, status: 403, error: "没有修改该成员角色的权限" };
+  }
+
+  const nextRole = normalizeRole(input.role);
+  if (requester.role === "admin" && nextRole === "admin") {
+    return { ok: false as const, status: 403, error: "Admin 不能提升其他成员为 Admin" };
+  }
+
+  const now = new Date().toISOString();
+  const updated: OrganizationMembership = {
+    ...target,
+    role: nextRole,
+    updatedAt: now
+  };
+  upsertMembership(db, updated);
+  return { ok: true as const, membership: updated };
+}
+
+export function removeOrganizationMember(input: {
+  orgId: string;
+  requesterUserId: string;
+  targetUserId: string;
+}) {
+  const db = openOrgDb();
+  const requester = getOrganizationMembership(input.orgId, input.requesterUserId);
+  if (!requester) return { ok: false as const, status: 404, error: "Organization not found" };
+
+  const target = getOrganizationMembership(input.orgId, input.targetUserId);
+  if (!target) return { ok: false as const, status: 404, error: "成员不存在" };
+  if (target.userId === input.requesterUserId) {
+    return { ok: false as const, status: 403, error: "不能移除自己" };
+  }
+  if (!canManageTarget(requester.role, target.role)) {
+    return { ok: false as const, status: 403, error: "没有移除该成员的权限" };
+  }
+
+  db.prepare("DELETE FROM organization_memberships WHERE org_id = ? AND user_id = ?").run(
+    input.orgId,
+    input.targetUserId
+  );
+  return { ok: true as const, removed: target };
 }
 
 export function createOrganization(input: { user: AuthUser; name: string; taskQuota?: number }) {

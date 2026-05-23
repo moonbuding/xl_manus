@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import { inflateRawSync, inflateSync } from "node:zlib";
 import { createId } from "@/lib/id";
@@ -35,6 +35,8 @@ interface UploadPersistenceAdapter {
   ensureSchema: () => void;
   save: (record: UploadedFileRecord) => void;
   get: (fileId: string, ownerId?: string) => UploadedFileRecord | undefined;
+  list: (ownerId: string, limit: number) => UploadedFileRecord[];
+  delete: (fileId: string, ownerId?: string) => void;
 }
 
 const globalForUploads = globalThis as unknown as {
@@ -117,6 +119,30 @@ function getUploadedFileRecordSqlite(fileId: string, ownerId?: string) {
   return row ? (JSON.parse(row.data_json) as UploadedFileRecord) : undefined;
 }
 
+function listUploadedFileRecordsSqlite(ownerId: string, limit: number) {
+  const rows = getUploadDb()
+    .prepare(
+      `
+        SELECT data_json
+        FROM uploaded_files
+        WHERE owner_id = ?
+        ORDER BY created_at DESC
+        LIMIT ?
+      `
+    )
+    .all(ownerId, Math.max(1, Math.min(limit, 200))) as Array<{ data_json: string }>;
+  return rows.map((row) => JSON.parse(row.data_json) as UploadedFileRecord);
+}
+
+function deleteUploadedFileRecordSqlite(fileId: string, ownerId?: string) {
+  const db = getUploadDb();
+  if (ownerId) {
+    db.prepare("DELETE FROM uploaded_files WHERE id = ? AND owner_id = ?").run(fileId, ownerId);
+    return;
+  }
+  db.prepare("DELETE FROM uploaded_files WHERE id = ?").run(fileId);
+}
+
 function postgresSchemaPath() {
   return join(process.cwd(), "db", "postgres", "0001_initial.sql");
 }
@@ -193,6 +219,37 @@ function getUploadedFileRecordPostgres(fileId: string, ownerId?: string) {
   return row ? (JSON.parse(row) as UploadedFileRecord) : undefined;
 }
 
+function listUploadedFileRecordsPostgres(ownerId: string, limit: number) {
+  const output = runPsql([
+    "-At",
+    "-c",
+    `
+      SELECT data_json::text
+      FROM uploaded_files
+      WHERE owner_id = ${postgresValue(ownerId)}
+      ORDER BY created_at DESC
+      LIMIT ${Math.max(1, Math.min(limit, 200))};
+    `
+  ]);
+  return output
+    .split("\n")
+    .map((row) => row.trim())
+    .filter(Boolean)
+    .map((row) => JSON.parse(row) as UploadedFileRecord);
+}
+
+function deleteUploadedFileRecordPostgres(fileId: string, ownerId?: string) {
+  const ownerFilter = ownerId ? `AND owner_id = ${postgresValue(ownerId)}` : "";
+  runPsql([
+    "-c",
+    `
+      DELETE FROM uploaded_files
+      WHERE id = ${postgresValue(fileId)}
+      ${ownerFilter};
+    `
+  ]);
+}
+
 function createSqliteUploadStore(): UploadPersistenceAdapter {
   return {
     provider: "sqlite",
@@ -200,7 +257,9 @@ function createSqliteUploadStore(): UploadPersistenceAdapter {
       getUploadDb();
     },
     save: saveUploadRecordSqlite,
-    get: getUploadedFileRecordSqlite
+    get: getUploadedFileRecordSqlite,
+    list: listUploadedFileRecordsSqlite,
+    delete: deleteUploadedFileRecordSqlite
   };
 }
 
@@ -212,7 +271,9 @@ function createPostgresUploadStore(): UploadPersistenceAdapter {
     save: (record) => {
       runPsql(["-c", uploadRecordUpsertSql(record)]);
     },
-    get: getUploadedFileRecordPostgres
+    get: getUploadedFileRecordPostgres,
+    list: listUploadedFileRecordsPostgres,
+    delete: deleteUploadedFileRecordPostgres
   };
 }
 
@@ -238,7 +299,13 @@ function createUploadStore(): UploadPersistenceAdapter {
 }
 
 function getUploadStore() {
-  globalForUploads.manusxlUploadStore ??= createUploadStore();
+  if (
+    !globalForUploads.manusxlUploadStore ||
+    typeof globalForUploads.manusxlUploadStore.list !== "function" ||
+    typeof globalForUploads.manusxlUploadStore.delete !== "function"
+  ) {
+    globalForUploads.manusxlUploadStore = createUploadStore();
+  }
   globalForUploads.manusxlUploadStore.ensureSchema();
   return globalForUploads.manusxlUploadStore;
 }
@@ -259,6 +326,36 @@ export function listUploadedFileRecords(ownerId: string | undefined, fileIds: st
   return uniqueIds
     .map((fileId) => getUploadedFileRecord(fileId, ownerId))
     .filter((record): record is UploadedFileRecord => Boolean(record));
+}
+
+function uploadExpiresAt(record: UploadedFileRecord) {
+  const value = record.metadata?.expiresAt;
+  return typeof value === "string" ? value : undefined;
+}
+
+function isUploadExpired(record: UploadedFileRecord, now = Date.now()) {
+  const expiresAt = uploadExpiresAt(record);
+  return expiresAt ? Date.parse(expiresAt) <= now : false;
+}
+
+export async function cleanupExpiredUploadedFiles(ownerId?: string) {
+  if (!ownerId) return [];
+  const store = getUploadStore();
+  const expired = store.list(ownerId, 200).filter((record) => isUploadExpired(record));
+  await Promise.all(
+    expired.map(async (record) => {
+      store.delete(record.id, ownerId);
+      await unlink(record.storedPath).catch(() => undefined);
+    })
+  );
+  return expired;
+}
+
+export async function listUploadedFilesForOwner(ownerId: string, limit = 80) {
+  await cleanupExpiredUploadedFiles(ownerId);
+  return getUploadStore()
+    .list(ownerId, limit)
+    .filter((record) => !isUploadExpired(record));
 }
 
 function sanitizeFilename(value: string) {
@@ -1026,6 +1123,33 @@ export async function saveUploadedFile(file: File, ownerId?: string) {
   };
 }
 
+export async function saveUploadedFileBuffer(input: {
+  name: string;
+  mimeType?: string;
+  buffer: Buffer;
+  ownerId?: string;
+}) {
+  const size = input.buffer.byteLength;
+  if (size <= 0) throw new Error("文件为空。");
+  if (size > MAX_UPLOAD_BYTES) throw new Error("文件超过 25MB，当前版本暂不处理。");
+
+  const id = createId("upload");
+  const safeName = sanitizeFilename(input.name || "upload.bin");
+  const uploadRoot = input.ownerId ? dataPath("uploads", input.ownerId) : dataPath("uploads");
+  await mkdir(uploadRoot, { recursive: true });
+
+  const storedPath = join(uploadRoot, `${id}-${safeName}`);
+  await writeFile(storedPath, input.buffer);
+
+  return {
+    id,
+    name: safeName,
+    mimeType: input.mimeType || "application/octet-stream",
+    size,
+    storedPath
+  };
+}
+
 export async function saveAndAnalyzeUpload(file: File, ownerId?: string) {
   const stored = await saveUploadedFile(file, ownerId);
   const summary = await analyzeStoredFile(stored);
@@ -1036,4 +1160,29 @@ export async function saveAndAnalyzeUpload(file: File, ownerId?: string) {
     createdAt: new Date().toISOString()
   });
   return summary;
+}
+
+export async function saveAndAnalyzeUploadBuffer(input: {
+  name: string;
+  mimeType?: string;
+  buffer: Buffer;
+  ownerId?: string;
+  metadata?: Record<string, string | number | boolean>;
+}) {
+  const stored = await saveUploadedFileBuffer(input);
+  const summary = await analyzeStoredFile(stored);
+  const enriched = {
+    ...summary,
+    metadata: {
+      ...summary.metadata,
+      ...(input.metadata ?? {})
+    }
+  };
+  saveUploadRecord({
+    ...enriched,
+    ownerId: input.ownerId,
+    storedPath: stored.storedPath,
+    createdAt: new Date().toISOString()
+  });
+  return enriched;
 }

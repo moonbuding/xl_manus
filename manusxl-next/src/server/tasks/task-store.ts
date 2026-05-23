@@ -12,7 +12,7 @@ import {
   runPsql
 } from "@/server/db/provider";
 import { getManusDb } from "@/server/sqlite";
-import type { AgentEvent, Artifact, Task, TaskStatus } from "@/types/agent";
+import type { AgentEvent, Artifact, Task, TaskExecutionTarget, TaskStatus } from "@/types/agent";
 
 type Subscriber = (event: AgentEvent) => void;
 
@@ -670,7 +670,8 @@ export function createTask(
   prompt: string,
   model: string,
   ownerId?: string,
-  uploadedFileIds: string[] = []
+  uploadedFileIds: string[] = [],
+  options: { executionTarget?: TaskExecutionTarget } = {}
 ) {
   const state = getState();
   const now = new Date().toISOString();
@@ -679,6 +680,7 @@ export function createTask(
     ownerId,
     prompt,
     uploadedFileIds: uploadedFileIds.length > 0 ? uploadedFileIds : undefined,
+    executionTarget: options.executionTarget ?? "cloud",
     model,
     status: "queued",
     createdAt: now,

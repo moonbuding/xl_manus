@@ -41,6 +41,6 @@ export async function POST(
   }
   return NextResponse.json({
     invitation: result.invitation,
-    acceptUrl: `/api/orgs/invitations/accept?token=${encodeURIComponent(result.invitation.token)}`
+    acceptUrl: `/?inviteToken=${encodeURIComponent(result.invitation.token)}`
   });
 }

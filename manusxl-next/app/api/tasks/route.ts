@@ -4,6 +4,10 @@ import { requestAuditContext, safeRecordAuditLog } from "@/server/audit/audit-st
 import { currentUserFromRequest, unauthorized } from "@/server/auth/http";
 import { listUploadedFileRecords } from "@/server/files/readers";
 import { getDeepSeekConfig } from "@/server/llm/deepseek";
+import {
+  dispatchTaskToMyComputerDesktop,
+  hasOnlineMyComputerDesktop
+} from "@/server/my-computer/my-computer";
 import { authorizeOrgTaskCreate, shareTaskWithOrganization } from "@/server/orgs/org-store";
 import { createTask, listTasks } from "@/server/tasks/task-store";
 import type { CreateTaskRequest } from "@/types/agent";
@@ -48,11 +52,17 @@ export async function POST(request: Request) {
     }
 
     const model = body.model?.trim() || getDeepSeekConfig().model;
+    const executionTarget = body.executionTarget === "my-computer" ? "my-computer" : "cloud";
+    if (executionTarget === "my-computer" && !hasOnlineMyComputerDesktop(user.id)) {
+      return NextResponse.json({ error: "没有在线的 My Computer 桌面端设备" }, { status: 409 });
+    }
+
     const task = createTask(
       prompt,
       model,
       user.id,
-      uploadedFileRecords.map((file) => file.id)
+      uploadedFileRecords.map((file) => file.id),
+      { executionTarget }
     );
     if (orgId && body.visibility !== "private") {
       shareTaskWithOrganization({
@@ -75,15 +85,24 @@ export async function POST(request: Request) {
         uploadedFileCount: uploadedFileRecords.length,
         orgId,
         visibility: orgId ? body.visibility ?? "org" : "private",
-        queued: true
+        queued: true,
+        executionTarget
       }
     });
-    const queue = enqueueAgentTask(task.id);
+    const desktopDispatch =
+      executionTarget === "my-computer"
+        ? dispatchTaskToMyComputerDesktop({ taskId: task.id, ownerId: user.id })
+        : undefined;
+    if (desktopDispatch && !desktopDispatch.ok) {
+      return NextResponse.json({ error: desktopDispatch.error }, { status: desktopDispatch.status });
+    }
+    const queue = executionTarget === "my-computer" ? undefined : enqueueAgentTask(task.id);
 
     return NextResponse.json({
       taskId: task.id,
       status: task.status,
-      queue
+      queue,
+      desktopDispatch
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Create task failed";

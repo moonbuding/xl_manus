@@ -205,6 +205,72 @@ export interface CreateScheduledTaskRequest {
 
 export type MyComputerBridgeType = "next-local" | "electron" | "tauri";
 
+export type MyComputerDesktopDeviceStatus = "online" | "offline";
+
+export interface MyComputerDesktopDevice {
+  id: string;
+  ownerId: string;
+  name: string;
+  bridge: Exclude<MyComputerBridgeType, "next-local">;
+  platform: NodeJS.Platform | string;
+  appVersion: string;
+  capabilities: MyComputerOperationKind[];
+  status: MyComputerDesktopDeviceStatus;
+  createdAt: string;
+  lastSeenAt: string;
+  metadata?: Record<string, string | number | boolean>;
+}
+
+export interface MyComputerDesktopPairingStatus {
+  activeCode?: {
+    code: string;
+    expiresAt: string;
+  };
+  pairedDevices: MyComputerDesktopDevice[];
+}
+
+export interface MyComputerDesktopPairingVerifyResponse {
+  paired: boolean;
+  token?: string;
+  device?: MyComputerDesktopDevice;
+  error?: string;
+}
+
+export type MyComputerDesktopFileRequestStatus =
+  | "pending"
+  | "approved"
+  | "denied"
+  | "uploaded"
+  | "failed";
+
+export interface MyComputerDesktopFileRequest {
+  id: string;
+  ownerId: string;
+  deviceId?: string;
+  requestedPath: string;
+  reason: string;
+  status: MyComputerDesktopFileRequestStatus;
+  createdAt: string;
+  updatedAt: string;
+  decidedAt?: string;
+  uploadedFileId?: string;
+  error?: string;
+}
+
+export interface MyComputerDesktopHeartbeatResponse {
+  ok: boolean;
+  device?: MyComputerDesktopDevice;
+  paused?: boolean;
+  allowedRoots?: string[];
+  pendingApprovals?: MyComputerOperation[];
+  recentOperations?: MyComputerOperation[];
+  assignedTasks?: MyComputerDesktopTaskAssignment[];
+  fileRequests?: MyComputerDesktopFileRequest[];
+  error?: string;
+}
+
+export type TaskExecutionTarget = "cloud" | "my-computer";
+
 export type MyComputerOperationKind =
   | "file_scan"
   | "file_classify"
@@ -285,6 +351,7 @@ export interface MyComputerStatus {
   }>;
   recentOperations: MyComputerOperation[];
   pendingApprovals: MyComputerOperation[];
+  desktopDevices: MyComputerDesktopDevice[];
 }
 
 export interface MyComputerFileScanResponse {
@@ -301,6 +368,22 @@ export interface MyComputerFilePlanResponse {
     actionCount: number;
     affectedFiles: number;
   };
+}
+
+export type MyComputerDesktopTaskStatus = "queued" | "assigned" | "completed" | "failed" | "cancelled";
+
+export interface MyComputerDesktopTaskAssignment {
+  id: string;
+  taskId: string;
+  ownerId: string;
+  deviceId: string;
+  status: MyComputerDesktopTaskStatus;
+  prompt: string;
+  createdAt: string;
+  updatedAt: string;
+  assignedAt?: string;
+  completedAt?: string;
+  error?: string;
 }
 
 export interface ToolCallPayload {
@@ -324,6 +407,7 @@ export interface Task {
   ownerId?: string;
   prompt: string;
   uploadedFileIds?: string[];
+  executionTarget?: TaskExecutionTarget;
   status: TaskStatus;
   model: string;
   createdAt: string;
@@ -340,6 +424,7 @@ export interface CreateTaskRequest {
   fileIds?: string[];
   orgId?: string;
   visibility?: TaskVisibility;
+  executionTarget?: TaskExecutionTarget;
 }
 
 export interface CreateTaskResponse {
@@ -404,6 +489,11 @@ export interface UploadedFileSummary {
   textPreview: string;
   summary: string;
   metadata: Record<string, string | number | boolean>;
+}
+
+export interface UploadedLibraryFile extends UploadedFileSummary {
+  createdAt: string;
+  expiresAt?: string;
 }
 
 export interface AnalyzeFileResponse {

@@ -64,6 +64,7 @@ import type {
   McpCatalogItem,
   McpServer,
   ModelRouterOptimizerResponse,
+  MyComputerDesktopPairingStatus,
   MyComputerFileEntry,
   MyComputerFilePlanMode,
   MyComputerFilePlanResponse,
@@ -80,8 +81,10 @@ import type {
   ScheduledTaskRunLog,
   ScheduledTaskKind,
   Task,
+  TaskExecutionTarget,
   TaskTemplate,
   TaskStatus,
+  UploadedLibraryFile,
   UploadedFileSummary
 } from "@/types/agent";
 
@@ -350,6 +353,7 @@ function createOptimisticTask(taskId: string, prompt: string, model: string, sta
     id: taskId,
     prompt,
     model,
+    executionTarget: "cloud",
     status,
     createdAt: now,
     updatedAt: now,
@@ -467,9 +471,21 @@ function parseEnvDraft(value: string) {
   );
 }
 
+function extractInvitationToken(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  try {
+    const url = new URL(trimmed, "http://manusxl.local");
+    return url.searchParams.get("inviteToken") ?? url.searchParams.get("token") ?? trimmed;
+  } catch {
+    return trimmed;
+  }
+}
+
 export function AgentWorkspace() {
   const [prompt, setPrompt] = useState("");
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFileSummary[]>([]);
+  const [libraryFiles, setLibraryFiles] = useState<UploadedLibraryFile[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [templates, setTemplates] = useState<TaskTemplate[]>([]);
   const [marketplaceTemplates, setMarketplaceTemplates] = useState<TaskTemplate[]>([]);
@@ -503,6 +519,7 @@ export function AgentWorkspace() {
   const [isRefreshingAudit, setIsRefreshingAudit] = useState(false);
   const [activeTask, setActiveTask] = useState<Task | null>(null);
   const [activeNav, setActiveNav] = useState<NavigationView>("workspace");
+  const [executionTarget, setExecutionTarget] = useState<TaskExecutionTarget>("cloud");
   const [config, setConfig] = useState<ConfigResponse | null>(null);
   const [contextMetrics, setContextMetrics] = useState<ContextMetricsSummary | null>(null);
   const [routerOptimizer, setRouterOptimizer] = useState<ModelRouterOptimizerResponse | null>(null);
@@ -517,6 +534,7 @@ export function AgentWorkspace() {
   const [localBrowserSafety, setLocalBrowserSafety] = useState<LocalBrowserSafetyState | null>(null);
   const [localBrowserPairing, setLocalBrowserPairing] = useState<LocalBrowserPairingStatus | null>(null);
   const [myComputerStatus, setMyComputerStatus] = useState<MyComputerStatus | null>(null);
+  const [myComputerPairing, setMyComputerPairing] = useState<MyComputerDesktopPairingStatus | null>(null);
   const [myComputerScan, setMyComputerScan] = useState<MyComputerFileScanResponse | null>(null);
   const [myComputerPlan, setMyComputerPlan] = useState<MyComputerFilePlanResponse | null>(null);
   const [myComputerActionResult, setMyComputerActionResult] = useState<MyComputerOperation | null>(null);
@@ -570,8 +588,16 @@ export function AgentWorkspace() {
     name: "",
     taskQuota: "25",
     invitePhone: "",
-    inviteRole: "member" as Exclude<OrganizationRole, "owner">
+    inviteRole: "member" as Exclude<OrganizationRole, "owner">,
+    acceptToken: ""
   });
+  const [orgInviteResult, setOrgInviteResult] = useState<{
+    phone: string;
+    role: Exclude<OrganizationRole, "owner">;
+    acceptUrl: string;
+    token: string;
+  } | null>(null);
+  const [orgAcceptNotice, setOrgAcceptNotice] = useState<string | null>(null);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [isApplyingRouterPolicy, setIsApplyingRouterPolicy] = useState(false);
   const [isSavingNotifications, setIsSavingNotifications] = useState(false);
@@ -580,6 +606,8 @@ export function AgentWorkspace() {
   const [isRunningScheduledTask, setIsRunningScheduledTask] = useState(false);
   const [isCreatingOrg, setIsCreatingOrg] = useState(false);
   const [isInvitingOrgMember, setIsInvitingOrgMember] = useState(false);
+  const [isAcceptingOrgInvite, setIsAcceptingOrgInvite] = useState(false);
+  const [managingOrgMemberId, setManagingOrgMemberId] = useState<string | null>(null);
   const [isUploadingSkill, setIsUploadingSkill] = useState(false);
   const [isRunningSandboxTest, setIsRunningSandboxTest] = useState(false);
   const [isCheckingDatabase, setIsCheckingDatabase] = useState(false);
@@ -591,6 +619,7 @@ export function AgentWorkspace() {
   const [isCreatingLocalBrowserPairing, setIsCreatingLocalBrowserPairing] = useState(false);
   const [isCheckingMyComputer, setIsCheckingMyComputer] = useState(false);
   const [isSavingMyComputer, setIsSavingMyComputer] = useState(false);
+  const [isCreatingMyComputerPairing, setIsCreatingMyComputerPairing] = useState(false);
   const [isScanningMyComputer, setIsScanningMyComputer] = useState(false);
   const [isPlanningMyComputer, setIsPlanningMyComputer] = useState(false);
   const [isApprovingMyComputer, setIsApprovingMyComputer] = useState(false);
@@ -638,6 +667,7 @@ export function AgentWorkspace() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const skillInputRef = useRef<HTMLInputElement | null>(null);
   const initialTaskParamRef = useRef<string | null>(null);
+  const initialInviteTokenRef = useRef<string | null>(null);
   const activeTaskId = activeTask?.id;
   const activeTaskStatus = activeTask?.status;
 
@@ -655,6 +685,9 @@ export function AgentWorkspace() {
     [activeOrgId, organizations]
   );
   const selectedOrgCanCreateTask = !activeOrganization || activeOrganization.role !== "viewer";
+  const hasOnlineDesktop = Boolean(
+    myComputerStatus?.desktopDevices.some((device) => device.status === "online")
+  );
   const showComposer = activeNav === "workspace" || activeNav === "agent";
 
   const visibleTasks = useMemo(() => {
@@ -819,6 +852,48 @@ export function AgentWorkspace() {
     }
   }, [activeOrgId]);
 
+  const acceptOrganizationInvitationFromToken = useCallback(
+    async (rawToken: string, options: { fromUrl?: boolean } = {}) => {
+      const token = extractInvitationToken(rawToken);
+      if (!token || isAcceptingOrgInvite) return;
+      setIsAcceptingOrgInvite(true);
+      setError(null);
+      try {
+        const response = await fetch("/api/orgs/invitations/accept", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token })
+        });
+        const data = await readJson<{
+          invitation?: { orgId: string; role: OrganizationRole; status: string };
+          organization?: Organization;
+          error?: string;
+        }>(response, {});
+        if (!response.ok || !data.organization) {
+          throw new Error(data.error ?? "接受邀请失败");
+        }
+        setOrgDraft((current) => ({ ...current, acceptToken: "" }));
+        setOrgInviteResult(null);
+        setOrgAcceptNotice(`已加入 ${data.organization.name}，角色 ${organizationRoleText[data.organization.role ?? data.invitation?.role ?? "member"]}。`);
+        await refreshOrganizations();
+        setActiveOrgId(data.organization.id);
+        await refreshOrganizationWorkspace(data.organization.id);
+        if (options.fromUrl) {
+          const url = new URL(window.location.href);
+          url.searchParams.delete("inviteToken");
+          url.searchParams.delete("token");
+          window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+        }
+      } catch (caught) {
+        setOrgAcceptNotice(null);
+        setError(getErrorMessage(caught, "接受组织邀请失败"));
+      } finally {
+        setIsAcceptingOrgInvite(false);
+      }
+    },
+    [isAcceptingOrgInvite, refreshOrganizations, refreshOrganizationWorkspace]
+  );
+
   const refreshContextMetrics = useCallback(async (taskId?: string) => {
     try {
       const suffix = taskId ? `?taskId=${encodeURIComponent(taskId)}` : "";
@@ -925,10 +1000,18 @@ export function AgentWorkspace() {
   const refreshMyComputerStatus = useCallback(async () => {
     setIsCheckingMyComputer(true);
     try {
-      const response = await fetch("/api/my-computer/status", { cache: "no-store" });
+      const [response, pairingResponse] = await Promise.all([
+        fetch("/api/my-computer/status", { cache: "no-store" }),
+        fetch("/api/my-computer/desktop/pairing", { cache: "no-store" })
+      ]);
       if (!response.ok) return;
       const data = await readJson<MyComputerStatus>(response);
       setMyComputerStatus(data);
+      const onlineDesktop = data.desktopDevices.some((device) => device.status === "online");
+      if (!onlineDesktop) setExecutionTarget("cloud");
+      if (pairingResponse.ok) {
+        setMyComputerPairing(await readJson<MyComputerDesktopPairingStatus>(pairingResponse));
+      }
       setSettingsDraft((current) => ({
         ...current,
         myComputerAllowedRoots: data.allowedRoots.join("\n")
@@ -939,10 +1022,26 @@ export function AgentWorkspace() {
       }));
     } catch {
       setMyComputerStatus(null);
+      setMyComputerPairing(null);
     } finally {
       setIsCheckingMyComputer(false);
     }
   }, []);
+
+  const createMyComputerDesktopPairing = useCallback(async () => {
+    setIsCreatingMyComputerPairing(true);
+    try {
+      const response = await fetch("/api/my-computer/desktop/pairing", { method: "POST" });
+      const data = await readJson<MyComputerDesktopPairingStatus>(response);
+      if (!response.ok) throw new Error("生成桌面端配对码失败");
+      setMyComputerPairing(data);
+      await refreshMyComputerStatus();
+    } catch (caught: unknown) {
+      setError(getErrorMessage(caught, "生成桌面端配对码失败"));
+    } finally {
+      setIsCreatingMyComputerPairing(false);
+    }
+  }, [refreshMyComputerStatus]);
 
   const createLocalBrowserPairing = useCallback(async () => {
     setIsCreatingLocalBrowserPairing(true);
@@ -1259,6 +1358,21 @@ export function AgentWorkspace() {
     }
   }, []);
 
+  const refreshLibraryFiles = useCallback(async () => {
+    try {
+      const response = await fetch("/api/files", { cache: "no-store" });
+      if (response.status === 401) {
+        setLibraryFiles([]);
+        return;
+      }
+      if (!response.ok) return;
+      const data = await readJson<{ files: UploadedLibraryFile[] }>(response, { files: [] });
+      setLibraryFiles(data.files);
+    } catch {
+      setLibraryFiles([]);
+    }
+  }, []);
+
   const refreshTemplates = useCallback(async () => {
     try {
       const response = await fetch("/api/templates", { cache: "no-store" });
@@ -1384,6 +1498,7 @@ export function AgentWorkspace() {
         if (!user) return;
         await resumePendingTasks();
         await refreshTasks();
+        void refreshLibraryFiles();
         void refreshAuthStatus();
         void refreshAudit();
         void refreshNotifications();
@@ -1450,6 +1565,7 @@ export function AgentWorkspace() {
     refreshLocalBrowserSafety,
     refreshLocalBrowserPairing,
     refreshLocalBrowserStatus,
+    refreshLibraryFiles,
     refreshMarketplaceTemplates,
     refreshMyComputerStatus,
     refreshMcpCatalog,
@@ -1478,9 +1594,22 @@ export function AgentWorkspace() {
     if (!authUser) return;
     const timer = window.setTimeout(() => {
       void refreshOrganizationWorkspace(activeOrgId);
+      setOrgInviteResult(null);
     }, 0);
     return () => window.clearTimeout(timer);
   }, [activeOrgId, authUser, refreshOrganizationWorkspace]);
+
+  useEffect(() => {
+    if (!authUser || initialInviteTokenRef.current) return;
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get("inviteToken") ?? params.get("token");
+    if (!token) return;
+    initialInviteTokenRef.current = token;
+    const timer = window.setTimeout(() => {
+      void acceptOrganizationInvitationFromToken(token, { fromUrl: true });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [acceptOrganizationInvitationFromToken, authUser]);
 
   useEffect(() => {
     if (!authUser || initialTaskParamRef.current) return;
@@ -1635,7 +1764,8 @@ export function AgentWorkspace() {
           model: config?.model,
           fileIds: uploadedFiles.map((file) => file.id),
           orgId: activeOrgId || undefined,
-          visibility: activeOrgId ? "org" : "private"
+          visibility: activeOrgId ? "org" : "private",
+          executionTarget
         })
       });
 
@@ -1667,7 +1797,10 @@ export function AgentWorkspace() {
       setActiveNav("agent");
       setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
       connectStream(task.id);
-      if (activeOrgId) void refreshOrganizationWorkspace(activeOrgId);
+      if (activeOrgId) {
+        void refreshOrganizationWorkspace(activeOrgId);
+        void refreshOrganizations();
+      }
       void refreshRouterOptimizer(trimmed);
     } catch (caught) {
       setError(getErrorMessage(caught, "创建任务失败"));
@@ -1703,6 +1836,7 @@ export function AgentWorkspace() {
       }
 
       setUploadedFiles((current) => [...current, ...analyzedFiles]);
+      await refreshLibraryFiles();
     } catch (caught) {
       setError(getErrorMessage(caught, "文件上传失败"));
     } finally {
@@ -1927,6 +2061,7 @@ export function AgentWorkspace() {
         throw new Error(data.error ?? "创建组织失败");
       }
       setOrgDraft((current) => ({ ...current, name: "" }));
+      setOrgAcceptNotice(null);
       setActiveOrgId(data.organization.id);
       await refreshOrganizations();
       await refreshOrganizationWorkspace(data.organization.id);
@@ -1950,16 +2085,79 @@ export function AgentWorkspace() {
           role: orgDraft.inviteRole
         })
       });
-      const data = await readJson<{ invitation?: { token: string }; error?: string }>(response, {});
+      const data = await readJson<{
+        invitation?: { token: string; role: Exclude<OrganizationRole, "owner"> };
+        acceptUrl?: string;
+        error?: string;
+      }>(response, {});
       if (!response.ok || !data.invitation) {
         throw new Error(data.error ?? "邀请成员失败");
       }
+      const acceptUrl = data.acceptUrl
+        ? new URL(data.acceptUrl, window.location.origin).toString()
+        : "";
+      setOrgInviteResult({
+        phone: orgDraft.invitePhone.trim(),
+        role: data.invitation.role,
+        acceptUrl,
+        token: data.invitation.token
+      });
+      setOrgAcceptNotice(null);
       setOrgDraft((current) => ({ ...current, invitePhone: "" }));
       await refreshOrganizationWorkspace(activeOrgId);
     } catch (caught) {
       setError(getErrorMessage(caught, "邀请成员失败"));
     } finally {
       setIsInvitingOrgMember(false);
+    }
+  }
+
+  async function updateOrganizationMember(member: OrganizationMembership, role: Exclude<OrganizationRole, "owner">) {
+    if (!activeOrgId || member.role === role || managingOrgMemberId) return;
+    setManagingOrgMemberId(member.userId);
+    setError(null);
+    try {
+      const response = await fetch(`/api/orgs/${activeOrgId}/members`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: member.userId, role })
+      });
+      const data = await readJson<{ members?: OrganizationMembership[]; error?: string }>(response, {});
+      if (!response.ok || !data.members) {
+        throw new Error(data.error ?? "修改成员角色失败");
+      }
+      setOrgMembers(data.members);
+      await refreshOrganizations();
+    } catch (caught) {
+      setError(getErrorMessage(caught, "修改成员角色失败"));
+    } finally {
+      setManagingOrgMemberId(null);
+    }
+  }
+
+  async function removeOrganizationMemberFromOrg(member: OrganizationMembership) {
+    if (!activeOrgId || managingOrgMemberId) return;
+    const label = member.user?.displayName ?? member.user?.phone ?? member.user?.email ?? member.userId;
+    if (!window.confirm(`确定从当前组织移除 ${label} 吗？`)) return;
+    setManagingOrgMemberId(member.userId);
+    setError(null);
+    try {
+      const response = await fetch(`/api/orgs/${activeOrgId}/members`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: member.userId })
+      });
+      const data = await readJson<{ members?: OrganizationMembership[]; error?: string }>(response, {});
+      if (!response.ok || !data.members) {
+        throw new Error(data.error ?? "移除成员失败");
+      }
+      setOrgMembers(data.members);
+      await refreshOrganizations();
+      await refreshOrganizationWorkspace(activeOrgId);
+    } catch (caught) {
+      setError(getErrorMessage(caught, "移除成员失败"));
+    } finally {
+      setManagingOrgMemberId(null);
     }
   }
 
@@ -2320,6 +2518,35 @@ export function AgentWorkspace() {
     );
   }
 
+  function renderUploadedFileLibrary(limit = 12) {
+    if (libraryFiles.length === 0) {
+      return <p className="muted-note">还没有上传文件。桌面端同步或聊天框上传的文件会出现在这里。</p>;
+    }
+
+    return (
+      <div className="file-library-list">
+        {libraryFiles.slice(0, limit).map((file) => {
+          const expiresAt = file.expiresAt ? formatDate(file.expiresAt) : "未设置 TTL";
+          const source = file.metadata.source === "desktop-sync" ? "My Computer" : "Web Upload";
+          return (
+            <div key={file.id} className="file-library-item">
+              <span className="file-library-icon">
+                <FileText size={15} />
+              </span>
+              <span>
+                <strong>{file.name}</strong>
+                <small>
+                  {source} · {formatSize(file.size)} · {expiresAt}
+                </small>
+                <em>{file.summary}</em>
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
   function renderTemplatePanel() {
     return (
       <>
@@ -2413,6 +2640,31 @@ export function AgentWorkspace() {
           </button>
         </div>
 
+        <div className="org-accept-row">
+          <label className="settings-field">
+            <span>接受邀请链接或 Token</span>
+            <input
+              value={orgDraft.acceptToken}
+              onChange={(event) => {
+                setOrgAcceptNotice(null);
+                setOrgDraft((current) => ({ ...current, acceptToken: event.target.value }));
+              }}
+              placeholder="粘贴 ?inviteToken=... 链接或 token"
+            />
+          </label>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={!orgDraft.acceptToken.trim() || isAcceptingOrgInvite}
+            onClick={() => void acceptOrganizationInvitationFromToken(orgDraft.acceptToken)}
+          >
+            {isAcceptingOrgInvite ? <Loader2 size={15} className="spin" /> : <CheckCircle2 size={15} />}
+            接受邀请
+          </button>
+        </div>
+
+        {orgAcceptNotice ? <p className="muted-note">{orgAcceptNotice}</p> : null}
+
         {activeOrganization ? (
           <>
             <div className="library-stats org-stats">
@@ -2441,7 +2693,10 @@ export function AgentWorkspace() {
                   <input
                     inputMode="tel"
                     value={orgDraft.invitePhone}
-                    onChange={(event) => setOrgDraft((current) => ({ ...current, invitePhone: event.target.value }))}
+                    onChange={(event) => {
+                      setOrgInviteResult(null);
+                      setOrgDraft((current) => ({ ...current, invitePhone: event.target.value }));
+                    }}
                     placeholder="请输入 11 位手机号"
                   />
                 </label>
@@ -2473,18 +2728,71 @@ export function AgentWorkspace() {
               </div>
             ) : null}
 
+            {orgInviteResult ? (
+              <div className="org-invite-result">
+                <div>
+                  <strong>{orgInviteResult.phone}</strong>
+                  <span>
+                    {organizationRoleText[orgInviteResult.role]} 邀请已生成，复制接受链接给对方登录后打开。
+                  </span>
+                </div>
+                <code>{orgInviteResult.acceptUrl || orgInviteResult.token}</code>
+              </div>
+            ) : null}
+
             <div className="view-grid two-columns">
               <div className="metric-list compact">
                 {orgMembers.length ? (
-                  orgMembers.slice(0, 8).map((member) => (
-                    <div key={`${member.orgId}-${member.userId}`} className="metric-item">
-                      <div>
-                        <span className="metric-name">{member.user?.displayName ?? member.userId}</span>
-                        <span className="metric-meta">{member.user?.phone ?? member.user?.email ?? member.userId}</span>
+                  orgMembers.slice(0, 8).map((member) => {
+                    const canManageMember =
+                      manager &&
+                      member.role !== "owner" &&
+                      member.userId !== authUser?.id &&
+                      (activeOrganization?.role === "owner" || member.role !== "admin");
+                    const isManagingMember = managingOrgMemberId === member.userId;
+                    return (
+                      <div key={`${member.orgId}-${member.userId}`} className="metric-item org-member-row">
+                        <div>
+                          <span className="metric-name">{member.user?.displayName ?? member.userId}</span>
+                          <span className="metric-meta">{member.user?.phone ?? member.user?.email ?? member.userId}</span>
+                        </div>
+                        <div className="org-member-actions">
+                          {canManageMember ? (
+                            <select
+                              className="member-role-select"
+                              aria-label={`修改 ${member.user?.displayName ?? member.userId} 的组织角色`}
+                              value={member.role}
+                              disabled={Boolean(managingOrgMemberId)}
+                              onChange={(event) =>
+                                void updateOrganizationMember(
+                                  member,
+                                  event.target.value as Exclude<OrganizationRole, "owner">
+                                )
+                              }
+                            >
+                              <option value="admin">Admin</option>
+                              <option value="member">Member</option>
+                              <option value="viewer">Viewer</option>
+                            </select>
+                          ) : (
+                            <strong>{organizationRoleText[member.role]}</strong>
+                          )}
+                          {canManageMember ? (
+                            <button
+                              type="button"
+                              className="icon-button org-remove-button"
+                              aria-label={`移除 ${member.user?.displayName ?? member.userId}`}
+                              title="移除成员"
+                              disabled={Boolean(managingOrgMemberId)}
+                              onClick={() => void removeOrganizationMemberFromOrg(member)}
+                            >
+                              {isManagingMember ? <Loader2 size={15} className="spin" /> : <Trash2 size={15} />}
+                            </button>
+                          ) : null}
+                        </div>
                       </div>
-                      <strong>{organizationRoleText[member.role]}</strong>
-                    </div>
-                  ))
+                    );
+                  })
                 ) : (
                   <p className="muted-note">暂无成员数据。</p>
                 )}
@@ -2828,10 +3136,27 @@ export function AgentWorkspace() {
           </section>
           <section className="section-panel">
             <div className="panel-title">
+              <FileText size={14} />
+              上传文件
+            </div>
+            {renderUploadedFileLibrary(16)}
+          </section>
+        </div>
+
+        <div className="view-grid two-columns">
+          <section className="section-panel">
+            <div className="panel-title">
               <BookmarkPlus size={14} />
               模板
             </div>
             {renderTemplatePanel()}
+          </section>
+          <section className="section-panel">
+            <div className="panel-title">
+              <FileSpreadsheet size={14} />
+              Billing
+            </div>
+            <BillingPanel summary={billingSummary} />
           </section>
         </div>
 
@@ -2843,13 +3168,6 @@ export function AgentWorkspace() {
           {renderMarketplacePanel()}
         </section>
 
-        <section className="section-panel">
-          <div className="panel-title">
-            <FileSpreadsheet size={14} />
-            Billing
-          </div>
-          <BillingPanel summary={billingSummary} />
-        </section>
       </div>
     );
   }
@@ -3963,6 +4281,8 @@ export function AgentWorkspace() {
     const readyCapabilities = myComputerStatus?.capabilities.filter((capability) => capability.ready).length ?? 0;
     const pendingCount = myComputerStatus?.pendingApprovals.length ?? 0;
     const rootLabel = myComputerStatus?.allowedRoots[0] ?? "尚未配置";
+    const desktopDevices = myComputerPairing?.pairedDevices ?? myComputerStatus?.desktopDevices ?? [];
+    const onlineDesktopCount = desktopDevices.filter((device) => device.status === "online").length;
     const latestOperation = myComputerActionResult ?? myComputerPlan?.operation;
     const hasUndoableFileOperation = Boolean(
       myComputerStatus?.recentOperations.some((operation) =>
@@ -3982,6 +4302,15 @@ export function AgentWorkspace() {
               </span>
             </div>
             <strong>{statusLabel}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">桌面客户端</span>
+              <span className="metric-meta">
+                {onlineDesktopCount ? `${onlineDesktopCount} 台在线` : "等待 Electron/Tauri 客户端配对"}
+              </span>
+            </div>
+            <strong>{desktopDevices.length}</strong>
           </div>
           <div className="metric-item">
             <div>
@@ -4067,7 +4396,42 @@ export function AgentWorkspace() {
             <ShieldCheck size={15} />
             清空授权
           </button>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isCreatingMyComputerPairing}
+            onClick={() => void createMyComputerDesktopPairing()}
+          >
+            {isCreatingMyComputerPairing ? <Loader2 size={15} className="spin" /> : <Bot size={15} />}
+            桌面端配对
+          </button>
         </div>
+
+        {myComputerPairing?.activeCode ? (
+          <div className="pairing-code-panel">
+            <strong>{myComputerPairing.activeCode.code}</strong>
+            <span>在 ManusXL Desktop 客户端输入此码，5 分钟内有效。</span>
+          </div>
+        ) : null}
+
+        {desktopDevices.length ? (
+          <div className="browser-operation-list">
+            {desktopDevices.slice(0, 5).map((device) => (
+              <div className="browser-operation-item" key={device.id}>
+                <div>
+                  <span>{device.name}</span>
+                  <small>
+                    {device.bridge} · {device.platform} · v{device.appVersion} · last seen{" "}
+                    {new Date(device.lastSeenAt).toLocaleTimeString()}
+                  </small>
+                </div>
+                <strong className={`operation-status is-${device.status === "online" ? "completed" : "blocked"}`}>
+                  {device.status}
+                </strong>
+              </div>
+            ))}
+          </div>
+        ) : null}
 
         <div className="browser-action-grid">
           <label className="settings-field">
@@ -4758,6 +5122,26 @@ export function AgentWorkspace() {
                 />
               </div>
               <div className="composer-actions">
+                <button
+                  type="button"
+                  className={`secondary-button compact-button execution-target-button ${
+                    executionTarget === "my-computer" ? "is-active" : ""
+                  }`}
+                  disabled={!hasOnlineDesktop || isSubmitting}
+                  title={
+                    hasOnlineDesktop
+                      ? executionTarget === "my-computer"
+                        ? "当前任务将派发到 My Computer 桌面端"
+                        : "切换为 My Computer 桌面端执行"
+                      : "需要先在 Settings / My Computer 配对并保持桌面端在线"
+                  }
+                  onClick={() =>
+                    setExecutionTarget((current) => (current === "my-computer" ? "cloud" : "my-computer"))
+                  }
+                >
+                  <Bot size={15} />
+                  {executionTarget === "my-computer" ? "My Computer" : "云端"}
+                </button>
                 <input
                   ref={fileInputRef}
                   className="hidden-file-input"

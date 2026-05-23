@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { execFile } from "node:child_process";
 import {
   access,
@@ -30,8 +30,22 @@ import {
   updateAppConfig
 } from "@/server/config/app-config";
 import { dataPath } from "@/server/data-root";
+import {
+  addArtifact,
+  addTaskEvent,
+  getTask,
+  setFinalAnswer,
+  updateTaskStatus
+} from "@/server/tasks/task-store";
 import type {
   MyComputerApprovalDecision,
+  MyComputerBridgeType,
+  MyComputerDesktopDevice,
+  MyComputerDesktopFileRequest,
+  MyComputerDesktopHeartbeatResponse,
+  MyComputerDesktopPairingStatus,
+  MyComputerDesktopPairingVerifyResponse,
+  MyComputerDesktopTaskAssignment,
   MyComputerFileAction,
   MyComputerFileEntry,
   MyComputerFilePlanMode,
@@ -39,7 +53,8 @@ import type {
   MyComputerFileScanResponse,
   MyComputerOperation,
   MyComputerOperationKind,
-  MyComputerStatus
+  MyComputerStatus,
+  AgentEventType
 } from "@/types/agent";
 
 const execFileAsync = promisify(execFile);
@@ -48,12 +63,32 @@ const maxFileHashBytes = 50 * 1024 * 1024;
 const terminalTimeoutMs = 5000;
 const terminalMaxBuffer = 256 * 1024;
 const allowedTerminalCommands = new Set(["pwd", "whoami", "date", "ls", "echo"]);
+const desktopPairingTtlMs = 5 * 60 * 1000;
+const desktopOnlineWindowMs = 45 * 1000;
+const maxDesktopDevices = 12;
+const maxDesktopFileRequests = 120;
 const undoableFileKinds = new Set<MyComputerOperationKind>([
   "file_classify",
   "file_dedupe",
   "file_rename",
   "file_move"
 ]);
+
+interface DesktopPairingCodeRecord {
+  code: string;
+  ownerId: string;
+  expiresAt: string;
+}
+
+interface DesktopDeviceRecord extends Omit<MyComputerDesktopDevice, "status"> {
+  tokenHash: string;
+}
+
+interface DesktopTaskAssignmentRecord extends MyComputerDesktopTaskAssignment {
+  acknowledgedAt?: string;
+}
+
+type DesktopFileUploadRequestRecord = MyComputerDesktopFileRequest;
 
 const categoryByExtension: Record<string, string> = {
   ".jpg": "images",
@@ -103,6 +138,10 @@ const dangerousRootPatterns = [
 const globalForMyComputer = globalThis as unknown as {
   manusxlMyComputerOperations?: MyComputerOperation[];
   manusxlMyComputerAlwaysAllow?: Set<string>;
+  manusxlMyComputerDesktopPairingCodes?: DesktopPairingCodeRecord[];
+  manusxlMyComputerDesktopDevices?: DesktopDeviceRecord[];
+  manusxlMyComputerDesktopTaskAssignments?: DesktopTaskAssignmentRecord[];
+  manusxlMyComputerDesktopFileRequests?: DesktopFileUploadRequestRecord[];
 };
 
 function operationList() {
@@ -118,10 +157,730 @@ function alwaysAllowSet() {
   return globalForMyComputer.manusxlMyComputerAlwaysAllow;
 }
 
+function desktopPairingCodes() {
+  globalForMyComputer.manusxlMyComputerDesktopPairingCodes ??= [];
+  return globalForMyComputer.manusxlMyComputerDesktopPairingCodes;
+}
+
+function desktopDeviceRecords() {
+  globalForMyComputer.manusxlMyComputerDesktopDevices ??= [];
+  return globalForMyComputer.manusxlMyComputerDesktopDevices;
+}
+
+function desktopTaskAssignments() {
+  globalForMyComputer.manusxlMyComputerDesktopTaskAssignments ??= [];
+  return globalForMyComputer.manusxlMyComputerDesktopTaskAssignments;
+}
+
+function desktopFileUploadRequests() {
+  globalForMyComputer.manusxlMyComputerDesktopFileRequests ??= [];
+  return globalForMyComputer.manusxlMyComputerDesktopFileRequests;
+}
+
 function persistAlwaysAllowRules() {
   updateAppConfig({
     myComputerAlwaysAllowRules: Array.from(alwaysAllowSet()).slice(0, 100)
   });
+}
+
+function nowMs() {
+  return Date.now();
+}
+
+function makeDesktopPairingCode() {
+  const value = String(Math.floor(100000 + Math.random() * 900000));
+  return `${value.slice(0, 3)}-${value.slice(3)}`;
+}
+
+function normalizePairingCode(code: string) {
+  return code.replace(/[^0-9a-z]/gi, "").toUpperCase();
+}
+
+function makeDesktopDeviceToken() {
+  return `mcd_${randomBytes(24).toString("base64url")}`;
+}
+
+function hashDesktopDeviceToken(token: string) {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+function cleanExpiredDesktopPairingCodes() {
+  const active = desktopPairingCodes().filter((record) => Date.parse(record.expiresAt) > nowMs());
+  globalForMyComputer.manusxlMyComputerDesktopPairingCodes = active;
+  return active;
+}
+
+function desktopDeviceStatus(record: DesktopDeviceRecord) {
+  return Date.parse(record.lastSeenAt) > nowMs() - desktopOnlineWindowMs ? "online" : "offline";
+}
+
+function publicDesktopDevice(record: DesktopDeviceRecord): MyComputerDesktopDevice {
+  return {
+    id: record.id,
+    ownerId: record.ownerId,
+    name: record.name,
+    bridge: record.bridge,
+    platform: record.platform,
+    appVersion: record.appVersion,
+    capabilities: record.capabilities,
+    status: desktopDeviceStatus(record),
+    createdAt: record.createdAt,
+    lastSeenAt: record.lastSeenAt,
+    metadata: record.metadata
+  };
+}
+
+function listDesktopDevicesForOwner(ownerId?: string) {
+  if (!ownerId) return [];
+  return desktopDeviceRecords()
+    .filter((record) => record.ownerId === ownerId)
+    .map(publicDesktopDevice);
+}
+
+function onlineDesktopDevicesForOwner(ownerId: string) {
+  return desktopDeviceRecords().filter(
+    (record) => record.ownerId === ownerId && desktopDeviceStatus(record) === "online"
+  );
+}
+
+function publicDesktopAssignment(record: DesktopTaskAssignmentRecord): MyComputerDesktopTaskAssignment {
+  return {
+    id: record.id,
+    taskId: record.taskId,
+    ownerId: record.ownerId,
+    deviceId: record.deviceId,
+    status: record.status,
+    prompt: record.prompt,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    assignedAt: record.assignedAt,
+    completedAt: record.completedAt,
+    error: record.error
+  };
+}
+
+function desktopAssignmentsForOwner(ownerId: string) {
+  return desktopTaskAssignments()
+    .filter((assignment) => assignment.ownerId === ownerId && ["queued", "assigned"].includes(assignment.status))
+    .map(publicDesktopAssignment);
+}
+
+function publicDesktopFileUploadRequest(
+  record: DesktopFileUploadRequestRecord
+): MyComputerDesktopFileRequest {
+  return {
+    id: record.id,
+    ownerId: record.ownerId,
+    deviceId: record.deviceId,
+    requestedPath: record.requestedPath,
+    reason: record.reason,
+    status: record.status,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    decidedAt: record.decidedAt,
+    uploadedFileId: record.uploadedFileId,
+    error: record.error
+  };
+}
+
+function desktopFileRequestsForOwner(ownerId: string) {
+  return desktopFileUploadRequests()
+    .filter((request) => request.ownerId === ownerId)
+    .map(publicDesktopFileUploadRequest);
+}
+
+function pendingDesktopFileRequestsForDevice(device: DesktopDeviceRecord) {
+  return desktopFileUploadRequests()
+    .filter(
+      (request) =>
+        request.ownerId === device.ownerId &&
+        request.status === "pending" &&
+        (!request.deviceId || request.deviceId === device.id)
+    )
+    .map(publicDesktopFileUploadRequest);
+}
+
+const terminalTaskStatuses = new Set(["completed", "failed", "cancelled", "timeout"]);
+
+export function hasOnlineMyComputerDesktop(ownerId: string) {
+  return onlineDesktopDevicesForOwner(ownerId).length > 0;
+}
+
+export function listMyComputerDesktopFileRequests(ownerId: string) {
+  return desktopFileRequestsForOwner(ownerId);
+}
+
+export function requestMyComputerDesktopFileUpload(input: {
+  ownerId: string;
+  requestedPath?: string;
+  reason?: string;
+  deviceId?: string;
+}) {
+  const requestedPath = input.requestedPath?.trim();
+  if (!requestedPath) {
+    return { ok: false as const, status: 400, error: "需要提供本机文件路径。" };
+  }
+  const devices = onlineDesktopDevicesForOwner(input.ownerId);
+  const device = input.deviceId
+    ? devices.find((candidate) => candidate.id === input.deviceId)
+    : devices[0];
+  if (!device) {
+    return { ok: false as const, status: 409, error: "没有在线的 My Computer 桌面端设备" };
+  }
+
+  const now = new Date().toISOString();
+  const record: DesktopFileUploadRequestRecord = {
+    id: createId("mcfile"),
+    ownerId: input.ownerId,
+    deviceId: device.id,
+    requestedPath: requestedPath.slice(0, 1000),
+    reason: (input.reason?.trim() || "ManusXL 请求上传这个本机文件以继续任务。").slice(0, 1000),
+    status: "pending",
+    createdAt: now,
+    updatedAt: now
+  };
+  desktopFileUploadRequests().unshift(record);
+  if (desktopFileUploadRequests().length > maxDesktopFileRequests) {
+    desktopFileUploadRequests().length = maxDesktopFileRequests;
+  }
+
+  safeRecordAuditLog({
+    userId: input.ownerId,
+    action: "my_computer.desktop_file.request_upload",
+    resource: `desktop:${device.id}`,
+    status: "started",
+    metadata: {
+      requestId: record.id,
+      deviceName: device.name,
+      requestedPath: record.requestedPath,
+      reason: record.reason
+    }
+  });
+
+  return {
+    ok: true as const,
+    request: publicDesktopFileUploadRequest(record),
+    device: publicDesktopDevice(device)
+  };
+}
+
+export function decideMyComputerDesktopFileUploadRequest(input: {
+  token?: string;
+  requestId: string;
+  decision?: "approve" | "deny";
+  uploadedFileId?: string;
+  error?: string;
+}) {
+  const device = resolveMyComputerDesktopDeviceToken(input.token);
+  if (!device) return { ok: false as const, status: 401, error: "桌面端未配对或令牌已失效。" };
+  const record = desktopFileUploadRequests().find(
+    (candidate) =>
+      candidate.id === input.requestId &&
+      candidate.ownerId === device.ownerId &&
+      candidate.status === "pending" &&
+      (!candidate.deviceId || candidate.deviceId === device.id)
+  );
+  if (!record) {
+    return { ok: false as const, status: 404, error: "文件上传请求不存在或已处理。" };
+  }
+
+  const now = new Date().toISOString();
+  record.decidedAt = now;
+  record.updatedAt = now;
+  if (input.decision === "deny") {
+    record.status = "denied";
+    record.error = input.error?.trim().slice(0, 1000) || "用户拒绝了本机文件上传请求。";
+  } else if (input.uploadedFileId?.trim()) {
+    record.status = "uploaded";
+    record.uploadedFileId = input.uploadedFileId.trim().slice(0, 120);
+    record.error = undefined;
+  } else if (input.error?.trim()) {
+    record.status = "failed";
+    record.error = input.error.trim().slice(0, 1000);
+  } else {
+    record.status = "approved";
+    record.error = undefined;
+  }
+
+  safeRecordAuditLog({
+    userId: device.ownerId,
+    action: "my_computer.desktop_file.request_decide",
+    resource: `desktop:${device.id}`,
+    status: record.status === "denied" || record.status === "failed" ? "blocked" : "completed",
+    metadata: {
+      requestId: record.id,
+      decision: input.decision ?? "approve",
+      status: record.status,
+      uploadedFileId: record.uploadedFileId,
+      error: record.error
+    }
+  });
+
+  return { ok: true as const, request: publicDesktopFileUploadRequest(record), device: publicDesktopDevice(device) };
+}
+
+export function dispatchTaskToMyComputerDesktop(input: {
+  taskId: string;
+  ownerId: string;
+  deviceId?: string;
+}) {
+  const task = getTask(input.taskId, input.ownerId);
+  if (!task) return { ok: false as const, status: 404, error: "任务不存在" };
+  const devices = onlineDesktopDevicesForOwner(input.ownerId);
+  const device = input.deviceId
+    ? devices.find((candidate) => candidate.id === input.deviceId)
+    : devices[0];
+  if (!device) {
+    return { ok: false as const, status: 409, error: "没有在线的 My Computer 桌面端设备" };
+  }
+
+  const now = new Date().toISOString();
+  const assignment: DesktopTaskAssignmentRecord = {
+    id: createId("mctask"),
+    taskId: task.id,
+    ownerId: input.ownerId,
+    deviceId: device.id,
+    status: "queued",
+    prompt: task.prompt,
+    createdAt: now,
+    updatedAt: now
+  };
+  desktopTaskAssignments().unshift(assignment);
+  updateTaskStatus(task.id, "running");
+  addTaskEvent(task.id, {
+    type: "message",
+    stepIndex: task.events.length + 1,
+    title: "派发到 My Computer",
+    content: `任务已派发到桌面端 ${device.name}，等待客户端接收。`,
+    payload: {
+      assignmentId: assignment.id,
+      deviceId: device.id,
+      bridge: device.bridge
+    }
+  });
+  safeRecordAuditLog({
+    userId: input.ownerId,
+    taskId: task.id,
+    action: "my_computer.desktop_task.dispatch",
+    resource: `desktop:${device.id}`,
+    status: "completed",
+    metadata: {
+      assignmentId: assignment.id,
+      deviceName: device.name,
+      bridge: device.bridge
+    }
+  });
+  return { ok: true as const, assignment: publicDesktopAssignment(assignment), device: publicDesktopDevice(device) };
+}
+
+export function claimNextMyComputerDesktopTask(token?: string) {
+  const device = resolveMyComputerDesktopDeviceToken(token);
+  if (!device) return { ok: false as const, status: 401, error: "桌面端未配对或令牌已失效。" };
+  const assignment = desktopTaskAssignments().find(
+    (candidate) =>
+      candidate.ownerId === device.ownerId &&
+      candidate.deviceId === device.id &&
+      candidate.status === "queued"
+  );
+  if (!assignment) {
+    return { ok: true as const, assignment: undefined, device: publicDesktopDevice(device) };
+  }
+
+  const task = getTask(assignment.taskId, assignment.ownerId);
+  if (!task) {
+    assignment.status = "failed";
+    assignment.error = "任务不存在";
+    assignment.updatedAt = new Date().toISOString();
+    return { ok: true as const, assignment: undefined, device: publicDesktopDevice(device) };
+  }
+  if (terminalTaskStatuses.has(task.status)) {
+    assignment.status = task.status === "cancelled" ? "cancelled" : "failed";
+    assignment.error = `任务已进入终态：${task.status}`;
+    assignment.completedAt = new Date().toISOString();
+    assignment.updatedAt = assignment.completedAt;
+    return { ok: true as const, assignment: undefined, device: publicDesktopDevice(device) };
+  }
+
+  const now = new Date().toISOString();
+  assignment.status = "assigned";
+  assignment.assignedAt = now;
+  assignment.updatedAt = now;
+  addTaskEvent(task.id, {
+    type: "message",
+    stepIndex: task.events.length + 1,
+    title: "桌面端已接收",
+    content: `${device.name} 已接收任务，正在本机执行。`,
+    payload: {
+      assignmentId: assignment.id,
+      deviceId: device.id
+    }
+  });
+  return {
+    ok: true as const,
+    assignment: publicDesktopAssignment(assignment),
+    task: {
+      id: task.id,
+      prompt: task.prompt,
+      model: task.model,
+      uploadedFileIds: task.uploadedFileIds ?? [],
+      createdAt: task.createdAt
+    },
+    device: publicDesktopDevice(device)
+  };
+}
+
+export function appendMyComputerDesktopTaskEvent(input: {
+  token?: string;
+  taskId: string;
+  type?: AgentEventType;
+  title?: string;
+  content?: string;
+  payload?: unknown;
+}) {
+  const device = resolveMyComputerDesktopDeviceToken(input.token);
+  if (!device) return { ok: false as const, status: 401, error: "桌面端未配对或令牌已失效。" };
+  const assignment = desktopTaskAssignments().find(
+    (candidate) =>
+      candidate.ownerId === device.ownerId &&
+      candidate.deviceId === device.id &&
+      candidate.taskId === input.taskId &&
+      (candidate.status === "queued" || candidate.status === "assigned")
+  );
+  if (!assignment) return { ok: false as const, status: 404, error: "桌面端任务不存在或已完成。" };
+  const task = getTask(input.taskId, device.ownerId);
+  if (!task) return { ok: false as const, status: 404, error: "任务不存在" };
+  if (terminalTaskStatuses.has(task.status)) {
+    assignment.status = task.status === "cancelled" ? "cancelled" : "failed";
+    assignment.error = `任务已进入终态：${task.status}`;
+    assignment.completedAt = new Date().toISOString();
+    assignment.updatedAt = assignment.completedAt;
+    return { ok: false as const, status: 409, error: assignment.error };
+  }
+
+  const allowedTypes = new Set<AgentEventType>([
+    "thinking",
+    "plan",
+    "tool_call",
+    "tool_result",
+    "message",
+    "artifact"
+  ]);
+  const type = input.type && allowedTypes.has(input.type) ? input.type : "message";
+  assignment.updatedAt = new Date().toISOString();
+  addTaskEvent(task.id, {
+    type,
+    stepIndex: task.events.length + 1,
+    title: input.title?.trim().slice(0, 120) || "桌面端执行进度",
+    content: input.content?.trim().slice(0, 2000),
+    payload: {
+      assignmentId: assignment.id,
+      deviceId: device.id,
+      source: "desktop",
+      ...(input.payload && typeof input.payload === "object" ? input.payload : {})
+    }
+  });
+
+  return { ok: true as const, assignment: publicDesktopAssignment(assignment), task: getTask(task.id, device.ownerId) };
+}
+
+export function completeMyComputerDesktopTask(input: {
+  token?: string;
+  taskId: string;
+  ok: boolean;
+  finalAnswer?: string;
+  error?: string;
+  artifacts?: Array<{
+    name: string;
+    type: "txt" | "md" | "json";
+    mimeType: string;
+    content: string;
+  }>;
+}) {
+  const device = resolveMyComputerDesktopDeviceToken(input.token);
+  if (!device) return { ok: false as const, status: 401, error: "桌面端未配对或令牌已失效。" };
+  const assignment = desktopTaskAssignments().find(
+    (candidate) =>
+      candidate.ownerId === device.ownerId &&
+      candidate.deviceId === device.id &&
+      candidate.taskId === input.taskId &&
+      (candidate.status === "queued" || candidate.status === "assigned")
+  );
+  if (!assignment) return { ok: false as const, status: 404, error: "桌面端任务不存在或已完成。" };
+  const task = getTask(input.taskId, device.ownerId);
+  if (!task) return { ok: false as const, status: 404, error: "任务不存在" };
+  if (terminalTaskStatuses.has(task.status)) {
+    assignment.status = task.status === "cancelled" ? "cancelled" : "failed";
+    assignment.completedAt = new Date().toISOString();
+    assignment.updatedAt = assignment.completedAt;
+    assignment.error = `任务已进入终态：${task.status}`;
+    return { ok: false as const, status: 409, error: assignment.error };
+  }
+
+  const now = new Date().toISOString();
+  assignment.status = input.ok ? "completed" : "failed";
+  assignment.completedAt = now;
+  assignment.updatedAt = now;
+  assignment.error = input.ok ? undefined : input.error ?? "桌面端执行失败";
+
+  if (input.ok) {
+    const finalAnswer =
+      input.finalAnswer?.trim() ||
+      `My Computer 桌面端 ${device.name} 已完成任务。`;
+    setFinalAnswer(task.id, finalAnswer);
+    addArtifact(task.id, {
+      name: "my-computer-desktop-result.md",
+      type: "md",
+      mimeType: "text/markdown",
+      content: `# My Computer Desktop Result\n\n${finalAnswer}\n`
+    });
+    input.artifacts?.slice(0, 5).forEach((artifact) => addArtifact(task.id, artifact));
+    addTaskEvent(task.id, {
+      type: "finished",
+      stepIndex: task.events.length + 1,
+      title: "桌面端任务完成",
+      content: finalAnswer,
+      payload: {
+        assignmentId: assignment.id,
+        deviceId: device.id
+      }
+    });
+    updateTaskStatus(task.id, "completed");
+  } else {
+    const message = input.error ?? "桌面端执行失败";
+    addTaskEvent(task.id, {
+      type: "failed",
+      stepIndex: task.events.length + 1,
+      title: "桌面端任务失败",
+      content: message,
+      payload: {
+        assignmentId: assignment.id,
+        deviceId: device.id
+      }
+    });
+    updateTaskStatus(task.id, "failed", message);
+  }
+
+  safeRecordAuditLog({
+    userId: device.ownerId,
+    taskId: task.id,
+    action: "my_computer.desktop_task.complete",
+    resource: `desktop:${device.id}`,
+    status: input.ok ? "completed" : "failed",
+    metadata: {
+      assignmentId: assignment.id,
+      deviceName: device.name,
+      error: input.error
+    }
+  });
+
+  return { ok: true as const, assignment: publicDesktopAssignment(assignment), task: getTask(task.id, device.ownerId) };
+}
+
+export function cancelMyComputerDesktopTask(taskId: string, ownerId: string) {
+  const now = new Date().toISOString();
+  const assignments = desktopTaskAssignments().filter(
+    (assignment) =>
+      assignment.taskId === taskId &&
+      assignment.ownerId === ownerId &&
+      (assignment.status === "queued" || assignment.status === "assigned")
+  );
+  assignments.forEach((assignment) => {
+    assignment.status = "cancelled";
+    assignment.completedAt = now;
+    assignment.updatedAt = now;
+    assignment.error = "用户取消了当前任务。";
+    safeRecordAuditLog({
+      userId: ownerId,
+      taskId,
+      action: "my_computer.desktop_task.cancel",
+      resource: `desktop:${assignment.deviceId}`,
+      status: "completed",
+      metadata: {
+        assignmentId: assignment.id
+      }
+    });
+  });
+  return assignments.map(publicDesktopAssignment);
+}
+
+export function cancelMyComputerDesktopTaskFromDevice(input: {
+  token?: string;
+  taskId: string;
+}) {
+  const device = resolveMyComputerDesktopDeviceToken(input.token);
+  if (!device) return { ok: false as const, status: 401, error: "桌面端未配对或令牌已失效。" };
+  const assignment = desktopTaskAssignments().find(
+    (candidate) =>
+      candidate.taskId === input.taskId &&
+      candidate.ownerId === device.ownerId &&
+      candidate.deviceId === device.id &&
+      (candidate.status === "queued" || candidate.status === "assigned")
+  );
+  if (!assignment) return { ok: false as const, status: 404, error: "桌面端任务不存在或已完成。" };
+  const task = getTask(input.taskId, device.ownerId);
+  if (!task) return { ok: false as const, status: 404, error: "任务不存在" };
+  if (terminalTaskStatuses.has(task.status)) {
+    assignment.status = task.status === "cancelled" ? "cancelled" : "failed";
+    assignment.completedAt = new Date().toISOString();
+    assignment.updatedAt = assignment.completedAt;
+    assignment.error = `任务已进入终态：${task.status}`;
+    return { ok: false as const, status: 409, error: assignment.error };
+  }
+
+  const now = new Date().toISOString();
+  assignment.status = "cancelled";
+  assignment.completedAt = now;
+  assignment.updatedAt = now;
+  assignment.error = "桌面端停止了当前任务。";
+  updateTaskStatus(task.id, "cancelled");
+  addTaskEvent(task.id, {
+    type: "failed",
+    stepIndex: task.events.length + 1,
+    title: "桌面端已停止任务",
+    content: `${device.name} 停止了当前 My Computer 任务。`,
+    payload: {
+      assignmentId: assignment.id,
+      deviceId: device.id
+    }
+  });
+  safeRecordAuditLog({
+    userId: device.ownerId,
+    taskId: task.id,
+    action: "my_computer.desktop_task.cancel_from_device",
+    resource: `desktop:${device.id}`,
+    status: "completed",
+    metadata: {
+      assignmentId: assignment.id,
+      deviceName: device.name
+    }
+  });
+
+  return { ok: true as const, assignment: publicDesktopAssignment(assignment), task: getTask(task.id, device.ownerId) };
+}
+
+export function createMyComputerDesktopPairingCode(ownerId: string): MyComputerDesktopPairingStatus {
+  const active = cleanExpiredDesktopPairingCodes().filter((record) => record.ownerId !== ownerId);
+  const record: DesktopPairingCodeRecord = {
+    code: makeDesktopPairingCode(),
+    ownerId,
+    expiresAt: new Date(nowMs() + desktopPairingTtlMs).toISOString()
+  };
+  globalForMyComputer.manusxlMyComputerDesktopPairingCodes = [record, ...active];
+  return getMyComputerDesktopPairingStatus(ownerId);
+}
+
+export function getMyComputerDesktopPairingStatus(ownerId: string): MyComputerDesktopPairingStatus {
+  const active = cleanExpiredDesktopPairingCodes().find((record) => record.ownerId === ownerId);
+  return {
+    activeCode: active ? { code: active.code, expiresAt: active.expiresAt } : undefined,
+    pairedDevices: listDesktopDevicesForOwner(ownerId)
+  };
+}
+
+export function verifyMyComputerDesktopPairingCode(input: {
+  code?: string;
+  deviceName?: string;
+  bridge?: MyComputerBridgeType;
+  platform?: string;
+  appVersion?: string;
+  capabilities?: MyComputerOperationKind[];
+  metadata?: Record<string, string | number | boolean>;
+}): MyComputerDesktopPairingVerifyResponse {
+  const normalized = normalizePairingCode(input.code ?? "");
+  const record = cleanExpiredDesktopPairingCodes().find(
+    (candidate) => normalizePairingCode(candidate.code) === normalized
+  );
+  if (!record) {
+    return {
+      paired: false,
+      error: "桌面端配对码无效或已过期。"
+    };
+  }
+
+  const token = makeDesktopDeviceToken();
+  const now = new Date().toISOString();
+  const bridge = input.bridge === "tauri" ? "tauri" : "electron";
+  const device: DesktopDeviceRecord = {
+    id: createId("mcdev"),
+    ownerId: record.ownerId,
+    name: (input.deviceName || "ManusXL Desktop").trim().slice(0, 80),
+    bridge,
+    platform: (input.platform || process.platform).trim().slice(0, 40),
+    appVersion: (input.appVersion || "0.1.0").trim().slice(0, 40),
+    capabilities: Array.from(new Set(input.capabilities ?? [])).filter((capability) =>
+      [
+        "file_scan",
+        "file_classify",
+        "file_dedupe",
+        "file_rename",
+        "file_move",
+        "file_undo",
+        "app_launch",
+        "app_quit",
+        "clipboard_write",
+        "clipboard_read",
+        "keyboard_shortcut",
+        "mouse_click",
+        "terminal_command"
+      ].includes(capability)
+    ),
+    metadata: input.metadata,
+    tokenHash: hashDesktopDeviceToken(token),
+    createdAt: now,
+    lastSeenAt: now
+  };
+  const remainingCodes = cleanExpiredDesktopPairingCodes().filter((candidate) => candidate.code !== record.code);
+  const remainingDevices = desktopDeviceRecords()
+    .filter((candidate) => candidate.ownerId !== record.ownerId || candidate.name !== device.name)
+    .slice(0, maxDesktopDevices - 1);
+  globalForMyComputer.manusxlMyComputerDesktopPairingCodes = remainingCodes;
+  globalForMyComputer.manusxlMyComputerDesktopDevices = [device, ...remainingDevices];
+
+  return {
+    paired: true,
+    token,
+    device: publicDesktopDevice(device)
+  };
+}
+
+export function resolveMyComputerDesktopDeviceToken(token?: string) {
+  if (!token) return undefined;
+  const hash = hashDesktopDeviceToken(token);
+  const record = desktopDeviceRecords().find((candidate) => candidate.tokenHash === hash);
+  if (!record) return undefined;
+  record.lastSeenAt = new Date().toISOString();
+  return record;
+}
+
+export async function heartbeatMyComputerDesktopDevice(input: {
+  token?: string;
+  capabilities?: MyComputerOperationKind[];
+  appVersion?: string;
+  platform?: string;
+  metadata?: Record<string, string | number | boolean>;
+}): Promise<MyComputerDesktopHeartbeatResponse> {
+  const record = resolveMyComputerDesktopDeviceToken(input.token);
+  if (!record) {
+    return { ok: false, error: "桌面端未配对或令牌已失效。" };
+  }
+  if (input.capabilities) {
+    record.capabilities = Array.from(new Set(input.capabilities));
+  }
+  if (input.appVersion) record.appVersion = input.appVersion.trim().slice(0, 40);
+  if (input.platform) record.platform = input.platform.trim().slice(0, 40);
+  if (input.metadata) record.metadata = input.metadata;
+  record.lastSeenAt = new Date().toISOString();
+  const status = await getMyComputerStatus(record.ownerId);
+  return {
+    ok: true,
+    device: publicDesktopDevice(record),
+    paused: status.paused,
+    allowedRoots: status.allowedRoots,
+    pendingApprovals: status.pendingApprovals,
+    recentOperations: status.recentOperations,
+    assignedTasks: desktopAssignmentsForOwner(record.ownerId),
+    fileRequests: pendingDesktopFileRequestsForDevice(record)
+  };
 }
 
 function expandHome(value: string) {
@@ -298,9 +1057,11 @@ export async function getMyComputerStatus(ownerId?: string): Promise<MyComputerS
   const operations = ownerId
     ? operationList().filter((operation) => !operation.ownerId || operation.ownerId === ownerId)
     : operationList();
+  const desktopDevices = listDesktopDevicesForOwner(ownerId);
+  const onlineDesktop = desktopDevices.find((device) => device.status === "online");
   return {
     connected: true,
-    bridge: "next-local",
+    bridge: onlineDesktop?.bridge ?? "next-local",
     platform: process.platform,
     paused: isMyComputerPaused(),
     allowedRoots: roots,
@@ -384,7 +1145,8 @@ export async function getMyComputerStatus(ownerId?: string): Promise<MyComputerS
       }
     ],
     recentOperations: operations.slice(0, 20),
-    pendingApprovals: operations.filter((operation) => operation.status === "pending_approval").slice(0, 20)
+    pendingApprovals: operations.filter((operation) => operation.status === "pending_approval").slice(0, 20),
+    desktopDevices
   };
 }
 

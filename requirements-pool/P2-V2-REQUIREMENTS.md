@@ -120,14 +120,22 @@ As a 想让 AI 整理我本机 Downloads 文件夹的用户，I want 装一个�
 #### 验收标准
 - [x] 本地 Next.js 进程已作为 My Computer MVP bridge 暴露 `/api/my-computer/status`，Web UI 可检测连接与能力清单
 - [x] Web UI 已提供 My Computer 设置面板、允许目录、安全暂停、最近操作与待授权操作
+- [x] Web 端可生成桌面端配对码，Electron 客户端可用配对码注册并通过 heartbeat 显示在线设备
 - [ ] macOS 上能 dmg 安装、登录账号、与云端建立 WS
 - [ ] Windows 上能 .exe 安装、同上
-- [ ] 云端 Web 上选 "Use My Computer" 后任务跑在桌面端
-- [ ] tray 图标显示任务进度，可一键停止
+- [x] 云端 Web 上选 "Use My Computer" 后任务跑在桌面端
+- [x] tray 图标显示任务进度，可一键停止
 - [ ] 自动更新机制能下载新版
 
 #### 实现记录
 - 2026-05-23：先实现 My Computer MVP 桥接层，当前运行在本地 Next.js 进程中；后续再抽到 Electron/Tauri 客户端与 WS 调度。
+- 2026-05-23：新增 `/api/my-computer/desktop/pairing`、`/verify` 与 `/heartbeat`，支持 Web 生成一次性配对码、桌面端获取设备 token、心跳同步 allowed roots / pending approvals / recent operations；Settings / My Computer 面板展示桌面端配对码和在线设备。
+- 2026-05-23：新增根目录 `desktop/` Electron 客户端骨架，包含配对窗口、设备 token 持久化、15 秒 heartbeat、托盘入口和本地运行说明；新增 `npm run e2e:desktop` 覆盖配对码一次性使用、心跳鉴权和 Web 状态显示在线 Electron 设备。
+- 2026-05-23：新增 Web 创建任务时的 `executionTarget: my-computer` 路由、桌面端任务 claim/complete API 和 Electron 客户端轮询闭环；`npm run e2e:desktop` 覆盖任务派发、桌面端接收、完成结果回写 final answer 与交付物。
+- 2026-05-23：桌面端客户端新增只读本地工具执行层，任务派发到 Electron 后可在 allowed roots 内做目录扫描、文件类型分类预览和内容 hash 查重预览，结果以 `desktop-local-report.md` / `desktop-local-files.json` 回写 Web 交付物。
+- 2026-05-23：桌面端文件分类从 dry-run 扩展到显式确认执行；prompt 含 `确认执行` / `执行分类` / `execute` 时才会在 allowed root 内移动文件到 `ManusXL Organized/`，并写入 `.manusxl-desktop-undo.json` 支持后续 `撤销` / `undo` 任务恢复。
+- 2026-05-23：新增桌面端任务进度回传 API，Electron 执行中可把 `thinking/tool_result/message` 事件写入 Web 任务时间线；Web 取消任务后同步取消桌面 assignment，防止已取消任务被后续领取或回写成 completed。
+- 2026-05-23：Electron 窗口新增当前任务面板与“停止当前任务”按钮；tray 菜单展示连接状态/当前任务并可停止任务，桌面端停止会调用 cancel API 同步取消 Web 任务并写入时间线。
 
 #### 相关 OpenManus 代码
 - 完全新建：`desktop/`（Electron 或 Tauri 项目目录）
@@ -168,6 +176,7 @@ As a Downloads 文件夹堆了几百个文件的用户，I want 一句话让 AI 
 #### 实现记录
 - 2026-05-23：新增 `/api/my-computer/files/scan`、`/api/my-computer/files/plan`、`/api/my-computer/approvals`；支持允许目录校验、分类/重命名/查重 dry-run、Allow Once/Always/Deny 授权和执行。
 - 2026-05-23：新增 `/api/my-computer/undo` 和 Settings / My Computer 撤销入口；最近一次已完成的批量移动/重命名可按反向文件动作恢复。
+- 2026-05-23：参考 OpenManus `FileOperator` 抽象，在 Electron 桌面端新增 `desktop/src/local-tools.ts`；支持本机 allowed root 内目录扫描、文件类型分类 dry-run、内容 hash 查重、显式确认分类移动和 `.manusxl-desktop-undo.json` 撤销恢复，并新增 `npm run e2e:desktop-local` 覆盖真实文件移动/恢复。
 
 #### 相关 OpenManus 代码
 - 可复用：REQ-108 的批量处理逻辑（移植到桌面端 IPC）
@@ -217,6 +226,7 @@ As a 想让 AI 用 Excel 处理一份本地表格的用户，I want AI 能启动
 - 2026-05-23：参考 OpenManus `bash.py` 的命令工具边界，新增受控 terminal 命令执行；使用白名单、短超时、固定 cwd 和非 shell 执行，结果回传到操作记录。
 - 2026-05-23：参考 OpenManus `computer_use_tool.py` 的动作级工具形态，补齐 macOS Calculator 真实启动验收；应用启动仍必须先进入 My Computer 授权队列。
 - 2026-05-23：新增 `app_quit` 授权动作，Calculator 关闭也走 My Computer 授权队列，E2E 覆盖启动后关闭清理。
+- 2026-05-23：Electron 桌面端新增 `desktop/src/system-tools.ts`，参考 OpenManus `bash.py` 的短命令边界；支持应用启动/关闭、剪贴板读写和白名单 terminal 命令，全部需要 `确认执行` / `execute`，terminal 使用非 shell 执行并固定在 allowed root；新增 `npm run e2e:desktop-system` 覆盖 dry-run、白名单命令、危险命令阻止和键鼠阻止。
 
 #### 相关 OpenManus 代码
 - 完全新建：`desktop/src/tools/system_tools.ts`
@@ -231,7 +241,7 @@ As a 想让 AI 用 Excel 处理一份本地表格的用户，I want AI 能启动
 ---
 
 ### REQ-204：桌面端 → 云端文件同步（选择性上传，隐私可控）
-**模块**: M08 | **状态**: Planning | **工作量**: 3-5 人天
+**模块**: M08 | **状态**: In Progress | **工作量**: 3-5 人天
 
 #### 背景与价值
 桌面端处理过的文件经常需要让云端进一步加工（如本地 OCR 后让云端 LLM 总结）。需要明确的"选择性上传"机制：默认本地处理本地，必要时用户主动允许上传。
@@ -248,10 +258,17 @@ As a 担心隐私的用户，I want 本机文件默认不上传云端，但我�
 - 非功能：100MB 文件上传 < 30 秒（千兆网）
 
 #### 验收标准
+- [x] 桌面端可选择本机文件上传到云端上传库，并返回可用于任务附件的 fileId
+- [x] 桌面端上传后的文件会出现在云端 Library 文件列表
 - [ ] 右键文件选"Send to Cloud"后云端 Library 可见
-- [ ] AI 请求上传时用户能 Approve/Deny
-- [ ] 上传文件 7 天后自动从云端删除
+- [x] AI 请求上传时用户能 Approve/Deny
+- [x] 上传文件带 7 天 TTL metadata，云端文件列表读取时会清理过期上传记录和本地存储文件
 - [ ] 加密传输（HTTPS）+ 加密存储
+
+#### 实现记录
+- 2026-05-23：新增 `/api/my-computer/desktop/files/upload`，桌面端通过设备 token 选择性上传 base64 文件到现有 uploaded_files 存储，并复用文件解析摘要；记录 `source=desktop-sync`、设备信息、sourcePath 和 7 天 `expiresAt` metadata。Electron UI 新增“上传本机文件到云端”按钮，上传结果可作为 `/api/tasks` 的 `fileIds` 附件进入 My Computer 任务。
+- 2026-05-23：新增 `GET /api/files` 上传文件列表，Library 页面展示桌面端同步文件、来源、大小、摘要和 TTL；文件列表访问时会按 `expiresAt` 清理过期上传记录和存储文件，E2E 覆盖桌面同步文件在 Library 可见且可作为任务附件。
+- 2026-05-23：新增 `/api/my-computer/desktop/file-requests` 与桌面端 decision API；云端/AI 可请求桌面端上传指定本机文件，Electron 心跳接收待审批请求，桌面 UI 支持“批准上传/拒绝”，批准后复用桌面文件上传通道并把 uploadedFileId 关联回请求。
 
 #### 相关 OpenManus 代码
 - 需新建：`app/api/file_sync_routes.py`、`desktop/src/sync/`
@@ -400,10 +417,12 @@ As a 5 人小团队的负责人，I want 邀请同事加入组织，按角色（
 - [x] 邀请同事加入 org 后能通过组织任务 API 看到共享任务
 - [x] Viewer 角色不能新建任务（只读）
 - [x] org 配额到上限时新任务被拒
-- [x] 用户可同时加入多个 org（UI 顶部切换待接入）
+- [x] 用户可同时加入多个 org，UI 顶部可切换
 
 #### 实现记录
 - 2026-05-23：新增组织/成员/邀请/任务共享 SQLite 模型，支持 owner/admin/member/viewer 角色、邀请 token 接受、组织任务可见性、组织任务配额和共享任务读取 ACL。新增 `/api/orgs`、成员、邀请、组织任务列表 API，并让 `/api/tasks` 支持 `orgId` / `visibility`；新增 `npm run e2e:org` 覆盖多组织、Viewer 拦截、共享任务和配额拦截。
+- 2026-05-23：前端新增顶部组织空间切换、Library/Settings 组织协作面板、创建组织、邀请成员网页登录链接展示、邀请链接自动/手动接受、成员列表、组织共享任务列表和 Viewer 只读发送拦截。
+- 2026-05-23：补齐组织成员管理闭环：owner/admin 可在 UI 中调整非 owner 成员角色或移除成员；后端新增成员 `PATCH/DELETE`，写入审计日志，并扩展 E2E 覆盖 viewer→member 权限变化、成员创建组织任务、移除后失去组织访问。
 
 #### 相关 OpenManus 代码
 - 需改造：P1 REQ-103 的用户隔离 — 路径加 org_id 一层 `workspace/{org_id}/{user_id}/{task_id}/`
