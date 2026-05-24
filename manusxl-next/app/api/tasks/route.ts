@@ -4,6 +4,11 @@ import { requestAuditContext, safeRecordAuditLog } from "@/server/audit/audit-st
 import { currentUserFromRequest, unauthorized } from "@/server/auth/http";
 import { listUploadedFileRecords } from "@/server/files/readers";
 import { getDeepSeekConfig } from "@/server/llm/deepseek";
+import {
+  dispatchTaskToMyComputerDesktop,
+  hasOnlineMyComputerDesktop
+} from "@/server/my-computer/my-computer";
+import { authorizeOrgTaskCreate, shareTaskWithOrganization } from "@/server/orgs/org-store";
 import { createTask, listTasks } from "@/server/tasks/task-store";
 import type { CreateTaskRequest } from "@/types/agent";
 
@@ -38,13 +43,35 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "部分上传文件不存在或不属于当前用户" }, { status: 400 });
     }
 
+    const orgId = body.orgId?.trim();
+    if (orgId) {
+      const authorization = authorizeOrgTaskCreate(user.id, orgId);
+      if (!authorization.ok) {
+        return NextResponse.json({ error: authorization.error }, { status: authorization.status });
+      }
+    }
+
     const model = body.model?.trim() || getDeepSeekConfig().model;
+    const executionTarget = body.executionTarget === "my-computer" ? "my-computer" : "cloud";
+    if (executionTarget === "my-computer" && !hasOnlineMyComputerDesktop(user.id)) {
+      return NextResponse.json({ error: "没有在线的 My Computer 桌面端设备" }, { status: 409 });
+    }
+
     const task = createTask(
       prompt,
       model,
       user.id,
-      uploadedFileRecords.map((file) => file.id)
+      uploadedFileRecords.map((file) => file.id),
+      { executionTarget }
     );
+    if (orgId && body.visibility !== "private") {
+      shareTaskWithOrganization({
+        orgId,
+        taskId: task.id,
+        createdByUserId: user.id,
+        visibility: body.visibility
+      });
+    }
     safeRecordAuditLog({
       userId: user.id,
       taskId: task.id,
@@ -56,15 +83,26 @@ export async function POST(request: Request) {
         model,
         promptLength: prompt.length,
         uploadedFileCount: uploadedFileRecords.length,
-        queued: true
+        orgId,
+        visibility: orgId ? body.visibility ?? "org" : "private",
+        queued: true,
+        executionTarget
       }
     });
-    const queue = enqueueAgentTask(task.id);
+    const desktopDispatch =
+      executionTarget === "my-computer"
+        ? dispatchTaskToMyComputerDesktop({ taskId: task.id, ownerId: user.id })
+        : undefined;
+    if (desktopDispatch && !desktopDispatch.ok) {
+      return NextResponse.json({ error: desktopDispatch.error }, { status: desktopDispatch.status });
+    }
+    const queue = executionTarget === "my-computer" ? undefined : enqueueAgentTask(task.id);
 
     return NextResponse.json({
       taskId: task.id,
       status: task.status,
-      queue
+      queue,
+      desktopDispatch
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Create task failed";

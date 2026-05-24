@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
+import { abortAgentTask } from "@/server/agent/runtime";
 import { currentUserFromRequest, unauthorized } from "@/server/auth/http";
+import { cancelMyComputerDesktopTask } from "@/server/my-computer/my-computer";
 import { cancelTask } from "@/server/tasks/task-store";
 
 export const runtime = "nodejs";
@@ -18,5 +20,8 @@ export async function POST(
     return NextResponse.json({ error: "Task not found" }, { status: 404 });
   }
 
-  return NextResponse.json(task);
+  abortAgentTask(taskId);
+  const desktopAssignments = cancelMyComputerDesktopTask(taskId, user.id);
+
+  return NextResponse.json({ ...task, desktopAssignments });
 }

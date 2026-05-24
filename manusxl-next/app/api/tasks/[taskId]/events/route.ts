@@ -1,4 +1,5 @@
 import { currentUserFromRequest, unauthorized } from "@/server/auth/http";
+import { canUserReadOrgTask } from "@/server/orgs/org-store";
 import { getTask, subscribeToTask } from "@/server/tasks/task-store";
 
 export const runtime = "nodejs";
@@ -16,7 +17,9 @@ export async function GET(
   const user = currentUserFromRequest(request);
   if (!user) return unauthorized();
   const { taskId } = await Promise.resolve(context.params);
-  const task = getTask(taskId, user.id);
+  const ownedTask = getTask(taskId, user.id);
+  const sharedTask = ownedTask ? undefined : getTask(taskId);
+  const task = ownedTask ?? (sharedTask && canUserReadOrgTask(user.id, taskId) ? sharedTask : undefined);
 
   if (!task) {
     return new Response("Task not found", { status: 404 });

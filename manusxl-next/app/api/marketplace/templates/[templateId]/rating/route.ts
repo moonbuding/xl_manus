@@ -19,7 +19,7 @@ export async function POST(
     return NextResponse.json({ error: "Rating must be between 1 and 5" }, { status: 400 });
   }
 
-  const template = rateMarketplaceTemplate(templateId, rating);
+  const template = rateMarketplaceTemplate(templateId, rating, user.id);
 
   safeRecordAuditLog({
     userId: user.id,
