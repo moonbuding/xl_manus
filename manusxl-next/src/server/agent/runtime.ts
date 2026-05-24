@@ -1,5 +1,11 @@
 import { createId } from "@/lib/id";
-import { generateDeliverables, type GeneratedArtifact } from "@/server/artifacts/generators";
+import {
+  generateDeliverables,
+  generateDocumentDeliverables,
+  generateSlideDeckDeliverables,
+  type GeneratedArtifact,
+  type SlideDeckSource
+} from "@/server/artifacts/generators";
 import { getTaskTimeoutMs } from "@/server/agent/runtime-config";
 import {
   appendTaskMemory,
@@ -13,7 +19,11 @@ import {
 import {
   executeAgentToolWithFallback,
   estimateToolMaskingSavings,
+  detectRequestedArtifactTypes,
   inferToolsForStep,
+  isFactualResearchIntent,
+  isDocumentIntent,
+  isSlideDeckIntent,
   pickTool,
   selectToolsForPrompt,
   type AgentToolResult
@@ -189,14 +199,32 @@ function ensureWideResearchStep(prompt: string, plan: string[]) {
 }
 
 function ensureSlideDeckStep(prompt: string, plan: string[]) {
-  if (!/pptx?|powerpoint|slides?|slide deck|幻灯片|演示文稿|路演|bp|投资人|融资|商业计划书|汇报材料|演讲稿/i.test(prompt)) {
-    return plan;
-  }
+  if (!isSlideDeckIntent(prompt)) return plan;
   if (plan.some((step) => /slide_deck_builder|pptx?|slides?|幻灯片|演示文稿|配图|讲稿/i.test(step))) {
     return plan;
   }
 
   return ["使用 slide_deck_builder 生成 5 页以上 PPTX、配图素材、讲稿和结构化大纲", ...plan].slice(0, 6);
+}
+
+function ensureDocumentStep(prompt: string, plan: string[]) {
+  if (!isDocumentIntent(prompt)) return plan;
+  if (plan.some((step) => /word|docx|文档|演讲稿|讲稿|正文稿|artifact_writer/i.test(step))) {
+    return plan;
+  }
+
+  return ["整理正文结构并生成 Word 文档交付物", ...plan].slice(0, 6);
+}
+
+function ensureDeliveryResearchStep(prompt: string, plan: string[]) {
+  if (!isFactualResearchIntent(prompt) || (!isSlideDeckIntent(prompt) && !isDocumentIntent(prompt))) {
+    return plan;
+  }
+  if (plan.some((step) => /web_research|网页搜索|资料来源|事实核验|权威资料|搜索/i.test(step))) {
+    return plan;
+  }
+
+  return ["使用 web_research 搜集并核验事实、时间线、关键议题和资料来源", ...plan].slice(0, 6);
 }
 
 function ensureWebAppBuilderStep(prompt: string, plan: string[]) {
@@ -306,21 +334,27 @@ async function generatePlan(
       intent,
       ensureImageGenerationStep(
         intent,
-        ensureSlideDeckStep(
+        ensureDeliveryResearchStep(
           intent,
-          ensureWideResearchStep(
+          ensureDocumentStep(
             intent,
-            ensureMapStep(
+            ensureSlideDeckStep(
               intent,
-              ensureMcpStep(
+              ensureWideResearchStep(
                 intent,
-                ensureBatchFileOpsStep(
+                ensureMapStep(
                   intent,
-                  ensureImageOcrStep(
+                  ensureMcpStep(
                     intent,
-                    ensureImageProcessStep(
+                    ensureBatchFileOpsStep(
                       intent,
-                      ensureFileReadingStep(prompt, parsePlan(raw, config.maxSteps), uploadedFileIds)
+                      ensureImageOcrStep(
+                        intent,
+                        ensureImageProcessStep(
+                          intent,
+                          ensureFileReadingStep(prompt, parsePlan(raw, config.maxSteps), uploadedFileIds)
+                        )
+                      )
                     )
                   )
                 )
@@ -342,7 +376,10 @@ async function generateFinalAnswer(
 ) {
   const fallback = localFinalAnswerFallback(prompt, messages);
   const config = getDeepSeekConfig();
-  const needsLongAnswer = /调研|研究|对比|排名|前五|报告|分析|竞品|市场|新能源|NEV|top\s*\d+/i.test(prompt);
+  const needsLongAnswer =
+    isSlideDeckIntent(prompt) ||
+    isDocumentIntent(prompt) ||
+    /调研|研究|对比|排名|前五|报告|分析|竞品|市场|新能源|NEV|top\s*\d+/i.test(prompt);
 
   return chatWithDeepSeek({
     taskId,
@@ -527,6 +564,129 @@ function artifactsFromToolResults(toolResults: AgentToolResult[]) {
     const generated = result.payload.generatedArtifacts;
     return Array.isArray(generated) ? generated.filter(isGeneratedArtifact) : [];
   });
+}
+
+function isSlideDeckTask(prompt: string) {
+  return isSlideDeckIntent(taskIntentText(prompt));
+}
+
+function isDocumentTask(prompt: string) {
+  return isDocumentIntent(taskIntentText(prompt));
+}
+
+function researchSourcesFromToolResults(toolResults: AgentToolResult[]) {
+  const sources: SlideDeckSource[] = [];
+
+  for (const result of toolResults) {
+    const payload = result.payload as {
+      results?: SlideDeckSource[];
+      wideResearch?: {
+        results?: Array<{
+          sources?: SlideDeckSource[];
+        }>;
+      };
+    };
+
+    if (result.toolName === "web_research" && Array.isArray(payload.results)) {
+      sources.push(...payload.results);
+    }
+
+    if (payload.wideResearch?.results) {
+      for (const item of payload.wideResearch.results) {
+        if (Array.isArray(item.sources)) sources.push(...item.sources);
+      }
+    }
+  }
+
+  const seen = new Set<string>();
+  return sources
+    .map((source) => ({
+      title: source.title?.trim(),
+      url: source.url?.trim(),
+      snippet: source.snippet?.trim()
+    }))
+    .filter((source) => source.title || source.url || source.snippet)
+    .filter((source) => {
+      const key = source.url || `${source.title}:${source.snippet}`;
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 10);
+}
+
+function buildArtifactsForTask(params: {
+  prompt: string;
+  plan: string[];
+  finalAnswer: string;
+  toolResults: AgentToolResult[];
+  taskId: string;
+}) {
+  const requestedTypes = detectRequestedArtifactTypes(params.prompt);
+  const sources = researchSourcesFromToolResults(params.toolResults);
+  const wantsSlideDeck = isSlideDeckTask(params.prompt);
+  const wantsDocument = isDocumentTask(params.prompt);
+
+  if (wantsSlideDeck && wantsDocument) {
+    return {
+      artifacts: [
+        ...generateSlideDeckDeliverables(params.prompt, params.finalAnswer, sources),
+        ...generateDocumentDeliverables(params.prompt, params.finalAnswer, sources, requestedTypes)
+      ],
+      contract: "多格式交付物"
+    };
+  }
+
+  if (wantsSlideDeck) {
+    return {
+      artifacts: generateSlideDeckDeliverables(
+        params.prompt,
+        params.finalAnswer,
+        sources
+      ),
+      contract: "PPT 主交付物"
+    };
+  }
+
+  if (wantsDocument) {
+    return {
+      artifacts: generateDocumentDeliverables(params.prompt, params.finalAnswer, sources, requestedTypes),
+      contract: requestedTypes.includes("pdf")
+        ? "PDF 主交付物"
+        : requestedTypes.includes("md")
+          ? "Markdown 主交付物"
+          : "Word 主交付物"
+    };
+  }
+
+  return {
+    artifacts: [
+      ...generateDeliverables(params.prompt, params.plan, params.finalAnswer),
+      ...artifactsFromToolResults(params.toolResults),
+      {
+        name: "agent-trace.json",
+        type: "json" as const,
+        mimeType: "application/json; charset=utf-8",
+        content: JSON.stringify(getTask(params.taskId), null, 2)
+      }
+    ],
+    contract: requestedTypes.length > 0 ? `指定格式交付：${requestedTypes.join(", ")}` : "通用交付包"
+  };
+}
+
+function artifactContractMessage(contract: string) {
+  switch (contract) {
+    case "PPT 主交付物":
+      return "已识别为 PPT 任务：只输出可演示 PPT、讲稿备注和来源说明，不再生成通用 CSV/XLSX/PDF/HTML/ZIP 大礼包。";
+    case "Word 主交付物":
+      return "已识别为 Word 文档任务：只输出 Word 文档和来源说明，不再误生成 PPT 或通用文件大礼包。";
+    case "PDF 主交付物":
+      return "已识别为 PDF 文档任务：只输出 PDF 文档和来源说明，不再误生成 Word/PPT 或通用文件大礼包。";
+    case "Markdown 主交付物":
+      return "已识别为 Markdown 文档任务：只输出 Markdown 文档和来源说明，不再误生成 Word/PPT 或通用文件大礼包。";
+    default:
+      return "已识别为多格式任务：按用户指定格式输出，不再生成无关通用文件大礼包。";
+  }
 }
 
 export function isAgentTaskRunning(taskId: string) {
@@ -855,41 +1015,76 @@ export async function runAgentTask(taskId: string, options: { resumed?: boolean 
     }
     if (shouldStopTask(taskId, startedAt, timeoutMs, plan.length + 9)) return;
 
-    const generatedArtifacts = [
-      ...generateDeliverables(task.prompt, plan, finalAnswer),
-      ...artifactsFromToolResults(toolResults),
-      {
-        name: "agent-trace.json",
-        type: "json" as const,
-        mimeType: "application/json; charset=utf-8",
-        content: JSON.stringify(getTask(taskId), null, 2)
-      }
-    ];
+    const artifactBuild = buildArtifactsForTask({
+      prompt: task.prompt,
+      plan,
+      finalAnswer,
+      toolResults,
+      taskId
+    });
+    const generatedArtifacts = artifactBuild.artifacts;
+
+    if (
+      artifactBuild.contract === "PPT 主交付物" ||
+      artifactBuild.contract === "Word 主交付物" ||
+      artifactBuild.contract === "PDF 主交付物" ||
+      artifactBuild.contract === "Markdown 主交付物" ||
+      artifactBuild.contract === "多格式交付物"
+    ) {
+      const sources = researchSourcesFromToolResults(toolResults);
+      const expectedTypes = Array.from(
+        new Set(
+          generatedArtifacts
+            .map((artifact) => artifact.type)
+            .filter((type) => ["pptx", "docx", "pdf", "md"].includes(type))
+        )
+      );
+      addTaskEvent(taskId, {
+        type: "message",
+        stepIndex: plan.length + 9,
+        title: "交付物契约",
+        content: [
+          artifactContractMessage(artifactBuild.contract),
+          `质量检查：${expectedTypes
+            .map((type) =>
+              generatedArtifacts.some((artifact) => artifact.type === type)
+                ? `已包含 ${type.toUpperCase()}`
+                : `缺少 ${type.toUpperCase()}`
+            )
+            .join("；")}；${sources.length > 0 ? `已附 ${sources.length} 条资料线索` : "未获取到稳定网页来源，已在来源说明中标注复核要求"}。`
+        ].join("\n"),
+        payload: {
+          artifactContract: artifactBuild.contract,
+          sourceCount: sources.length,
+          artifactNames: generatedArtifacts.map((artifact) => artifact.name)
+        }
+      });
+    }
 
     generatedArtifacts.forEach((generated, index) => {
       const artifact = addArtifact(taskId, generated);
       if (!artifact) return;
       addTaskEvent(taskId, {
         type: "artifact",
-        stepIndex: plan.length + 9 + index,
+        stepIndex: plan.length + 10 + index,
         title: artifact.name,
         content: `已生成 ${artifact.type.toUpperCase()} 交付物。`,
         payload: { artifact }
       });
     });
 
-    if (shouldStopTask(taskId, startedAt, timeoutMs, plan.length + 9 + generatedArtifacts.length)) {
+    if (shouldStopTask(taskId, startedAt, timeoutMs, plan.length + 10 + generatedArtifacts.length)) {
       return;
     }
 
     const tmpCleanup = await archiveTmpIfNeeded(taskId, task.ownerId);
-    if (shouldStopTask(taskId, startedAt, timeoutMs, plan.length + 9 + generatedArtifacts.length)) {
+    if (shouldStopTask(taskId, startedAt, timeoutMs, plan.length + 10 + generatedArtifacts.length)) {
       return;
     }
 
     addTaskEvent(taskId, {
       type: "message",
-      stepIndex: plan.length + 9 + generatedArtifacts.length,
+      stepIndex: plan.length + 10 + generatedArtifacts.length,
       title: "Workspace 清理",
       content:
         tmpCleanup.action === "archived"

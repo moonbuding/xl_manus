@@ -79,6 +79,7 @@ import type {
   McpCatalogItem,
   McpServer,
   ModelRouterOptimizerResponse,
+  MyComputerDesktopFileRequest,
   MyComputerDesktopPairingStatus,
   MyComputerFileEntry,
   MyComputerFilePlanMode,
@@ -327,6 +328,13 @@ function basenameForUi(pathname: string) {
   return pathname.split(/[\\/]/).filter(Boolean).pop() ?? pathname;
 }
 
+function desktopFileRequestStatusClass(status: MyComputerDesktopFileRequest["status"]) {
+  if (status === "pending") return "pending_approval";
+  if (status === "approved" || status === "uploaded") return "completed";
+  if (status === "denied") return "failed";
+  return status;
+}
+
 async function readJson<T>(response: Response, fallback?: T): Promise<T> {
   const text = await response.text();
   if (!text.trim()) {
@@ -422,6 +430,15 @@ function getArtifactIcon(type: Artifact["type"]) {
 
 function artifactPurpose(artifact: Artifact) {
   const name = artifact.name.toLowerCase();
+  if (name.endsWith("-deck.pptx")) return "主交付物：可直接演示的专题 PPT。";
+  if (name.endsWith("-speech.docx")) return "主交付物：可直接编辑和发送的 Word 演讲稿。";
+  if (name.endsWith("-document.docx")) return "主交付物：可直接编辑和发送的 Word 文档。";
+  if (name.endsWith("-speech.pdf")) return "主交付物：可直接发送和归档的 PDF 演讲稿。";
+  if (name.endsWith("-document.pdf")) return "主交付物：可直接发送和归档的 PDF 文档。";
+  if (name.endsWith("-speech.md")) return "主交付物：可继续编辑的 Markdown 演讲稿。";
+  if (name.endsWith("-document.md")) return "主交付物：可继续编辑的 Markdown 文档。";
+  if (name.endsWith("-speaker-notes.md")) return "逐页讲稿备注，适合演示前排练和补充口径。";
+  if (name.endsWith("-sources.md")) return "资料来源与复核清单，用于确认事实和引用口径。";
   if (name === "task-report.md") return "完整 Markdown 报告，适合复制、二次编辑和沉淀到知识库。";
   if (name === "task-data.csv") return "核心结论/数据表，适合导入表格工具继续分析。";
   if (name === "task-analysis.xlsx") return "Excel 工作簿，适合查看结构化结果和继续加工数据。";
@@ -441,6 +458,7 @@ function artifactPurpose(artifact: Artifact) {
   if (artifact.type === "md") return "Markdown 文档，适合继续编辑。";
   if (artifact.type === "csv") return "CSV 表格数据，适合导入 Excel 或数据库。";
   if (artifact.type === "xlsx") return "Excel 表格，适合业务分析。";
+  if (artifact.type === "docx") return "Word 文档，适合继续编辑、发送或归档。";
   if (artifact.type === "pptx") return "演示文稿，适合汇报展示。";
   if (artifact.type === "html") return "网页交付物，可在浏览器打开预览。";
   if (artifact.type === "zip") return "打包文件，方便一次性下载。";
@@ -450,6 +468,12 @@ function artifactPurpose(artifact: Artifact) {
 
 function artifactPriority(artifact: Artifact) {
   const name = artifact.name.toLowerCase();
+  if (name.endsWith("-deck.pptx")) return 5;
+  if (name.endsWith("-speech.docx") || name.endsWith("-document.docx")) return 5;
+  if (name.endsWith("-speech.pdf") || name.endsWith("-document.pdf")) return 5;
+  if (name.endsWith("-speech.md") || name.endsWith("-document.md")) return 5;
+  if (name.endsWith("-speaker-notes.md")) return 15;
+  if (name.endsWith("-sources.md")) return 25;
   if (name === "task-report.md") return 10;
   if (name === "task-summary.pdf") return 20;
   if (name === "task-analysis.xlsx") return 30;
@@ -716,6 +740,7 @@ export function AgentWorkspace() {
   const [localBrowserPairing, setLocalBrowserPairing] = useState<LocalBrowserPairingStatus | null>(null);
   const [myComputerStatus, setMyComputerStatus] = useState<MyComputerStatus | null>(null);
   const [myComputerPairing, setMyComputerPairing] = useState<MyComputerDesktopPairingStatus | null>(null);
+  const [myComputerFileRequests, setMyComputerFileRequests] = useState<MyComputerDesktopFileRequest[]>([]);
   const [myComputerScan, setMyComputerScan] = useState<MyComputerFileScanResponse | null>(null);
   const [myComputerPlan, setMyComputerPlan] = useState<MyComputerFilePlanResponse | null>(null);
   const [myComputerActionResult, setMyComputerActionResult] = useState<MyComputerOperation | null>(null);
@@ -823,6 +848,7 @@ export function AgentWorkspace() {
   const [isApprovingMyComputer, setIsApprovingMyComputer] = useState(false);
   const [isUndoingMyComputer, setIsUndoingMyComputer] = useState(false);
   const [isRunningMyComputerAction, setIsRunningMyComputerAction] = useState(false);
+  const [isRequestingMyComputerFileUpload, setIsRequestingMyComputerFileUpload] = useState(false);
   const [localBrowserEndpoint, setLocalBrowserEndpoint] = useState("http://127.0.0.1:9222");
   const [localBrowserActionDraft, setLocalBrowserActionDraft] = useState({
     action: "navigate" as "navigate" | "click" | "type" | "press",
@@ -850,6 +876,10 @@ export function AgentWorkspace() {
     actionCommand: "pwd",
     x: "320",
     y: "240"
+  });
+  const [myComputerFileRequestDraft, setMyComputerFileRequestDraft] = useState({
+    requestedPath: "",
+    reason: "AI 需要读取这个本机文件来继续任务，请审批上传。"
   });
   const [isAddingMcp, setIsAddingMcp] = useState(false);
   const [mcpError, setMcpError] = useState<string | null>(null);
@@ -1205,9 +1235,10 @@ export function AgentWorkspace() {
   const refreshMyComputerStatus = useCallback(async () => {
     setIsCheckingMyComputer(true);
     try {
-      const [response, pairingResponse] = await Promise.all([
+      const [response, pairingResponse, fileRequestsResponse] = await Promise.all([
         fetch("/api/my-computer/status", { cache: "no-store" }),
-        fetch("/api/my-computer/desktop/pairing", { cache: "no-store" })
+        fetch("/api/my-computer/desktop/pairing", { cache: "no-store" }),
+        fetch("/api/my-computer/desktop/file-requests", { cache: "no-store" })
       ]);
       if (!response.ok) return;
       const data = await readJson<MyComputerStatus>(response);
@@ -1216,6 +1247,13 @@ export function AgentWorkspace() {
       if (!onlineDesktop) setExecutionTarget("cloud");
       if (pairingResponse.ok) {
         setMyComputerPairing(await readJson<MyComputerDesktopPairingStatus>(pairingResponse));
+      }
+      if (fileRequestsResponse.ok) {
+        const fileRequestsData = await readJson<{ requests: MyComputerDesktopFileRequest[] }>(
+          fileRequestsResponse,
+          { requests: [] }
+        );
+        setMyComputerFileRequests(fileRequestsData.requests);
       }
       setSettingsDraft((current) => ({
         ...current,
@@ -1228,10 +1266,50 @@ export function AgentWorkspace() {
     } catch {
       setMyComputerStatus(null);
       setMyComputerPairing(null);
+      setMyComputerFileRequests([]);
     } finally {
       setIsCheckingMyComputer(false);
     }
   }, []);
+
+  const requestMyComputerFileUpload = useCallback(async () => {
+    const requestedPath = myComputerFileRequestDraft.requestedPath.trim();
+    if (!requestedPath) {
+      setMyComputerError("请先填写需要桌面端审批上传的本机文件路径。");
+      return;
+    }
+    setIsRequestingMyComputerFileUpload(true);
+    setMyComputerError(null);
+    setMyComputerNotice(null);
+    try {
+      const response = await fetch("/api/my-computer/desktop/file-requests", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          requestedPath,
+          reason: myComputerFileRequestDraft.reason.trim() || "AI 请求上传这个本机文件以继续任务。"
+        })
+      });
+      const data = await readJson<{
+        ok?: boolean;
+        request?: MyComputerDesktopFileRequest;
+        error?: string;
+      }>(response);
+      if (!response.ok || !data.request) throw new Error(data.error ?? "创建本机文件上传审批请求失败");
+      setMyComputerFileRequests((current) => [
+        data.request as MyComputerDesktopFileRequest,
+        ...current.filter((request) => request.id !== data.request?.id)
+      ]);
+      setMyComputerNotice("已创建本机文件上传审批请求，请在 ManusXL Desktop 批准或拒绝。");
+      await refreshMyComputerStatus();
+    } catch (caught: unknown) {
+      const message = getErrorMessage(caught, "创建本机文件上传审批请求失败");
+      setMyComputerError(message);
+      setError(message);
+    } finally {
+      setIsRequestingMyComputerFileUpload(false);
+    }
+  }, [myComputerFileRequestDraft, refreshMyComputerStatus]);
 
   const createMyComputerDesktopPairing = useCallback(async () => {
     setIsCreatingMyComputerPairing(true);
@@ -5450,6 +5528,7 @@ export function AgentWorkspace() {
       : desktopDevices.length
         ? `${desktopDevices.length} 台已配对，当前离线`
         : "未配对";
+    const pendingFileRequestCount = myComputerFileRequests.filter((request) => request.status === "pending").length;
     const latestOperation = myComputerActionResult ?? myComputerPlan?.operation;
     const hasUndoableFileOperation = Boolean(
       myComputerStatus?.recentOperations.some((operation) =>
@@ -5504,6 +5583,15 @@ export function AgentWorkspace() {
               </span>
             </div>
             <strong>{paused ? "paused" : pendingCount ? "pending" : "active"}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">文件上传审批</span>
+              <span className="metric-meta">
+                {pendingFileRequestCount ? `${pendingFileRequestCount} 个请求等待桌面端处理` : "暂无待审批请求"}
+              </span>
+            </div>
+            <strong>{pendingFileRequestCount ? "pending" : myComputerFileRequests.length}</strong>
           </div>
         </div>
 
@@ -5632,6 +5720,75 @@ export function AgentWorkspace() {
             ))}
           </div>
         ) : null}
+
+        <div className="my-computer-result-block">
+          <span className="mini-label">AI 请求上传本机文件审批</span>
+          <div className="browser-action-grid">
+            <label className="settings-field">
+              <span>本机文件路径</span>
+              <input
+                value={myComputerFileRequestDraft.requestedPath}
+                onChange={(event) =>
+                  setMyComputerFileRequestDraft((current) => ({
+                    ...current,
+                    requestedPath: event.target.value
+                  }))
+                }
+                placeholder="/Users/langxing/Downloads/report.pdf"
+              />
+            </label>
+            <label className="settings-field">
+              <span>请求理由</span>
+              <input
+                value={myComputerFileRequestDraft.reason}
+                onChange={(event) =>
+                  setMyComputerFileRequestDraft((current) => ({
+                    ...current,
+                    reason: event.target.value
+                  }))
+                }
+                placeholder="AI 需要读取这个本机文件来继续任务"
+              />
+            </label>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={isRequestingMyComputerFileUpload || !desktopDevices.some((device) => device.status === "online")}
+              onClick={() => void requestMyComputerFileUpload()}
+            >
+              {isRequestingMyComputerFileUpload ? <Loader2 size={15} className="spin" /> : <Paperclip size={15} />}
+              请求桌面端上传
+            </button>
+          </div>
+          {desktopDevices.some((device) => device.status === "online") ? (
+            <p className="muted-note">
+              创建后请在 ManusXL Desktop 的“本机文件上传请求”区域批准或拒绝；批准后文件会进入 Library / 上传文件。
+            </p>
+          ) : (
+            <p className="muted-note warning-note my-computer-feedback">
+              需要先配对并保持桌面端在线，才能请求上传本机文件。
+            </p>
+          )}
+          {myComputerFileRequests.length ? (
+            <div className="browser-operation-list">
+              {myComputerFileRequests.slice(0, 5).map((request) => (
+                <div className="browser-operation-item" key={request.id}>
+                  <div>
+                    <span>{basenameForUi(request.requestedPath)}</span>
+                    <small>
+                      {request.reason} · {request.requestedPath}
+                      {request.uploadedFileId ? ` · 已进入 Library：${request.uploadedFileId}` : ""}
+                      {request.error ? ` · ${request.error}` : ""}
+                    </small>
+                  </div>
+                  <strong className={`operation-status is-${desktopFileRequestStatusClass(request.status)}`}>
+                    {request.status}
+                  </strong>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
 
         <div className="browser-action-grid">
           <label className="settings-field">
@@ -6343,73 +6500,76 @@ export function AgentWorkspace() {
 
       <main className="main-column">
         <header className={`top-bar ${isHomeView ? "home-top-bar" : ""}`}>
-          {!isHomeView ? (
-            <>
-              <span className="model-chip">
-                <Sparkles size={15} />
-                {config?.model ?? "deepseek-v4-flash"}
-              </span>
-              <span className="status-chip">
-                {config?.hasApiKey ? <CheckCircle2 size={14} /> : <Clock3 size={14} />}
-                {config?.hasApiKey ? "API Key 已配置" : "使用本地回退"}
-              </span>
-              {contextMetrics && contextMetrics.totalCalls > 0 ? (
-                <span className="status-chip">
-                  <Gauge size={14} />
-                  Context {formatPercent(contextMetrics.averageCacheHitRate)}
+          <div className="top-status-group" aria-label="运行状态">
+            {!isHomeView ? (
+              <>
+                <span className="model-chip">
+                  <Sparkles size={15} />
+                  <span className="top-chip-label">{config?.model ?? "deepseek-v4-flash"}</span>
                 </span>
-              ) : null}
-              {contextMetrics && contextMetrics.totalCalls > 0 ? (
                 <span className="status-chip">
-                  <FileSpreadsheet size={14} />
-                  Cost {formatUsd(contextMetrics.estimatedCostUsd)}
+                  {config?.hasApiKey ? <CheckCircle2 size={14} /> : <Clock3 size={14} />}
+                  <span className="top-chip-label">{config?.hasApiKey ? "API Key 已配置" : "使用本地回退"}</span>
                 </span>
-              ) : null}
-            </>
-          ) : null}
-          <span className="status-chip">
-            <Bot size={14} />
-            {authUser.displayName}
-          </span>
-          <label className="org-context">
-            <ShieldCheck size={14} />
-            <select
-              aria-label="组织空间"
-              value={activeOrgId}
-              onChange={(event) => setActiveOrgId(event.target.value)}
-            >
-              <option value="">个人私有</option>
-              {organizations.map((organization) => (
-                <option key={organization.id} value={organization.id}>
-                  {organization.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          {!isHomeView ? <span className="top-spacer" /> : null}
-          {activeTask && (activeTask.status === "running" || activeTask.status === "queued") ? (
-            <button className="danger-button" onClick={() => void cancelActiveTask()} disabled={isCancellingTask}>
-              {isCancellingTask ? <Loader2 size={15} className="spin" /> : <CircleStop size={15} />}
-              中断
-            </button>
-          ) : (
-            <>
-              {activeTask ? (
-                <button className="ghost-button" onClick={() => void retryActiveTask()} disabled={isSubmitting}>
+                {contextMetrics && contextMetrics.totalCalls > 0 ? (
+                  <span className="status-chip">
+                    <Gauge size={14} />
+                    <span className="top-chip-label">Context {formatPercent(contextMetrics.averageCacheHitRate)}</span>
+                  </span>
+                ) : null}
+                {contextMetrics && contextMetrics.totalCalls > 0 ? (
+                  <span className="status-chip">
+                    <FileSpreadsheet size={14} />
+                    <span className="top-chip-label">Cost {formatUsd(contextMetrics.estimatedCostUsd)}</span>
+                  </span>
+                ) : null}
+              </>
+            ) : null}
+            <span className="status-chip">
+              <Bot size={14} />
+              <span className="top-chip-label">{authUser.displayName}</span>
+            </span>
+            <label className="org-context">
+              <ShieldCheck size={14} />
+              <select
+                aria-label="组织空间"
+                value={activeOrgId}
+                onChange={(event) => setActiveOrgId(event.target.value)}
+              >
+                <option value="">个人私有</option>
+                {organizations.map((organization) => (
+                  <option key={organization.id} value={organization.id}>
+                    {organization.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="top-action-group" aria-label="任务操作">
+            {activeTask && (activeTask.status === "running" || activeTask.status === "queued") ? (
+              <button className="danger-button" onClick={() => void cancelActiveTask()} disabled={isCancellingTask}>
+                {isCancellingTask ? <Loader2 size={15} className="spin" /> : <CircleStop size={15} />}
+                中断
+              </button>
+            ) : (
+              <>
+                {activeTask ? (
+                  <button className="ghost-button" onClick={() => void retryActiveTask()} disabled={isSubmitting}>
+                    <RefreshCw size={15} />
+                    重跑
+                  </button>
+                ) : null}
+                <button className="ghost-button" onClick={() => void refreshTasks()}>
                   <RefreshCw size={15} />
-                  重跑
+                  刷新
                 </button>
-              ) : null}
-              <button className="ghost-button" onClick={() => void refreshTasks()}>
-                <RefreshCw size={15} />
-                刷新
-              </button>
-              <button className="ghost-button" onClick={() => void logout()}>
-                <X size={15} />
-                退出
-              </button>
-            </>
-          )}
+                <button className="ghost-button" onClick={() => void logout()}>
+                  <X size={15} />
+                  退出
+                </button>
+              </>
+            )}
+          </div>
         </header>
 
         <section className="workspace-main">

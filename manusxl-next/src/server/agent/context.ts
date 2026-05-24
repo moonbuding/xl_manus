@@ -2,7 +2,14 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import type { ChatMessage } from "@/server/llm/deepseek";
-import { describeTools, type AgentToolName, type AgentToolResult } from "@/server/agent/tools";
+import {
+  describeTools,
+  isFactualResearchIntent,
+  isDocumentIntent,
+  isSlideDeckIntent,
+  type AgentToolName,
+  type AgentToolResult
+} from "@/server/agent/tools";
 import { enabledMcpTools, listEnabledMcpServers } from "@/server/mcp/mcp-registry";
 import { selectSkillsForPrompt } from "@/server/skills/skill-registry";
 import { ensureTaskWorkspace, taskWorkspacePaths } from "@/server/workspace/task-workspace";
@@ -213,6 +220,33 @@ function formatToolPayloadForContext(result: AgentToolResult) {
 }
 
 function finalAnswerInstruction(prompt: string) {
+  if (isDocumentIntent(prompt)) {
+    return [
+      "请输出一份适合生成 Word 文档的正文稿，不要复述工具流水账，不要出现任务 ID、Context、token、成本、执行总结等内部字段。",
+      "结构要求：",
+      "1. 先给出正式标题。",
+      "2. 如果用户要求演讲稿/讲稿，请按“开场白、主体段落、过渡句、结尾收束、演讲提示”组织；如果是普通文档，则按摘要、正文、结论、建议组织。",
+      "3. 每个段落要能直接复制进 Word，避免只给提纲。",
+      "4. 如果任务涉及新闻、政治、外交、市场或现实事实，必须区分“已被资料支持的事实 / 待核验信息 / 情景假设”，不要把未证实事件写成确定事实。",
+      "5. 结尾给出资料来源与复核清单；能引用 URL 时写标题或 URL。"
+    ].join("\n");
+  }
+
+  if (isSlideDeckIntent(prompt)) {
+    return [
+      "请输出一份可直接生成 PPT 的内容稿，不要复述工具流水账，不要出现任务 ID、Context、token、成本、执行总结等内部字段。",
+      "结构要求：",
+      "1. 先给出 1-2 句话核心结论，说明这份 PPT 应该表达什么。",
+      "2. 给出 7-8 页幻灯片大纲；每页包含：页标题、3-5 条可直接放进 PPT 的要点、讲稿备注。",
+      "3. 如果任务涉及新闻、政治、外交、市场或现实事实，必须区分“已被资料支持的事实 / 待核验信息 / 情景假设”，不要把未证实事件写成确定事实。",
+      "4. 给出资料来源与复核清单；能引用 URL 时写标题或 URL。",
+      "5. 最后给出正式汇报前需要补齐的 3-5 个检查项。",
+      isFactualResearchIntent(prompt)
+        ? "本任务属于事实性/时事型 PPT，请优先基于 web_research 或上传文件中的资料输出。"
+        : "本任务属于内容型 PPT，请优先保证演示结构完整、观点明确、适合直接汇报。"
+    ].join("\n");
+  }
+
   if (/调研|研究|对比|排名|前五|top\s*\d+|竞品|市场|销量|新能源|NEV/i.test(prompt)) {
     return [
       "请输出最终回答，必须直接回答用户问题，不要复述工具流水账。",

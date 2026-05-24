@@ -23,6 +23,7 @@ import {
 } from "@/server/skills/skill-registry";
 import { callMcpServerTool, enabledMcpTools, listEnabledMcpServers } from "@/server/mcp/mcp-registry";
 import { ensureTaskWorkspace } from "@/server/workspace/task-workspace";
+import type { ArtifactType } from "@/types/agent";
 
 const DEFAULT_TOOL_TIMEOUT_MS = 10_000;
 const DEFAULT_TOOL_MAX_BUFFER_BYTES = 1024 * 1024;
@@ -353,8 +354,78 @@ function isWideResearchIntent(value: string) {
   );
 }
 
-function isSlideDeckIntent(value: string) {
-  return /pptx?|powerpoint|slides?|slide deck|幻灯片|演示文稿|路演|bp|投资人|融资|商业计划书|汇报材料|演讲稿/i.test(
+export function isFactualResearchIntent(value: string) {
+  return /调研|研究|资料|背景|事实|来源|新闻|最新|近期|时事|政策|外交|经贸|市场|行业|竞品|公司|国家|总统|政府|选举|特朗普|trump|拜登|biden|习近平|访华|访美|中美|美国|中国|欧盟|俄乌|加沙|能源|新能源|top\s*\d+|排名|前五/i.test(
+    value
+  );
+}
+
+function hasCreationSignal(value: string) {
+  return /输出|生成|创建|制作|做一个|写一|写个|写成|整理成|导出|保存为|交付|给我|为我|帮我/i.test(
+    value
+  );
+}
+
+function hasFormatNearAction(value: string, formatPattern: string) {
+  const pattern = new RegExp(
+    `(?:输出|生成|创建|制作|做一个|写一|写个|写成|整理成|导出|保存为|交付|给我|为我|帮我).{0,36}(?:${formatPattern})|(?:${formatPattern}).{0,18}(?:格式|文件|文档|交付物|版本)`,
+    "i"
+  );
+  return pattern.test(value);
+}
+
+export function detectRequestedArtifactTypes(value: string) {
+  const intent = taskIntentText(value);
+  const lower = intent.toLowerCase();
+  const explicitTypes: ArtifactType[] = [];
+  const creationSignal = hasCreationSignal(intent);
+  const sourceOnlyDocument =
+    /(?:上传|读取|解析|分析|打开|导入).{0,16}(?:word|docx|文档|讲稿|演讲稿)/i.test(intent) &&
+    !/(?:输出|生成|创建|制作|做一个|写一|写个|写成|整理成|导出|保存为).{0,36}(?:word|docx|文档|讲稿|演讲稿)/i.test(
+      intent
+    );
+
+  if (!sourceOnlyDocument && hasFormatNearAction(intent, String.raw`\bword\b|\bdocx\b|word\s*文档`)) {
+    explicitTypes.push("docx");
+  }
+  if (
+    hasFormatNearAction(
+      intent,
+      String.raw`\bpptx?\b|powerpoint|slides?|slide deck|幻灯片|演示文稿|路演|bp|商业计划书`
+    )
+  ) {
+    explicitTypes.push("pptx");
+  }
+  if (hasFormatNearAction(intent, String.raw`\bpdf\b`)) explicitTypes.push("pdf");
+  if (hasFormatNearAction(intent, String.raw`\bmarkdown\b|\bmd\b`)) explicitTypes.push("md");
+  if (hasFormatNearAction(intent, String.raw`\bhtml\b|网页|页面`)) explicitTypes.push("html");
+  if (hasFormatNearAction(intent, String.raw`\bxlsx\b|\bexcel\b|工作簿|表格`)) explicitTypes.push("xlsx");
+  if (hasFormatNearAction(intent, String.raw`\bcsv\b`)) explicitTypes.push("csv");
+  if (/zip|打包|压缩包/.test(lower) && creationSignal) explicitTypes.push("zip");
+
+  const documentLike = /演讲稿|讲稿|发言稿|讲话稿|文档|报告|文章|摘要|说明|方案/i.test(intent);
+  if (!sourceOnlyDocument && explicitTypes.length === 0 && creationSignal && documentLike) {
+    explicitTypes.push("docx");
+  }
+
+  return Array.from(new Set(explicitTypes));
+}
+
+export function isDocumentIntent(value: string) {
+  const types = detectRequestedArtifactTypes(value);
+  return (
+    types.includes("docx") ||
+    types.includes("pdf") ||
+    types.includes("md") ||
+    (types.length === 0 && hasCreationSignal(taskIntentText(value)) && /演讲稿|讲稿|发言稿|讲话稿|文档|报告|文章|摘要|说明|方案/i.test(value))
+  );
+}
+
+export function isSlideDeckIntent(value: string) {
+  const requestedTypes = detectRequestedArtifactTypes(value);
+  if (requestedTypes.includes("pptx")) return true;
+  if (requestedTypes.includes("docx") && !requestedTypes.includes("pptx")) return false;
+  return /pptx?|powerpoint|slides?|slide deck|幻灯片|演示文稿|路演|bp|投资人|融资|商业计划书/i.test(
     value
   );
 }
@@ -381,6 +452,15 @@ export function selectToolsForPrompt(prompt: string, ownerId?: string): AgentToo
   }
   if (isSlideDeckIntent(intent)) {
     selected.push("slide_deck_builder", "artifact_writer", "data_analysis");
+    if (isFactualResearchIntent(intent)) {
+      selected.push("web_research");
+    }
+  }
+  if (isDocumentIntent(intent)) {
+    selected.push("artifact_writer", "data_analysis");
+    if (isFactualResearchIntent(intent)) {
+      selected.push("web_research");
+    }
   }
   if (isWebAppBuilderIntent(intent)) {
     selected.push("web_app_builder", "file_workspace", "artifact_writer", "data_analysis");
@@ -444,6 +524,8 @@ export function inferToolsForStep(step: string): AgentToolName[] {
 
   if (isWideResearchIntent(step)) candidates.push("spawn_sub_agents");
   if (isSlideDeckIntent(step)) candidates.push("slide_deck_builder");
+  if (isSlideDeckIntent(step) && isFactualResearchIntent(step)) candidates.push("web_research");
+  if (isDocumentIntent(step) && isFactualResearchIntent(step)) candidates.push("web_research");
   if (isWebAppBuilderIntent(step)) candidates.push("web_app_builder");
   if (isImageGenerationIntent(step)) candidates.push("image_generator");
   if (/python|脚本|代码|计算|统计|notebook/.test(lower)) candidates.push("python_execute");
