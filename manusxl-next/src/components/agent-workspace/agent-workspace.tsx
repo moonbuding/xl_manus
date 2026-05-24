@@ -18,13 +18,17 @@ import {
   FileSpreadsheet,
   FileText,
   FileType,
+  Folder,
+  FolderPlus,
   Gauge,
   Globe,
   Home,
   Camera,
   Loader2,
+  MoreHorizontal,
   PanelRight,
   Paperclip,
+  Pencil,
   Play,
   Plus,
   Presentation,
@@ -39,7 +43,18 @@ import {
   X,
   XCircle
 } from "lucide-react";
-import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ChangeEvent,
+  DragEvent,
+  FormEvent,
+  MouseEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 import type {
   AgentEvent,
   AgentSkill,
@@ -64,6 +79,8 @@ import type {
   McpCatalogItem,
   McpServer,
   ModelRouterOptimizerResponse,
+  MyComputerDesktopFileRequest,
+  MyComputerDesktopPairingStatus,
   MyComputerFileEntry,
   MyComputerFilePlanMode,
   MyComputerFilePlanResponse,
@@ -73,12 +90,18 @@ import type {
   MyComputerStatus,
   NotificationLog,
   NotificationSettings,
+  Organization,
+  OrganizationMembership,
+  OrganizationRole,
   ScheduledTask,
   ScheduledTaskRunLog,
   ScheduledTaskKind,
   Task,
+  TaskExecutionTarget,
+  TaskFolder,
   TaskTemplate,
   TaskStatus,
+  UploadedLibraryFile,
   UploadedFileSummary
 } from "@/types/agent";
 
@@ -183,9 +206,27 @@ const statusText: Record<TaskStatus, string> = {
   timeout: "已超时"
 };
 
+const organizationRoleText: Record<OrganizationRole, string> = {
+  owner: "Owner",
+  admin: "Admin",
+  member: "Member",
+  viewer: "Viewer"
+};
+
 type NavigationView = "workspace" | "agent" | "library" | "settings";
 type AuthMode = "phone" | "email-login" | "email-register";
 type MarketplaceSort = "featured" | "popular" | "topRated" | "latest";
+type LibrarySectionId = "tasks" | "files" | "templates" | "marketplace" | "org" | "billing";
+type SettingsSectionId =
+  | "model"
+  | "account"
+  | "agent"
+  | "my-computer"
+  | "browser"
+  | "execution"
+  | "data";
+
+const marketplacePageSize = 10;
 
 interface SandboxStatus {
   mode: string;
@@ -287,6 +328,13 @@ function basenameForUi(pathname: string) {
   return pathname.split(/[\\/]/).filter(Boolean).pop() ?? pathname;
 }
 
+function desktopFileRequestStatusClass(status: MyComputerDesktopFileRequest["status"]) {
+  if (status === "pending") return "pending_approval";
+  if (status === "approved" || status === "uploaded") return "completed";
+  if (status === "denied") return "failed";
+  return status;
+}
+
 async function readJson<T>(response: Response, fallback?: T): Promise<T> {
   const text = await response.text();
   if (!text.trim()) {
@@ -340,6 +388,7 @@ function createOptimisticTask(taskId: string, prompt: string, model: string, sta
     id: taskId,
     prompt,
     model,
+    executionTarget: "cloud",
     status,
     createdAt: now,
     updatedAt: now,
@@ -379,8 +428,100 @@ function getArtifactIcon(type: Artifact["type"]) {
   return <FileText size={17} />;
 }
 
+function artifactPurpose(artifact: Artifact) {
+  const name = artifact.name.toLowerCase();
+  if (name.endsWith("-deck.pptx")) return "主交付物：可直接演示的专题 PPT。";
+  if (name.endsWith("-speech.docx")) return "主交付物：可直接编辑和发送的 Word 演讲稿。";
+  if (name.endsWith("-document.docx")) return "主交付物：可直接编辑和发送的 Word 文档。";
+  if (name.endsWith("-speech.pdf")) return "主交付物：可直接发送和归档的 PDF 演讲稿。";
+  if (name.endsWith("-document.pdf")) return "主交付物：可直接发送和归档的 PDF 文档。";
+  if (name.endsWith("-speech.md")) return "主交付物：可继续编辑的 Markdown 演讲稿。";
+  if (name.endsWith("-document.md")) return "主交付物：可继续编辑的 Markdown 文档。";
+  if (name.endsWith("-speaker-notes.md")) return "逐页讲稿备注，适合演示前排练和补充口径。";
+  if (name.endsWith("-sources.md")) return "资料来源与复核清单，用于确认事实和引用口径。";
+  if (name === "task-report.md") return "完整 Markdown 报告，适合复制、二次编辑和沉淀到知识库。";
+  if (name === "task-data.csv") return "核心结论/数据表，适合导入表格工具继续分析。";
+  if (name === "task-analysis.xlsx") return "Excel 工作簿，适合查看结构化结果和继续加工数据。";
+  if (name === "task-briefing.pptx") return "汇报用 PPT，适合直接做演示或给团队同步。";
+  if (name === "task-summary.pdf") return "便于发送和归档的 PDF 摘要版报告。";
+  if (name === "summary.html") return "单页网页报告，适合在浏览器里快速预览。";
+  if (name === "dashboard.html") return "可视化看板，用来浏览关键指标、结论和图表。";
+  if (name === "chart-gallery.html") return "图表合集页面，集中查看本次任务生成的图片图表。";
+  if (name.includes("deliverables.zip")) return "完整交付包，包含本次任务生成的主要文件。";
+  if (name.includes("wide-research-report")) return "并行调研汇总报告，说明子任务对象、结论和来源。";
+  if (name.includes("wide-research-results.csv")) return "并行调研结果表，适合筛选、排序和二次分析。";
+  if (name.includes("wide-research-results.json")) return "机器可读的调研结构化数据，适合开发或自动化处理。";
+  if (name.includes("wide-research-package")) return "并行调研结果打包文件，包含报告、表格和 JSON。";
+  if (name.includes("agent-trace")) return "技术追踪日志，主要用于排查问题，普通使用通常不需要下载。";
+  if (name.startsWith("chart-") && artifact.type === "png") return "可插入报告或 PPT 的图表图片。";
+  if (artifact.type === "pdf") return "PDF 文件，适合发送、打印或归档。";
+  if (artifact.type === "md") return "Markdown 文档，适合继续编辑。";
+  if (artifact.type === "csv") return "CSV 表格数据，适合导入 Excel 或数据库。";
+  if (artifact.type === "xlsx") return "Excel 表格，适合业务分析。";
+  if (artifact.type === "docx") return "Word 文档，适合继续编辑、发送或归档。";
+  if (artifact.type === "pptx") return "演示文稿，适合汇报展示。";
+  if (artifact.type === "html") return "网页交付物，可在浏览器打开预览。";
+  if (artifact.type === "zip") return "打包文件，方便一次性下载。";
+  if (artifact.type === "json") return "结构化数据，适合调试或系统集成。";
+  return "任务生成的交付文件，可按需下载查看。";
+}
+
+function artifactPriority(artifact: Artifact) {
+  const name = artifact.name.toLowerCase();
+  if (name.endsWith("-deck.pptx")) return 5;
+  if (name.endsWith("-speech.docx") || name.endsWith("-document.docx")) return 5;
+  if (name.endsWith("-speech.pdf") || name.endsWith("-document.pdf")) return 5;
+  if (name.endsWith("-speech.md") || name.endsWith("-document.md")) return 5;
+  if (name.endsWith("-speaker-notes.md")) return 15;
+  if (name.endsWith("-sources.md")) return 25;
+  if (name === "task-report.md") return 10;
+  if (name === "task-summary.pdf") return 20;
+  if (name === "task-analysis.xlsx") return 30;
+  if (name === "task-briefing.pptx") return 40;
+  if (name === "task-data.csv") return 50;
+  if (name === "summary.html") return 60;
+  if (name === "dashboard.html") return 70;
+  if (name.includes("deliverables.zip")) return 80;
+  if (name.includes("wide-research-report")) return 90;
+  if (name.includes("wide-research-results.csv")) return 100;
+  if (name.includes("wide-research-results.json")) return 110;
+  if (name.includes("wide-research-package")) return 120;
+  if (name.startsWith("chart-")) return 130;
+  if (name.includes("agent-trace")) return 900;
+  return 500;
+}
+
+function isUsefulTimelineEvent(event: AgentEvent) {
+  if (event.type === "artifact") return false;
+  if (event.type === "tool_call") return false;
+  const title = event.title ?? "";
+  if (
+    /任务排队|工具动态启用|模型路由|Context Engineering|Context 指标|Billing|Workspace 清理/.test(
+      title
+    )
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function currentTaskStage(task: Task) {
+  if (task.status === "completed") return "已完成，结果和交付物已生成。";
+  if (task.status === "failed") return "任务失败，请查看执行过程里的失败原因。";
+  if (task.status === "cancelled") return "任务已取消。";
+  if (task.status === "timeout") return "任务已超时。";
+  const latest = [...task.events].reverse().find((event) => event.type !== "artifact");
+  return latest ? latest.title ?? latest.content : "正在准备执行。";
+}
+
+function canContinueTask(task: Task | null) {
+  return Boolean(task && !["queued", "running"].includes(task.status));
+}
+
 function mergeTaskEvent(task: Task, event: AgentEvent): Task {
   const exists = task.events.some((item) => item.id === event.id);
+  if (exists) return task;
+
   const artifact = extractArtifact(event);
   const nextArtifacts =
     artifact && !task.artifacts.some((item) => item.id === artifact.id)
@@ -431,6 +572,83 @@ function buildPromptWithFiles(prompt: string, files: UploadedFileSummary[]) {
   return `${basePrompt}\n\n[上传文件摘要]\n${fileContext}`;
 }
 
+const uploadedFileContextMarker = "[上传文件摘要]";
+
+function getUserVisiblePrompt(value: string) {
+  const markerIndex = value.indexOf(uploadedFileContextMarker);
+  const visible = markerIndex >= 0 ? value.slice(0, markerIndex) : value;
+  return visible.replace(/\s+/g, " ").trim() || "未命名任务";
+}
+
+function getTaskDisplayTitle(task: Task) {
+  return task.title?.trim() || getUserVisiblePrompt(task.prompt);
+}
+
+function parsePromptUploadedFiles(value: string) {
+  const markerIndex = value.indexOf(uploadedFileContextMarker);
+  if (markerIndex < 0) return [];
+
+  return value
+    .slice(markerIndex + uploadedFileContextMarker.length)
+    .trim()
+    .split(/\n(?=文件：)/g)
+    .map((block) => {
+      const name = block.match(/^文件：(.+)$/m)?.[1]?.trim() ?? "上传文件";
+      const meta = block.match(/^类型：(.+)$/m)?.[1]?.trim() ?? "";
+      const summaryStart = block.indexOf("摘要：");
+      const previewStart = block.indexOf("\n正文预览：");
+      const summary =
+        summaryStart >= 0
+          ? block.slice(summaryStart + "摘要：".length, previewStart >= 0 ? previewStart : undefined).trim()
+          : "";
+      const preview =
+        previewStart >= 0 ? block.slice(previewStart + "\n正文预览：".length).trim() : "";
+
+      return {
+        name,
+        meta,
+        summary,
+        preview
+      };
+    })
+    .filter((file) => file.name || file.summary || file.preview)
+    .slice(0, 6);
+}
+
+function truncateForUi(value: string, maxLength = 220) {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}...` : normalized;
+}
+
+function sanitizePayloadForUi(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sanitizePayloadForUi);
+  if (!value || typeof value !== "object") {
+    return typeof value === "string" ? truncateForUi(value) : value;
+  }
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, item]) => {
+      const lowerKey = key.toLowerCase();
+      if (lowerKey.includes("prompt")) {
+        if (typeof item === "string") {
+          const visible = getUserVisiblePrompt(item);
+          return [key, item.includes(uploadedFileContextMarker) ? `${visible}（已隐藏上传文件上下文）` : truncateForUi(visible)];
+        }
+        return [key, "已隐藏"];
+      }
+      if (
+        lowerKey === "content" ||
+        lowerKey.includes("preview") ||
+        lowerKey.includes("base64") ||
+        lowerKey.includes("text")
+      ) {
+        return [key, typeof item === "string" ? truncateForUi(item, 160) : "已折叠"];
+      }
+      return [key, sanitizePayloadForUi(item)];
+    })
+  );
+}
+
 function extractTemplateVariables(template: string) {
   const matches = template.matchAll(/\{([\w\u4e00-\u9fa5-]+)\}/g);
   return Array.from(new Set(Array.from(matches, (match) => match[1]))).slice(0, 12);
@@ -457,10 +675,23 @@ function parseEnvDraft(value: string) {
   );
 }
 
+function extractInvitationToken(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  try {
+    const url = new URL(trimmed, "http://manusxl.local");
+    return url.searchParams.get("inviteToken") ?? url.searchParams.get("token") ?? trimmed;
+  } catch {
+    return trimmed;
+  }
+}
+
 export function AgentWorkspace() {
   const [prompt, setPrompt] = useState("");
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFileSummary[]>([]);
+  const [libraryFiles, setLibraryFiles] = useState<UploadedLibraryFile[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [taskFolders, setTaskFolders] = useState<TaskFolder[]>([]);
   const [templates, setTemplates] = useState<TaskTemplate[]>([]);
   const [marketplaceTemplates, setMarketplaceTemplates] = useState<TaskTemplate[]>([]);
   const [skills, setSkills] = useState<AgentSkill[]>([]);
@@ -475,6 +706,10 @@ export function AgentWorkspace() {
   const [scheduledTasks, setScheduledTasks] = useState<ScheduledTask[]>([]);
   const [scheduledLogs, setScheduledLogs] = useState<ScheduledTaskRunLog[]>([]);
   const [scheduledMailbox, setScheduledMailbox] = useState("");
+  const [organizations, setOrganizations] = useState<Organization[]>([]);
+  const [activeOrgId, setActiveOrgId] = useState("");
+  const [orgTasks, setOrgTasks] = useState<Task[]>([]);
+  const [orgMembers, setOrgMembers] = useState<OrganizationMembership[]>([]);
   const [authDraft, setAuthDraft] = useState({
     phone: "",
     email: "",
@@ -489,6 +724,7 @@ export function AgentWorkspace() {
   const [isRefreshingAudit, setIsRefreshingAudit] = useState(false);
   const [activeTask, setActiveTask] = useState<Task | null>(null);
   const [activeNav, setActiveNav] = useState<NavigationView>("workspace");
+  const [executionTarget, setExecutionTarget] = useState<TaskExecutionTarget>("cloud");
   const [config, setConfig] = useState<ConfigResponse | null>(null);
   const [contextMetrics, setContextMetrics] = useState<ContextMetricsSummary | null>(null);
   const [routerOptimizer, setRouterOptimizer] = useState<ModelRouterOptimizerResponse | null>(null);
@@ -503,9 +739,13 @@ export function AgentWorkspace() {
   const [localBrowserSafety, setLocalBrowserSafety] = useState<LocalBrowserSafetyState | null>(null);
   const [localBrowserPairing, setLocalBrowserPairing] = useState<LocalBrowserPairingStatus | null>(null);
   const [myComputerStatus, setMyComputerStatus] = useState<MyComputerStatus | null>(null);
+  const [myComputerPairing, setMyComputerPairing] = useState<MyComputerDesktopPairingStatus | null>(null);
+  const [myComputerFileRequests, setMyComputerFileRequests] = useState<MyComputerDesktopFileRequest[]>([]);
   const [myComputerScan, setMyComputerScan] = useState<MyComputerFileScanResponse | null>(null);
   const [myComputerPlan, setMyComputerPlan] = useState<MyComputerFilePlanResponse | null>(null);
   const [myComputerActionResult, setMyComputerActionResult] = useState<MyComputerOperation | null>(null);
+  const [myComputerNotice, setMyComputerNotice] = useState<string | null>(null);
+  const [myComputerError, setMyComputerError] = useState<string | null>(null);
   const [ocrStatus, setOcrStatus] = useState<OcrStatus | null>(null);
   const [templateRun, setTemplateRun] = useState<{
     template: TaskTemplate;
@@ -513,12 +753,27 @@ export function AgentWorkspace() {
     values: Record<string, string>;
   } | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isCancellingTask, setIsCancellingTask] = useState(false);
   const [isUploadingFile, setIsUploadingFile] = useState(false);
   const [isForkingTemplate, setIsForkingTemplate] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [taskQuery, setTaskQuery] = useState("");
+  const [librarySearch, setLibrarySearch] = useState("");
+  const [activeLibrarySection, setActiveLibrarySection] = useState<LibrarySectionId>("tasks");
+  const [settingsSearch, setSettingsSearch] = useState("");
+  const [activeSettingsSection, setActiveSettingsSection] = useState<SettingsSectionId>("model");
+  const [taskContextMenu, setTaskContextMenu] = useState<{
+    taskId: string;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [bulkTaskMode, setBulkTaskMode] = useState(false);
+  const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([]);
+  const [expandedTaskFolderIds, setExpandedTaskFolderIds] = useState<string[]>([]);
   const [templateTagFilter, setTemplateTagFilter] = useState("all");
   const [marketplaceSort, setMarketplaceSort] = useState<MarketplaceSort>("featured");
+  const [marketplacePage, setMarketplacePage] = useState(1);
+  const [marketplaceTotal, setMarketplaceTotal] = useState(0);
   const [settingsDraft, setSettingsDraft] = useState({
     apiKey: "",
     model: "deepseek-v4-flash",
@@ -552,12 +807,30 @@ export function AgentWorkspace() {
     intervalMinutes: "60",
     cronExpression: "0 9 * * 1"
   });
+  const [orgDraft, setOrgDraft] = useState({
+    name: "",
+    taskQuota: "25",
+    invitePhone: "",
+    inviteRole: "member" as Exclude<OrganizationRole, "owner">,
+    acceptToken: ""
+  });
+  const [orgInviteResult, setOrgInviteResult] = useState<{
+    phone: string;
+    role: Exclude<OrganizationRole, "owner">;
+    acceptUrl: string;
+    token: string;
+  } | null>(null);
+  const [orgAcceptNotice, setOrgAcceptNotice] = useState<string | null>(null);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [isApplyingRouterPolicy, setIsApplyingRouterPolicy] = useState(false);
   const [isSavingNotifications, setIsSavingNotifications] = useState(false);
   const [isTestingNotifications, setIsTestingNotifications] = useState(false);
   const [isCreatingScheduledTask, setIsCreatingScheduledTask] = useState(false);
   const [isRunningScheduledTask, setIsRunningScheduledTask] = useState(false);
+  const [isCreatingOrg, setIsCreatingOrg] = useState(false);
+  const [isInvitingOrgMember, setIsInvitingOrgMember] = useState(false);
+  const [isAcceptingOrgInvite, setIsAcceptingOrgInvite] = useState(false);
+  const [managingOrgMemberId, setManagingOrgMemberId] = useState<string | null>(null);
   const [isUploadingSkill, setIsUploadingSkill] = useState(false);
   const [isRunningSandboxTest, setIsRunningSandboxTest] = useState(false);
   const [isCheckingDatabase, setIsCheckingDatabase] = useState(false);
@@ -569,11 +842,13 @@ export function AgentWorkspace() {
   const [isCreatingLocalBrowserPairing, setIsCreatingLocalBrowserPairing] = useState(false);
   const [isCheckingMyComputer, setIsCheckingMyComputer] = useState(false);
   const [isSavingMyComputer, setIsSavingMyComputer] = useState(false);
+  const [isCreatingMyComputerPairing, setIsCreatingMyComputerPairing] = useState(false);
   const [isScanningMyComputer, setIsScanningMyComputer] = useState(false);
   const [isPlanningMyComputer, setIsPlanningMyComputer] = useState(false);
   const [isApprovingMyComputer, setIsApprovingMyComputer] = useState(false);
   const [isUndoingMyComputer, setIsUndoingMyComputer] = useState(false);
   const [isRunningMyComputerAction, setIsRunningMyComputerAction] = useState(false);
+  const [isRequestingMyComputerFileUpload, setIsRequestingMyComputerFileUpload] = useState(false);
   const [localBrowserEndpoint, setLocalBrowserEndpoint] = useState("http://127.0.0.1:9222");
   const [localBrowserActionDraft, setLocalBrowserActionDraft] = useState({
     action: "navigate" as "navigate" | "click" | "type" | "press",
@@ -602,6 +877,10 @@ export function AgentWorkspace() {
     x: "320",
     y: "240"
   });
+  const [myComputerFileRequestDraft, setMyComputerFileRequestDraft] = useState({
+    requestedPath: "",
+    reason: "AI 需要读取这个本机文件来继续任务，请审批上传。"
+  });
   const [isAddingMcp, setIsAddingMcp] = useState(false);
   const [mcpError, setMcpError] = useState<string | null>(null);
   const [mcpDraft, setMcpDraft] = useState({
@@ -616,8 +895,10 @@ export function AgentWorkspace() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const skillInputRef = useRef<HTMLInputElement | null>(null);
   const initialTaskParamRef = useRef<string | null>(null);
+  const initialInviteTokenRef = useRef<string | null>(null);
   const activeTaskId = activeTask?.id;
   const activeTaskStatus = activeTask?.status;
+  const activeTaskLatestEventId = activeTask?.events.at(-1)?.id;
 
   const runningTaskCount = useMemo(
     () => tasks.filter((task) => task.status === "running" || task.status === "queued").length,
@@ -628,17 +909,31 @@ export function AgentWorkspace() {
     () => tasks.filter((task) => task.status === "completed").length,
     [tasks]
   );
+  const activeOrganization = useMemo(
+    () => organizations.find((organization) => organization.id === activeOrgId) ?? null,
+    [activeOrgId, organizations]
+  );
+  const selectedOrgCanCreateTask = !activeOrganization || activeOrganization.role !== "viewer";
+  const hasOnlineDesktop = Boolean(
+    myComputerStatus?.desktopDevices.some((device) => device.status === "online")
+  );
   const showComposer = activeNav === "workspace" || activeNav === "agent";
+  const isHomeView = activeNav === "workspace" && !activeTask;
 
   const visibleTasks = useMemo(() => {
     const normalized = taskQuery.trim().toLowerCase();
     if (!normalized) return tasks;
     return tasks.filter(
       (task) =>
+        task.title?.toLowerCase().includes(normalized) ||
         task.prompt.toLowerCase().includes(normalized) ||
-        task.id.toLowerCase().includes(normalized)
+        task.id.toLowerCase().includes(normalized) ||
+        taskFolders
+          .find((folder) => folder.id === task.folderId)
+          ?.name.toLowerCase()
+          .includes(normalized)
     );
-  }, [taskQuery, tasks]);
+  }, [taskFolders, taskQuery, tasks]);
 
   const templateTags = useMemo(
     () => Array.from(new Set(templates.flatMap((template) => template.tags))).sort(),
@@ -753,6 +1048,87 @@ export function AgentWorkspace() {
     }
   }, []);
 
+  const refreshOrganizations = useCallback(async () => {
+    try {
+      const response = await fetch("/api/orgs", { cache: "no-store" });
+      if (!response.ok) return;
+      const data = await readJson<{ organizations: Organization[] }>(response, { organizations: [] });
+      setOrganizations(data.organizations);
+      setActiveOrgId((current) =>
+        current && !data.organizations.some((organization) => organization.id === current) ? "" : current
+      );
+    } catch {
+      setOrganizations([]);
+    }
+  }, []);
+
+  const refreshOrganizationWorkspace = useCallback(async (orgId = activeOrgId) => {
+    if (!orgId) {
+      setOrgTasks([]);
+      setOrgMembers([]);
+      return;
+    }
+    try {
+      const [tasksResponse, membersResponse] = await Promise.all([
+        fetch(`/api/orgs/${orgId}/tasks`, { cache: "no-store" }),
+        fetch(`/api/orgs/${orgId}/members`, { cache: "no-store" })
+      ]);
+      if (tasksResponse.ok) {
+        const data = await readJson<{ tasks: Task[] }>(tasksResponse, { tasks: [] });
+        setOrgTasks(data.tasks);
+      }
+      if (membersResponse.ok) {
+        const data = await readJson<{ members: OrganizationMembership[] }>(membersResponse, { members: [] });
+        setOrgMembers(data.members);
+      }
+    } catch {
+      setOrgTasks([]);
+      setOrgMembers([]);
+    }
+  }, [activeOrgId]);
+
+  const acceptOrganizationInvitationFromToken = useCallback(
+    async (rawToken: string, options: { fromUrl?: boolean } = {}) => {
+      const token = extractInvitationToken(rawToken);
+      if (!token || isAcceptingOrgInvite) return;
+      setIsAcceptingOrgInvite(true);
+      setError(null);
+      try {
+        const response = await fetch("/api/orgs/invitations/accept", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token })
+        });
+        const data = await readJson<{
+          invitation?: { orgId: string; role: OrganizationRole; status: string };
+          organization?: Organization;
+          error?: string;
+        }>(response, {});
+        if (!response.ok || !data.organization) {
+          throw new Error(data.error ?? "接受邀请失败");
+        }
+        setOrgDraft((current) => ({ ...current, acceptToken: "" }));
+        setOrgInviteResult(null);
+        setOrgAcceptNotice(`已加入 ${data.organization.name}，角色 ${organizationRoleText[data.organization.role ?? data.invitation?.role ?? "member"]}。`);
+        await refreshOrganizations();
+        setActiveOrgId(data.organization.id);
+        await refreshOrganizationWorkspace(data.organization.id);
+        if (options.fromUrl) {
+          const url = new URL(window.location.href);
+          url.searchParams.delete("inviteToken");
+          url.searchParams.delete("token");
+          window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+        }
+      } catch (caught) {
+        setOrgAcceptNotice(null);
+        setError(getErrorMessage(caught, "接受组织邀请失败"));
+      } finally {
+        setIsAcceptingOrgInvite(false);
+      }
+    },
+    [isAcceptingOrgInvite, refreshOrganizations, refreshOrganizationWorkspace]
+  );
+
   const refreshContextMetrics = useCallback(async (taskId?: string) => {
     try {
       const suffix = taskId ? `?taskId=${encodeURIComponent(taskId)}` : "";
@@ -859,10 +1235,26 @@ export function AgentWorkspace() {
   const refreshMyComputerStatus = useCallback(async () => {
     setIsCheckingMyComputer(true);
     try {
-      const response = await fetch("/api/my-computer/status", { cache: "no-store" });
+      const [response, pairingResponse, fileRequestsResponse] = await Promise.all([
+        fetch("/api/my-computer/status", { cache: "no-store" }),
+        fetch("/api/my-computer/desktop/pairing", { cache: "no-store" }),
+        fetch("/api/my-computer/desktop/file-requests", { cache: "no-store" })
+      ]);
       if (!response.ok) return;
       const data = await readJson<MyComputerStatus>(response);
       setMyComputerStatus(data);
+      const onlineDesktop = data.desktopDevices.some((device) => device.status === "online");
+      if (!onlineDesktop) setExecutionTarget("cloud");
+      if (pairingResponse.ok) {
+        setMyComputerPairing(await readJson<MyComputerDesktopPairingStatus>(pairingResponse));
+      }
+      if (fileRequestsResponse.ok) {
+        const fileRequestsData = await readJson<{ requests: MyComputerDesktopFileRequest[] }>(
+          fileRequestsResponse,
+          { requests: [] }
+        );
+        setMyComputerFileRequests(fileRequestsData.requests);
+      }
       setSettingsDraft((current) => ({
         ...current,
         myComputerAllowedRoots: data.allowedRoots.join("\n")
@@ -873,10 +1265,94 @@ export function AgentWorkspace() {
       }));
     } catch {
       setMyComputerStatus(null);
+      setMyComputerPairing(null);
+      setMyComputerFileRequests([]);
     } finally {
       setIsCheckingMyComputer(false);
     }
   }, []);
+
+  const requestMyComputerFileUpload = useCallback(async () => {
+    const requestedPath = myComputerFileRequestDraft.requestedPath.trim();
+    if (!requestedPath) {
+      setMyComputerError("请先填写需要桌面端审批上传的本机文件路径。");
+      return;
+    }
+    setIsRequestingMyComputerFileUpload(true);
+    setMyComputerError(null);
+    setMyComputerNotice(null);
+    try {
+      const response = await fetch("/api/my-computer/desktop/file-requests", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          requestedPath,
+          reason: myComputerFileRequestDraft.reason.trim() || "AI 请求上传这个本机文件以继续任务。"
+        })
+      });
+      const data = await readJson<{
+        ok?: boolean;
+        request?: MyComputerDesktopFileRequest;
+        error?: string;
+      }>(response);
+      if (!response.ok || !data.request) throw new Error(data.error ?? "创建本机文件上传审批请求失败");
+      setMyComputerFileRequests((current) => [
+        data.request as MyComputerDesktopFileRequest,
+        ...current.filter((request) => request.id !== data.request?.id)
+      ]);
+      setMyComputerNotice("已创建本机文件上传审批请求，请在 ManusXL Desktop 批准或拒绝。");
+      await refreshMyComputerStatus();
+    } catch (caught: unknown) {
+      const message = getErrorMessage(caught, "创建本机文件上传审批请求失败");
+      setMyComputerError(message);
+      setError(message);
+    } finally {
+      setIsRequestingMyComputerFileUpload(false);
+    }
+  }, [myComputerFileRequestDraft, refreshMyComputerStatus]);
+
+  const createMyComputerDesktopPairing = useCallback(async () => {
+    setIsCreatingMyComputerPairing(true);
+    setMyComputerError(null);
+    setMyComputerNotice(null);
+    try {
+      const response = await fetch("/api/my-computer/desktop/pairing", { method: "POST" });
+      const data = await readJson<MyComputerDesktopPairingStatus & { error?: string }>(response);
+      if (!response.ok) throw new Error(data.error ?? "生成桌面端配对码失败");
+      setMyComputerPairing(data);
+      setMyComputerNotice("桌面端配对码已生成，请在 ManusXL Desktop 输入。");
+      await refreshMyComputerStatus();
+    } catch (caught: unknown) {
+      const message = getErrorMessage(caught, "生成桌面端配对码失败");
+      setMyComputerError(message);
+      setError(message);
+    } finally {
+      setIsCreatingMyComputerPairing(false);
+    }
+  }, [refreshMyComputerStatus]);
+
+  const disconnectMyComputerDesktopDevice = useCallback(async (deviceId: string, deviceName: string) => {
+    const confirmed = window.confirm(`断开桌面端「${deviceName}」？断开后需要重新配对才能派发 My Computer 任务。`);
+    if (!confirmed) return;
+    setIsSavingMyComputer(true);
+    setMyComputerError(null);
+    setMyComputerNotice(null);
+    try {
+      const response = await fetch(`/api/my-computer/desktop/devices/${encodeURIComponent(deviceId)}`, {
+        method: "DELETE"
+      });
+      const data = await readJson<{ ok?: boolean; error?: string }>(response);
+      if (!response.ok) throw new Error(data.error ?? "断开桌面端失败");
+      setMyComputerNotice(`已断开桌面端：${deviceName}`);
+      await refreshMyComputerStatus();
+    } catch (caught: unknown) {
+      const message = getErrorMessage(caught, "断开桌面端失败");
+      setMyComputerError(message);
+      setError(message);
+    } finally {
+      setIsSavingMyComputer(false);
+    }
+  }, [refreshMyComputerStatus]);
 
   const createLocalBrowserPairing = useCallback(async () => {
     setIsCreatingLocalBrowserPairing(true);
@@ -984,6 +1460,8 @@ export function AgentWorkspace() {
 
   const saveMyComputerSettings = useCallback(async (paused?: boolean) => {
     setIsSavingMyComputer(true);
+    setMyComputerError(null);
+    setMyComputerNotice(null);
     try {
       const response = await fetch("/api/my-computer/settings", {
         method: "PATCH",
@@ -993,7 +1471,8 @@ export function AgentWorkspace() {
           paused
         })
       });
-      const data = await readJson<MyComputerStatus>(response);
+      const data = await readJson<MyComputerStatus & { error?: string }>(response);
+      if (!response.ok) throw new Error(data.error ?? "保存 My Computer 设置失败");
       setMyComputerStatus(data);
       setSettingsDraft((current) => ({
         ...current,
@@ -1003,8 +1482,18 @@ export function AgentWorkspace() {
         ...current,
         root: data.allowedRoots.includes(current.root) ? current.root : data.allowedRoots[0] || current.root
       }));
+      setMyComputerNotice(
+        paused === true
+          ? "My Computer 已暂停。恢复后才能扫描目录、生成 Dry-run 或执行本机动作。"
+          : paused === false
+            ? "My Computer 已恢复，可以继续扫描目录和生成 Dry-run。"
+            : "My Computer 允许目录已保存。"
+      );
+      setError(null);
     } catch (caught: unknown) {
-      setError(getErrorMessage(caught, "保存 My Computer 设置失败"));
+      const message = getErrorMessage(caught, "保存 My Computer 设置失败");
+      setMyComputerError(message);
+      setError(message);
     } finally {
       setIsSavingMyComputer(false);
     }
@@ -1012,6 +1501,8 @@ export function AgentWorkspace() {
 
   const clearMyComputerAlwaysAllow = useCallback(async () => {
     setIsSavingMyComputer(true);
+    setMyComputerError(null);
+    setMyComputerNotice(null);
     try {
       const response = await fetch("/api/my-computer/settings", {
         method: "PATCH",
@@ -1022,16 +1513,32 @@ export function AgentWorkspace() {
           alwaysAllowRules: []
         })
       });
-      const data = await readJson<MyComputerStatus>(response);
+      const data = await readJson<MyComputerStatus & { error?: string }>(response);
+      if (!response.ok) throw new Error(data.error ?? "清空 My Computer 授权规则失败");
       setMyComputerStatus(data);
+      setMyComputerNotice("My Computer 授权规则已清空。");
+      setError(null);
     } catch (caught: unknown) {
-      setError(getErrorMessage(caught, "清空 My Computer 授权规则失败"));
+      const message = getErrorMessage(caught, "清空 My Computer 授权规则失败");
+      setMyComputerError(message);
+      setError(message);
     } finally {
       setIsSavingMyComputer(false);
     }
   }, [myComputerStatus, settingsDraft.myComputerAllowedRoots]);
 
   const scanMyComputerRoot = useCallback(async () => {
+    const root = myComputerDraft.root.trim();
+    setMyComputerError(null);
+    setMyComputerNotice(null);
+    if (myComputerStatus?.paused) {
+      setMyComputerError("My Computer 已暂停。请先点击“恢复 My Computer”，再扫描目录。");
+      return;
+    }
+    if (!root) {
+      setMyComputerError("请先填写目标目录。");
+      return;
+    }
     setIsScanningMyComputer(true);
     setMyComputerPlan(null);
     try {
@@ -1039,7 +1546,7 @@ export function AgentWorkspace() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          root: myComputerDraft.root,
+          root,
           maxFiles: 120,
           maxDepth: 2
         })
@@ -1047,22 +1554,37 @@ export function AgentWorkspace() {
       const data = await readJson<MyComputerFileScanResponse>(response);
       if (!response.ok) throw new Error((data as { error?: string }).error ?? "扫描失败");
       setMyComputerScan(data);
+      setMyComputerNotice(`扫描完成：${data.total} 项${data.truncated ? "，结果已截断" : ""}。`);
+      setError(null);
       await refreshMyComputerStatus();
     } catch (caught: unknown) {
-      setError(getErrorMessage(caught, "扫描本机目录失败"));
+      const message = getErrorMessage(caught, "扫描本机目录失败");
+      setMyComputerError(message);
+      setError(message);
     } finally {
       setIsScanningMyComputer(false);
     }
-  }, [myComputerDraft.root, refreshMyComputerStatus]);
+  }, [myComputerDraft.root, myComputerStatus?.paused, refreshMyComputerStatus]);
 
   const planMyComputerFiles = useCallback(async () => {
+    const root = myComputerDraft.root.trim();
+    setMyComputerError(null);
+    setMyComputerNotice(null);
+    if (myComputerStatus?.paused) {
+      setMyComputerError("My Computer 已暂停。请先点击“恢复 My Computer”，再生成 Dry-run。");
+      return;
+    }
+    if (!root) {
+      setMyComputerError("请先填写目标目录。");
+      return;
+    }
     setIsPlanningMyComputer(true);
     try {
       const response = await fetch("/api/my-computer/files/plan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          root: myComputerDraft.root,
+          root,
           mode: myComputerDraft.mode,
           maxFiles: 160
         })
@@ -1071,13 +1593,19 @@ export function AgentWorkspace() {
       if (!response.ok) throw new Error(data.error ?? "生成文件操作预览失败");
       setMyComputerPlan(data);
       setMyComputerActionResult(null);
+      setMyComputerNotice(
+        `Dry-run 已生成：${data.summary.actionCount} 个动作，影响 ${data.summary.affectedFiles} 个文件。`
+      );
+      setError(null);
       await refreshMyComputerStatus();
     } catch (caught: unknown) {
-      setError(getErrorMessage(caught, "生成 My Computer 文件计划失败"));
+      const message = getErrorMessage(caught, "生成 My Computer 文件计划失败");
+      setMyComputerError(message);
+      setError(message);
     } finally {
       setIsPlanningMyComputer(false);
     }
-  }, [myComputerDraft.mode, myComputerDraft.root, refreshMyComputerStatus]);
+  }, [myComputerDraft.mode, myComputerDraft.root, myComputerStatus?.paused, refreshMyComputerStatus]);
 
   const approveMyComputerOperation = useCallback(async (operationId: string, decision: "allow_once" | "always" | "deny") => {
     setIsApprovingMyComputer(true);
@@ -1193,6 +1721,43 @@ export function AgentWorkspace() {
     }
   }, []);
 
+  const refreshTaskFolders = useCallback(async () => {
+    try {
+      const response = await fetch("/api/task-folders", { cache: "no-store" });
+      if (response.status === 401) {
+        setTaskFolders([]);
+        return;
+      }
+      if (!response.ok) return;
+      const data = await readJson<{ folders: TaskFolder[] }>(response, { folders: [] });
+      setTaskFolders(data.folders);
+      setExpandedTaskFolderIds((current) => {
+        const currentSet = new Set(current);
+        data.folders.forEach((folder) => currentSet.add(folder.id));
+        return Array.from(currentSet).filter((folderId) =>
+          data.folders.some((folder) => folder.id === folderId)
+        );
+      });
+    } catch {
+      setTaskFolders([]);
+    }
+  }, []);
+
+  const refreshLibraryFiles = useCallback(async () => {
+    try {
+      const response = await fetch("/api/files", { cache: "no-store" });
+      if (response.status === 401) {
+        setLibraryFiles([]);
+        return;
+      }
+      if (!response.ok) return;
+      const data = await readJson<{ files: UploadedLibraryFile[] }>(response, { files: [] });
+      setLibraryFiles(data.files);
+    } catch {
+      setLibraryFiles([]);
+    }
+  }, []);
+
   const refreshTemplates = useCallback(async () => {
     try {
       const response = await fetch("/api/templates", { cache: "no-store" });
@@ -1204,14 +1769,24 @@ export function AgentWorkspace() {
     }
   }, []);
 
-  const refreshMarketplaceTemplates = useCallback(async (sort: MarketplaceSort = "featured") => {
+  const refreshMarketplaceTemplates = useCallback(async (sort: MarketplaceSort = "featured", page = 1) => {
     try {
-      const response = await fetch(`/api/marketplace/templates?sort=${sort}`, { cache: "no-store" });
+      const params = new URLSearchParams({
+        sort,
+        page: String(page),
+        limit: String(marketplacePageSize)
+      });
+      const response = await fetch(`/api/marketplace/templates?${params.toString()}`, { cache: "no-store" });
       if (!response.ok) return;
-      const data = await readJson<{ templates: TaskTemplate[] }>(response, { templates: [] });
+      const data = await readJson<{ templates: TaskTemplate[]; total?: number }>(response, { templates: [] });
       setMarketplaceTemplates(data.templates);
+      const total = data.total ?? data.templates.length;
+      setMarketplaceTotal(total);
+      const totalPages = Math.max(1, Math.ceil(total / marketplacePageSize));
+      if (page > totalPages) setMarketplacePage(totalPages);
     } catch {
       setMarketplaceTemplates([]);
+      setMarketplaceTotal(0);
     }
   }, []);
 
@@ -1252,19 +1827,23 @@ export function AgentWorkspace() {
   }, []);
 
   const connectStream = useCallback(
-    (taskId: string) => {
+    (taskId: string, options: { afterEventId?: string; knownEventIds?: string[] } = {}) => {
       closeStream();
-      const source = new EventSource(`/api/tasks/${taskId}/events`);
+      const knownEventIds = new Set(options.knownEventIds ?? []);
+      const params = options.afterEventId ? `?lastEventId=${encodeURIComponent(options.afterEventId)}` : "";
+      const source = new EventSource(`/api/tasks/${taskId}/events${params}`);
       eventSourceRef.current = source;
 
       source.addEventListener("agent_event", (message) => {
         const event = JSON.parse(message.data) as AgentEvent;
+        const isKnownEvent = knownEventIds.has(event.id);
+        knownEventIds.add(event.id);
         setActiveTask((current) => (current?.id === taskId ? mergeTaskEvent(current, event) : current));
         setTasks((current) =>
           current.map((task) => (task.id === taskId ? mergeTaskEvent(task, event) : task))
         );
 
-        if (event.type === "finished" || event.type === "failed") {
+        if (!isKnownEvent && (event.type === "finished" || event.type === "failed")) {
           source.close();
           eventSourceRef.current = null;
           void refreshTasks();
@@ -1288,7 +1867,10 @@ export function AgentWorkspace() {
       setActiveTask(task);
       setActiveNav("agent");
       if (task.status === "running" || task.status === "queued") {
-        connectStream(task.id);
+        connectStream(task.id, {
+          afterEventId: task.events.at(-1)?.id,
+          knownEventIds: task.events.map((event) => event.id)
+        });
       } else {
         closeStream();
       }
@@ -1318,12 +1900,15 @@ export function AgentWorkspace() {
         if (!user) return;
         await resumePendingTasks();
         await refreshTasks();
+        void refreshTaskFolders();
+        void refreshLibraryFiles();
         void refreshAuthStatus();
         void refreshAudit();
         void refreshNotifications();
         void refreshScheduledTasks();
+        void refreshOrganizations();
         void refreshTemplates();
-        void refreshMarketplaceTemplates();
+        void refreshMarketplaceTemplates("featured", 1);
         void refreshSkills();
         void refreshMcpServers();
         void refreshMcpCatalog();
@@ -1383,15 +1968,18 @@ export function AgentWorkspace() {
     refreshLocalBrowserSafety,
     refreshLocalBrowserPairing,
     refreshLocalBrowserStatus,
+    refreshLibraryFiles,
     refreshMarketplaceTemplates,
     refreshMyComputerStatus,
     refreshMcpCatalog,
     refreshMcpServers,
     refreshOcrStatus,
     refreshNotifications,
+    refreshOrganizations,
     refreshScheduledTasks,
     refreshRouterOptimizer,
     refreshSandboxStatus,
+    refreshTaskFolders,
     resumePendingTasks,
     refreshSkills,
     refreshTasks,
@@ -1401,10 +1989,47 @@ export function AgentWorkspace() {
   useEffect(() => {
     if (!authUser) return;
     const timer = window.setTimeout(() => {
-      void refreshMarketplaceTemplates(marketplaceSort);
+      void refreshMarketplaceTemplates(marketplaceSort, marketplacePage);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [authUser, marketplaceSort, refreshMarketplaceTemplates]);
+  }, [authUser, marketplacePage, marketplaceSort, refreshMarketplaceTemplates]);
+
+  useEffect(() => {
+    if (!taskContextMenu) return;
+    function closeMenu() {
+      setTaskContextMenu(null);
+    }
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") setTaskContextMenu(null);
+    }
+    window.addEventListener("click", closeMenu);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("click", closeMenu);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [taskContextMenu]);
+
+  useEffect(() => {
+    if (!authUser) return;
+    const timer = window.setTimeout(() => {
+      void refreshOrganizationWorkspace(activeOrgId);
+      setOrgInviteResult(null);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [activeOrgId, authUser, refreshOrganizationWorkspace]);
+
+  useEffect(() => {
+    if (!authUser || initialInviteTokenRef.current) return;
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get("inviteToken") ?? params.get("token");
+    if (!token) return;
+    initialInviteTokenRef.current = token;
+    const timer = window.setTimeout(() => {
+      void acceptOrganizationInvitationFromToken(token, { fromUrl: true });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [acceptOrganizationInvitationFromToken, authUser]);
 
   useEffect(() => {
     if (!authUser || initialTaskParamRef.current) return;
@@ -1419,8 +2044,11 @@ export function AgentWorkspace() {
 
   useEffect(() => {
     if (!activeTaskId || (activeTaskStatus !== "running" && activeTaskStatus !== "queued")) return;
-    connectStream(activeTaskId);
-  }, [activeTaskId, activeTaskStatus, connectStream]);
+    if (eventSourceRef.current) return;
+    connectStream(activeTaskId, {
+      afterEventId: activeTaskLatestEventId
+    });
+  }, [activeTaskId, activeTaskLatestEventId, activeTaskStatus, connectStream]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -1509,6 +2137,7 @@ export function AgentWorkspace() {
         await resumePendingTasks();
         await refreshTasks();
         await refreshTemplates();
+        await refreshOrganizations();
         await refreshScheduledTasks();
         await refreshSkills();
         await refreshMcpServers();
@@ -1533,6 +2162,10 @@ export function AgentWorkspace() {
     setScheduledTasks([]);
     setScheduledLogs([]);
     setScheduledMailbox("");
+    setOrganizations([]);
+    setActiveOrgId("");
+    setOrgTasks([]);
+    setOrgMembers([]);
     setBillingSummary(null);
     setSandboxStatus(null);
     setSandboxSelfTest(null);
@@ -1541,24 +2174,39 @@ export function AgentWorkspace() {
   async function submitTask(nextPrompt = prompt) {
     const trimmed = buildPromptWithFiles(nextPrompt, uploadedFiles);
     if ((!nextPrompt.trim() && uploadedFiles.length === 0) || isSubmitting) return;
+    const shouldContinueTask = activeNav === "agent" && canContinueTask(activeTask);
+    const continueTaskId = shouldContinueTask ? activeTask?.id : undefined;
 
     setIsSubmitting(true);
     setError(null);
 
     try {
-      const response = await fetch("/api/tasks", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt: trimmed,
-          model: config?.model,
-          fileIds: uploadedFiles.map((file) => file.id)
-        })
-      });
+      if (activeNav === "agent" && activeTask && !shouldContinueTask) {
+        throw new Error("当前任务仍在运行，请等待完成后继续对话，或点击“新任务”开启独立任务。");
+      }
+      if (shouldContinueTask && !continueTaskId) {
+        throw new Error("没有可继续的当前任务，请点击“新任务”开启独立任务。");
+      }
+
+      const response = await fetch(
+        shouldContinueTask ? `/api/tasks/${continueTaskId}/messages` : "/api/tasks",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            prompt: trimmed,
+            model: config?.model,
+            fileIds: uploadedFiles.map((file) => file.id),
+            orgId: activeOrgId || undefined,
+            visibility: activeOrgId ? "org" : "private",
+            executionTarget
+          })
+        }
+      );
 
       if (!response.ok) {
         const data = await readJson<{ error?: string }>(response, {});
-        throw new Error(data.error ?? `创建任务失败 (${response.status})`);
+        throw new Error(data.error ?? `${shouldContinueTask ? "继续对话" : "创建任务"}失败 (${response.status})`);
       }
 
       const data = await readJson<CreateTaskResponse>(response);
@@ -1583,7 +2231,14 @@ export function AgentWorkspace() {
       setActiveTask(task);
       setActiveNav("agent");
       setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
-      connectStream(task.id);
+      connectStream(task.id, {
+        afterEventId: task.events.at(-1)?.id,
+        knownEventIds: task.events.map((event) => event.id)
+      });
+      if (activeOrgId) {
+        void refreshOrganizationWorkspace(activeOrgId);
+        void refreshOrganizations();
+      }
       void refreshRouterOptimizer(trimmed);
     } catch (caught) {
       setError(getErrorMessage(caught, "创建任务失败"));
@@ -1619,6 +2274,7 @@ export function AgentWorkspace() {
       }
 
       setUploadedFiles((current) => [...current, ...analyzedFiles]);
+      await refreshLibraryFiles();
     } catch (caught) {
       setError(getErrorMessage(caught, "文件上传失败"));
     } finally {
@@ -1628,9 +2284,25 @@ export function AgentWorkspace() {
 
   async function cancelActiveTask() {
     if (!activeTask) return;
-    await fetch(`/api/tasks/${activeTask.id}/cancel`, { method: "POST" });
-    closeStream();
-    await refreshTasks();
+    const taskId = activeTask.id;
+    setIsCancellingTask(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/tasks/${taskId}/cancel`, { method: "POST" });
+      const data = await readJson<(Task & { error?: string }) | { error?: string }>(response, {});
+      if (!response.ok) {
+        throw new Error((data as { error?: string }).error ?? `中断任务失败 (${response.status})`);
+      }
+      const task = data as Task;
+      closeStream();
+      setActiveTask((current) => (current?.id === taskId ? task : current));
+      setTasks((current) => current.map((item) => (item.id === taskId ? task : item)));
+      await refreshTasks();
+    } catch (caught) {
+      setError(getErrorMessage(caught, "中断任务失败"));
+    } finally {
+      setIsCancellingTask(false);
+    }
   }
 
   async function retryActiveTask() {
@@ -1661,7 +2333,10 @@ export function AgentWorkspace() {
       setActiveTask(task);
       setActiveNav("agent");
       setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
-      connectStream(task.id);
+      connectStream(task.id, {
+        afterEventId: task.events.at(-1)?.id,
+        knownEventIds: task.events.map((event) => event.id)
+      });
     } catch (caught) {
       setError(getErrorMessage(caught, "重跑任务失败"));
     } finally {
@@ -1824,6 +2499,125 @@ export function AgentWorkspace() {
     }
   }
 
+  async function createOrganizationFromDraft() {
+    const name = orgDraft.name.trim();
+    if (!name || isCreatingOrg) return;
+    setIsCreatingOrg(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/orgs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name,
+          taskQuota: Number(orgDraft.taskQuota)
+        })
+      });
+      const data = await readJson<{ organization?: Organization; error?: string }>(response, {});
+      if (!response.ok || !data.organization) {
+        throw new Error(data.error ?? "创建组织失败");
+      }
+      setOrgDraft((current) => ({ ...current, name: "" }));
+      setOrgAcceptNotice(null);
+      setActiveOrgId(data.organization.id);
+      await refreshOrganizations();
+      await refreshOrganizationWorkspace(data.organization.id);
+    } catch (caught) {
+      setError(getErrorMessage(caught, "创建组织失败"));
+    } finally {
+      setIsCreatingOrg(false);
+    }
+  }
+
+  async function inviteOrganizationMember() {
+    if (!activeOrgId || !orgDraft.invitePhone.trim() || isInvitingOrgMember) return;
+    setIsInvitingOrgMember(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/orgs/${activeOrgId}/invite`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          phone: orgDraft.invitePhone,
+          role: orgDraft.inviteRole
+        })
+      });
+      const data = await readJson<{
+        invitation?: { token: string; role: Exclude<OrganizationRole, "owner"> };
+        acceptUrl?: string;
+        error?: string;
+      }>(response, {});
+      if (!response.ok || !data.invitation) {
+        throw new Error(data.error ?? "邀请成员失败");
+      }
+      const acceptUrl = data.acceptUrl
+        ? new URL(data.acceptUrl, window.location.origin).toString()
+        : "";
+      setOrgInviteResult({
+        phone: orgDraft.invitePhone.trim(),
+        role: data.invitation.role,
+        acceptUrl,
+        token: data.invitation.token
+      });
+      setOrgAcceptNotice(null);
+      setOrgDraft((current) => ({ ...current, invitePhone: "" }));
+      await refreshOrganizationWorkspace(activeOrgId);
+    } catch (caught) {
+      setError(getErrorMessage(caught, "邀请成员失败"));
+    } finally {
+      setIsInvitingOrgMember(false);
+    }
+  }
+
+  async function updateOrganizationMember(member: OrganizationMembership, role: Exclude<OrganizationRole, "owner">) {
+    if (!activeOrgId || member.role === role || managingOrgMemberId) return;
+    setManagingOrgMemberId(member.userId);
+    setError(null);
+    try {
+      const response = await fetch(`/api/orgs/${activeOrgId}/members`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: member.userId, role })
+      });
+      const data = await readJson<{ members?: OrganizationMembership[]; error?: string }>(response, {});
+      if (!response.ok || !data.members) {
+        throw new Error(data.error ?? "修改成员角色失败");
+      }
+      setOrgMembers(data.members);
+      await refreshOrganizations();
+    } catch (caught) {
+      setError(getErrorMessage(caught, "修改成员角色失败"));
+    } finally {
+      setManagingOrgMemberId(null);
+    }
+  }
+
+  async function removeOrganizationMemberFromOrg(member: OrganizationMembership) {
+    if (!activeOrgId || managingOrgMemberId) return;
+    const label = member.user?.displayName ?? member.user?.phone ?? member.user?.email ?? member.userId;
+    if (!window.confirm(`确定从当前组织移除 ${label} 吗？`)) return;
+    setManagingOrgMemberId(member.userId);
+    setError(null);
+    try {
+      const response = await fetch(`/api/orgs/${activeOrgId}/members`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: member.userId })
+      });
+      const data = await readJson<{ members?: OrganizationMembership[]; error?: string }>(response, {});
+      if (!response.ok || !data.members) {
+        throw new Error(data.error ?? "移除成员失败");
+      }
+      setOrgMembers(data.members);
+      await refreshOrganizations();
+      await refreshOrganizationWorkspace(activeOrgId);
+    } catch (caught) {
+      setError(getErrorMessage(caught, "移除成员失败"));
+    } finally {
+      setManagingOrgMemberId(null);
+    }
+  }
+
   async function scheduleTaskFromHistory(task: Task) {
     setIsCreatingScheduledTask(true);
     try {
@@ -1831,7 +2625,7 @@ export function AgentWorkspace() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          name: task.prompt.slice(0, 48),
+          name: getUserVisiblePrompt(task.prompt).slice(0, 48),
           prompt: task.prompt,
           model: task.model,
           kind: "cron",
@@ -1902,7 +2696,7 @@ export function AgentWorkspace() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        name: activeTask.prompt.slice(0, 36),
+        name: getUserVisiblePrompt(activeTask.prompt).slice(0, 36),
         description: "从历史任务保存",
         promptTemplate: activeTask.prompt,
         defaultModel: activeTask.model,
@@ -1921,6 +2715,161 @@ export function AgentWorkspace() {
     }
   }
 
+  async function deleteTaskFromLibrary(taskId: string) {
+    const task = tasks.find((item) => item.id === taskId);
+    const title = task ? getTaskDisplayTitle(task) : "这个任务";
+    if (!window.confirm(`确认删除「${title}」？任务交付物也会从本地库中移除。`)) return;
+    const response = await fetch(`/api/tasks/${taskId}`, { method: "DELETE" });
+    if (!response.ok) {
+      const data = await readJson<{ error?: string }>(response, {});
+      setError(data.error ?? "删除任务失败");
+      return;
+    }
+    setTasks((current) => current.filter((item) => item.id !== taskId));
+    setActiveTask((current) => (current?.id === taskId ? null : current));
+    setSelectedTaskIds((current) => current.filter((id) => id !== taskId));
+  }
+
+  async function renameRecentTask(taskId: string) {
+    const task = tasks.find((item) => item.id === taskId);
+    if (!task) return;
+    const nextTitle = window.prompt("修改任务标题", getTaskDisplayTitle(task));
+    if (nextTitle === null) return;
+    const response = await fetch(`/api/tasks/${taskId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: nextTitle })
+    });
+    if (!response.ok) {
+      const data = await readJson<{ error?: string }>(response, {});
+      setError(data.error ?? "修改任务标题失败");
+      return;
+    }
+    const updated = await readJson<Task>(response);
+    setTasks((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+    setActiveTask((current) => (current?.id === updated.id ? updated : current));
+  }
+
+  async function moveRecentTaskToFolder(taskId: string, folderId: string | null) {
+    const response = await fetch(`/api/tasks/${taskId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ folderId })
+    });
+    if (!response.ok) {
+      const data = await readJson<{ error?: string }>(response, {});
+      setError(data.error ?? "移动任务失败");
+      return;
+    }
+    const updated = await readJson<Task>(response);
+    setTasks((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+    setActiveTask((current) => (current?.id === updated.id ? updated : current));
+    if (folderId) {
+      setExpandedTaskFolderIds((current) =>
+        current.includes(folderId) ? current : [...current, folderId]
+      );
+    }
+  }
+
+  async function createRecentTaskFolder() {
+    const name = window.prompt("新建文件夹名称", "新文件夹");
+    if (!name) return;
+    const response = await fetch("/api/task-folders", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name })
+    });
+    if (!response.ok) {
+      const data = await readJson<{ error?: string }>(response, {});
+      setError(data.error ?? "创建文件夹失败");
+      return;
+    }
+    const folder = await readJson<TaskFolder>(response);
+    setTaskFolders((current) => [...current, folder]);
+    setExpandedTaskFolderIds((current) => [...new Set([...current, folder.id])]);
+  }
+
+  async function renameRecentTaskFolder(folderId: string) {
+    const folder = taskFolders.find((item) => item.id === folderId);
+    if (!folder) return;
+    const name = window.prompt("修改文件夹名称", folder.name);
+    if (!name) return;
+    const response = await fetch(`/api/task-folders/${folderId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name })
+    });
+    if (!response.ok) {
+      const data = await readJson<{ error?: string }>(response, {});
+      setError(data.error ?? "修改文件夹失败");
+      return;
+    }
+    const updated = await readJson<TaskFolder>(response);
+    setTaskFolders((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+  }
+
+  async function deleteRecentTaskFolder(folderId: string) {
+    const folder = taskFolders.find((item) => item.id === folderId);
+    if (!folder) return;
+    if (!window.confirm(`确认删除文件夹「${folder.name}」？文件夹内任务会移回未归档。`)) return;
+    const response = await fetch(`/api/task-folders/${folderId}`, { method: "DELETE" });
+    if (!response.ok) {
+      const data = await readJson<{ error?: string }>(response, {});
+      setError(data.error ?? "删除文件夹失败");
+      return;
+    }
+    setTaskFolders((current) => current.filter((item) => item.id !== folderId));
+    setTasks((current) =>
+      current.map((task) => (task.folderId === folderId ? { ...task, folderId: undefined } : task))
+    );
+    setExpandedTaskFolderIds((current) => current.filter((id) => id !== folderId));
+  }
+
+  async function deleteSelectedRecentTasks() {
+    const taskIds = selectedTaskIds.filter((taskId) => tasks.some((task) => task.id === taskId));
+    if (taskIds.length === 0) return;
+    if (!window.confirm(`确认删除选中的 ${taskIds.length} 个任务？运行中的任务会自动跳过。`)) return;
+    const response = await fetch("/api/tasks/batch-delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ taskIds })
+    });
+    const data = await readJson<{ deleted?: string[]; failed?: Array<{ taskId: string; error: string }>; error?: string }>(
+      response,
+      {}
+    );
+    if (!response.ok) {
+      setError(data.error ?? "批量删除失败");
+      return;
+    }
+    const deleted = new Set(data.deleted ?? []);
+    setTasks((current) => current.filter((task) => !deleted.has(task.id)));
+    setActiveTask((current) => (current && deleted.has(current.id) ? null : current));
+    setSelectedTaskIds([]);
+    setBulkTaskMode(false);
+    if (data.failed?.length) {
+      setError(`已删除 ${deleted.size} 个任务，${data.failed.length} 个任务未删除。`);
+    }
+  }
+
+  async function deleteUploadedFileFromLibrary(fileId: string) {
+    const file = libraryFiles.find((item) => item.id === fileId);
+    if (!window.confirm(`确认删除「${file?.name ?? "这个文件"}」？`)) return;
+    const response = await fetch(`/api/files/${fileId}`, { method: "DELETE" });
+    if (!response.ok) {
+      const data = await readJson<{ error?: string }>(response, {});
+      setError(data.error ?? "删除上传文件失败");
+      return;
+    }
+    setLibraryFiles((current) => current.filter((item) => item.id !== fileId));
+    setUploadedFiles((current) => current.filter((item) => item.id !== fileId));
+  }
+
+  function changeMarketplaceSort(sort: MarketplaceSort) {
+    setMarketplaceSort(sort);
+    setMarketplacePage(1);
+  }
+
   async function publishTemplateToMarketplace(templateId: string) {
     const response = await fetch(`/api/templates/${templateId}/publish`, { method: "POST" });
     if (!response.ok) {
@@ -1930,7 +2879,18 @@ export function AgentWorkspace() {
       return;
     }
     await refreshTemplates();
-    await refreshMarketplaceTemplates(marketplaceSort);
+    await refreshMarketplaceTemplates(marketplaceSort, marketplacePage);
+  }
+
+  async function unpublishTemplateFromMarketplace(templateId: string) {
+    const response = await fetch(`/api/templates/${templateId}/publish`, { method: "DELETE" });
+    if (!response.ok) {
+      const data = await readJson<{ error?: string }>(response, {});
+      setError(data.error ?? "模板下架失败");
+      return;
+    }
+    await refreshTemplates();
+    await refreshMarketplaceTemplates(marketplaceSort, marketplacePage);
   }
 
   async function forkMarketplaceTemplate(templateId: string) {
@@ -1943,7 +2903,7 @@ export function AgentWorkspace() {
         return;
       }
       await refreshTemplates();
-      await refreshMarketplaceTemplates(marketplaceSort);
+      await refreshMarketplaceTemplates(marketplaceSort, marketplacePage);
     } finally {
       setIsForkingTemplate(false);
     }
@@ -1956,7 +2916,7 @@ export function AgentWorkspace() {
       body: JSON.stringify({ rating })
     });
     if (response.ok) {
-      await refreshMarketplaceTemplates(marketplaceSort);
+      await refreshMarketplaceTemplates(marketplaceSort, marketplacePage);
     }
   }
 
@@ -2151,32 +3111,342 @@ export function AgentWorkspace() {
     return `panel-section ${activeNav === view ? "is-focused" : ""}`;
   }
 
-  function renderTaskLibrary(limit = 12) {
+  function openTaskContextMenu(event: MouseEvent, taskId: string) {
+    event.preventDefault();
+    event.stopPropagation();
+    setTaskContextMenu({ taskId, x: event.clientX, y: event.clientY });
+  }
+
+  function toggleTaskSelection(taskId: string) {
+    setSelectedTaskIds((current) =>
+      current.includes(taskId) ? current.filter((id) => id !== taskId) : [...current, taskId]
+    );
+  }
+
+  function toggleTaskFolder(folderId: string) {
+    setExpandedTaskFolderIds((current) =>
+      current.includes(folderId) ? current.filter((id) => id !== folderId) : [...current, folderId]
+    );
+  }
+
+  function handleTaskDragStart(event: DragEvent, taskId: string) {
+    event.dataTransfer.setData("text/plain", taskId);
+    event.dataTransfer.effectAllowed = "move";
+  }
+
+  function handleTaskFolderDrop(event: DragEvent, folderId: string | null) {
+    event.preventDefault();
+    const taskId = event.dataTransfer.getData("text/plain");
+    if (!taskId) return;
+    void moveRecentTaskToFolder(taskId, folderId);
+  }
+
+  function renderRecentTaskItem(task: Task) {
+    const selected = selectedTaskIds.includes(task.id);
+    return (
+      <div
+        key={task.id}
+        className={`recent-task-row ${activeTask?.id === task.id ? "is-active" : ""} ${
+          selected ? "is-selected" : ""
+        }`}
+        draggable
+        onDragStart={(event) => handleTaskDragStart(event, task.id)}
+        onContextMenu={(event) => openTaskContextMenu(event, task.id)}
+      >
+        {bulkTaskMode ? (
+          <input
+            type="checkbox"
+            aria-label={`选择任务 ${getTaskDisplayTitle(task)}`}
+            checked={selected}
+            onChange={() => toggleTaskSelection(task.id)}
+            onClick={(event) => event.stopPropagation()}
+          />
+        ) : null}
+        <button
+          type="button"
+          className="task-list-button"
+          onClick={() => {
+            if (bulkTaskMode) {
+              toggleTaskSelection(task.id);
+              return;
+            }
+            setActiveNav("agent");
+            void selectTask(task.id);
+          }}
+        >
+          <span className={`status-dot ${task.status}`} />
+          <span>
+            <span className="task-title">{getTaskDisplayTitle(task)}</span>
+            <span className="task-meta">
+              {statusText[task.status]} · {formatDate(task.createdAt)}
+            </span>
+          </span>
+        </button>
+        <button
+          type="button"
+          className="icon-button recent-task-menu-button"
+          aria-label={`打开任务菜单 ${getTaskDisplayTitle(task)}`}
+          onClick={(event) => openTaskContextMenu(event, task.id)}
+        >
+          <MoreHorizontal size={13} />
+        </button>
+      </div>
+    );
+  }
+
+  function renderRecentTaskContextMenu() {
+    if (!taskContextMenu) return null;
+    const task = tasks.find((item) => item.id === taskContextMenu.taskId);
+    if (!task) return null;
+    const canDelete = task.status !== "running" && task.status !== "queued";
+
+    return (
+      <div
+        className="task-context-menu"
+        style={{ left: taskContextMenu.x, top: taskContextMenu.y }}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <button
+          type="button"
+          onClick={() => {
+            setTaskContextMenu(null);
+            void renameRecentTask(task.id);
+          }}
+        >
+          <Pencil size={13} />
+          修改标题
+        </button>
+        <button
+          type="button"
+          disabled={!canDelete}
+          onClick={() => {
+            setTaskContextMenu(null);
+            void deleteTaskFromLibrary(task.id);
+          }}
+        >
+          <Trash2 size={13} />
+          删除任务
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setBulkTaskMode(true);
+            setSelectedTaskIds((current) => (current.includes(task.id) ? current : [...current, task.id]));
+            setTaskContextMenu(null);
+          }}
+        >
+          <CheckCircle2 size={13} />
+          批量删除任务
+        </button>
+        <div className="task-context-divider" />
+        <span className="task-context-label">移动到</span>
+        {task.folderId ? (
+          <button
+            type="button"
+            onClick={() => {
+              setTaskContextMenu(null);
+              void moveRecentTaskToFolder(task.id, null);
+            }}
+          >
+            <Folder size={13} />
+            未归档
+          </button>
+        ) : null}
+        {taskFolders.length ? (
+          taskFolders.map((folder) => (
+            <button
+              key={folder.id}
+              type="button"
+              disabled={task.folderId === folder.id}
+              onClick={() => {
+                setTaskContextMenu(null);
+                void moveRecentTaskToFolder(task.id, folder.id);
+              }}
+            >
+              <Folder size={13} />
+              {folder.name}
+            </button>
+          ))
+        ) : (
+          <span className="task-context-empty">还没有文件夹</span>
+        )}
+      </div>
+    );
+  }
+
+  function renderRecentTaskFolders() {
+    const visibleTaskIds = new Set(visibleTasks.map((task) => task.id));
+    const visibleFolders = taskFolders
+      .map((folder) => ({
+        folder,
+        tasks: tasks.filter((task) => task.folderId === folder.id && visibleTaskIds.has(task.id))
+      }))
+      .filter((item) => item.tasks.length > 0 || !taskQuery.trim());
+    const unfiledTasks = visibleTasks.filter(
+      (task) => !task.folderId || !taskFolders.some((folder) => folder.id === task.folderId)
+    );
+
+    if (visibleTasks.length === 0 && taskFolders.length === 0) {
+      return <p className="muted-note">还没有任务。</p>;
+    }
+
+    return (
+      <div className="recent-task-manager">
+        {bulkTaskMode ? (
+          <div className="recent-bulk-bar">
+            <span>已选 {selectedTaskIds.length}</span>
+            <button
+              type="button"
+              className="ghost-button compact-button"
+              onClick={() => {
+                setBulkTaskMode(false);
+                setSelectedTaskIds([]);
+              }}
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              className="danger-button compact-button"
+              disabled={selectedTaskIds.length === 0}
+              onClick={() => void deleteSelectedRecentTasks()}
+            >
+              删除
+            </button>
+          </div>
+        ) : null}
+
+        {visibleFolders.map(({ folder, tasks: folderTasks }) => {
+          const expanded = expandedTaskFolderIds.includes(folder.id);
+          return (
+            <div
+              key={folder.id}
+              className="recent-folder"
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={(event) => handleTaskFolderDrop(event, folder.id)}
+            >
+              <div className="recent-folder-head">
+                <button type="button" className="recent-folder-button" onClick={() => toggleTaskFolder(folder.id)}>
+                  <Folder size={14} />
+                  <span>{folder.name}</span>
+                  <em>{folderTasks.length}</em>
+                </button>
+                <button
+                  type="button"
+                  className="icon-button recent-task-menu-button"
+                  aria-label={`重命名文件夹 ${folder.name}`}
+                  onClick={() => void renameRecentTaskFolder(folder.id)}
+                >
+                  <Pencil size={12} />
+                </button>
+                <button
+                  type="button"
+                  className="icon-button recent-task-menu-button"
+                  aria-label={`删除文件夹 ${folder.name}`}
+                  onClick={() => void deleteRecentTaskFolder(folder.id)}
+                >
+                  <Trash2 size={12} />
+                </button>
+              </div>
+              {expanded ? (
+                <div className="recent-folder-body">
+                  {folderTasks.length ? folderTasks.map(renderRecentTaskItem) : (
+                    <p className="muted-note">拖拽任务到这里。</p>
+                  )}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+
+        <div
+          className="recent-unfiled-drop"
+          onDragOver={(event) => event.preventDefault()}
+          onDrop={(event) => handleTaskFolderDrop(event, null)}
+        >
+          {taskFolders.length ? <span className="recent-group-label">未归档</span> : null}
+          {unfiledTasks.length ? unfiledTasks.slice(0, 50).map(renderRecentTaskItem) : (
+            <p className="muted-note">没有未归档任务。</p>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  function renderTaskLibrary() {
     if (tasks.length === 0) {
       return <p className="muted-note">还没有历史任务，先从工作台创建一个新任务。</p>;
     }
 
     return (
-      <div className="task-library-list">
-        {tasks.slice(0, limit).map((task) => (
-          <button
-            key={task.id}
-            type="button"
-            className={`task-library-item ${activeTask?.id === task.id ? "is-active" : ""}`}
-            onClick={() => {
-              setActiveNav("agent");
-              void selectTask(task.id);
-            }}
-          >
-            <span className={`status-dot ${task.status}`} />
-            <span>
-              <strong>{task.prompt}</strong>
-              <small>
-                {statusText[task.status]} · {task.model} · {formatDate(task.createdAt)}
-              </small>
-            </span>
-          </button>
+      <div className="task-library-list library-scroll-list">
+        {tasks.map((task) => (
+          <div key={task.id} className={`task-library-item ${activeTask?.id === task.id ? "is-active" : ""}`}>
+            <button
+              type="button"
+              className="task-library-main"
+              onClick={() => {
+                setActiveNav("agent");
+                void selectTask(task.id);
+              }}
+            >
+              <span className={`status-dot ${task.status}`} />
+              <span>
+                <strong>{getTaskDisplayTitle(task)}</strong>
+                <small>
+                  {statusText[task.status]} · {task.model} · {formatDate(task.createdAt)}
+                </small>
+              </span>
+            </button>
+            <button
+              type="button"
+              className="icon-button library-delete-button"
+              aria-label={`删除任务 ${getTaskDisplayTitle(task)}`}
+              disabled={task.status === "running" || task.status === "queued"}
+              title={task.status === "running" || task.status === "queued" ? "运行中的任务需要先停止" : "删除任务"}
+              onClick={() => void deleteTaskFromLibrary(task.id)}
+            >
+              <Trash2 size={14} />
+            </button>
+          </div>
         ))}
+      </div>
+    );
+  }
+
+  function renderUploadedFileLibrary() {
+    if (libraryFiles.length === 0) {
+      return <p className="muted-note">还没有上传文件。桌面端同步或聊天框上传的文件会出现在这里。</p>;
+    }
+
+    return (
+      <div className="file-library-list library-scroll-list">
+        {libraryFiles.map((file) => {
+          const expiresAt = file.expiresAt ? formatDate(file.expiresAt) : "未设置 TTL";
+          const source = file.metadata.source === "desktop-sync" ? "My Computer" : "Web Upload";
+          return (
+            <div key={file.id} className="file-library-item">
+              <span className="file-library-icon">
+                <FileText size={15} />
+              </span>
+              <span className="file-library-content">
+                <strong>{file.name}</strong>
+                <small>
+                  {source} · {formatSize(file.size)} · {expiresAt}
+                </small>
+                <em>{file.summary}</em>
+              </span>
+              <button
+                type="button"
+                className="icon-button library-delete-button"
+                aria-label={`删除上传文件 ${file.name}`}
+                onClick={() => void deleteUploadedFileFromLibrary(file.id)}
+              >
+                <Trash2 size={14} />
+              </button>
+            </div>
+          );
+        })}
       </div>
     );
   }
@@ -2188,11 +3458,13 @@ export function AgentWorkspace() {
           templates={visibleTemplates}
           allTags={templateTags}
           activeTag={templateTagFilter}
+          currentUserId={authUser?.id}
           onTagChange={setTemplateTagFilter}
           canSave={activeTask?.status === "completed"}
           onSave={() => void saveActiveTaskAsTemplate()}
           onUse={useTemplate}
           onPublish={(templateId) => void publishTemplateToMarketplace(templateId)}
+          onUnpublish={(templateId) => void unpublishTemplateFromMarketplace(templateId)}
           onDelete={(templateId) => void deleteTemplate(templateId)}
         />
         <TemplateVariablePanel
@@ -2218,13 +3490,254 @@ export function AgentWorkspace() {
     return (
       <MarketplaceTemplateList
         templates={marketplaceTemplates}
+        total={marketplaceTotal}
+        page={marketplacePage}
+        pageSize={marketplacePageSize}
         sort={marketplaceSort}
         isForking={isForkingTemplate}
-        onSortChange={setMarketplaceSort}
+        currentUserId={authUser?.id}
+        onPageChange={setMarketplacePage}
+        onSortChange={changeMarketplaceSort}
         onUse={useTemplate}
         onFork={(templateId) => void forkMarketplaceTemplate(templateId)}
+        onUnpublish={(templateId) => void unpublishTemplateFromMarketplace(templateId)}
         onRate={(templateId, rating) => void rateMarketplaceTemplate(templateId, rating)}
       />
+    );
+  }
+
+  function renderOrganizationPanel() {
+    const manager = activeOrganization?.role === "owner" || activeOrganization?.role === "admin";
+    return (
+      <div className="org-panel">
+        <div className="org-toolbar">
+          <label className="settings-field">
+            <span>当前空间</span>
+            <select
+              value={activeOrgId}
+              onChange={(event) => setActiveOrgId(event.target.value)}
+            >
+              <option value="">个人私有</option>
+              {organizations.map((organization) => (
+                <option key={organization.id} value={organization.id}>
+                  {organization.name} · {organizationRoleText[organization.role ?? "member"]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="settings-field">
+            <span>新组织</span>
+            <input
+              value={orgDraft.name}
+              onChange={(event) => setOrgDraft((current) => ({ ...current, name: event.target.value }))}
+              placeholder="例如：增长团队"
+            />
+          </label>
+          <label className="settings-field">
+            <span>任务配额</span>
+            <input
+              inputMode="numeric"
+              value={orgDraft.taskQuota}
+              onChange={(event) => setOrgDraft((current) => ({ ...current, taskQuota: event.target.value }))}
+            />
+          </label>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={!orgDraft.name.trim() || isCreatingOrg}
+            onClick={() => void createOrganizationFromDraft()}
+          >
+            {isCreatingOrg ? <Loader2 size={15} className="spin" /> : <Plus size={15} />}
+            创建组织
+          </button>
+        </div>
+
+        <div className="org-accept-row">
+          <label className="settings-field">
+            <span>接受邀请链接或 Token</span>
+            <input
+              value={orgDraft.acceptToken}
+              onChange={(event) => {
+                setOrgAcceptNotice(null);
+                setOrgDraft((current) => ({ ...current, acceptToken: event.target.value }));
+              }}
+              placeholder="粘贴 ?inviteToken=... 链接或 token"
+            />
+          </label>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={!orgDraft.acceptToken.trim() || isAcceptingOrgInvite}
+            onClick={() => void acceptOrganizationInvitationFromToken(orgDraft.acceptToken)}
+          >
+            {isAcceptingOrgInvite ? <Loader2 size={15} className="spin" /> : <CheckCircle2 size={15} />}
+            接受邀请
+          </button>
+        </div>
+
+        {orgAcceptNotice ? <p className="muted-note">{orgAcceptNotice}</p> : null}
+
+        {activeOrganization ? (
+          <>
+            <div className="library-stats org-stats">
+              <div className="stat-box">
+                <div className="stat-value">{organizationRoleText[activeOrganization.role ?? "member"]}</div>
+                <div className="stat-label">我的角色</div>
+              </div>
+              <div className="stat-box">
+                <div className="stat-value">{activeOrganization.taskCount}/{activeOrganization.taskQuota}</div>
+                <div className="stat-label">任务配额</div>
+              </div>
+              <div className="stat-box">
+                <div className="stat-value">{orgMembers.length}</div>
+                <div className="stat-label">成员</div>
+              </div>
+              <div className="stat-box">
+                <div className="stat-value">{orgTasks.length}</div>
+                <div className="stat-label">共享任务</div>
+              </div>
+            </div>
+
+            {manager ? (
+              <div className="org-toolbar">
+                <label className="settings-field">
+                  <span>邀请手机号</span>
+                  <input
+                    inputMode="tel"
+                    value={orgDraft.invitePhone}
+                    onChange={(event) => {
+                      setOrgInviteResult(null);
+                      setOrgDraft((current) => ({ ...current, invitePhone: event.target.value }));
+                    }}
+                    placeholder="请输入 11 位手机号"
+                  />
+                </label>
+                <label className="settings-field">
+                  <span>角色</span>
+                  <select
+                    value={orgDraft.inviteRole}
+                    onChange={(event) =>
+                      setOrgDraft((current) => ({
+                        ...current,
+                        inviteRole: event.target.value as Exclude<OrganizationRole, "owner">
+                      }))
+                    }
+                  >
+                    <option value="admin">Admin</option>
+                    <option value="member">Member</option>
+                    <option value="viewer">Viewer</option>
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={!orgDraft.invitePhone.trim() || isInvitingOrgMember}
+                  onClick={() => void inviteOrganizationMember()}
+                >
+                  {isInvitingOrgMember ? <Loader2 size={15} className="spin" /> : <Plus size={15} />}
+                  邀请
+                </button>
+              </div>
+            ) : null}
+
+            {orgInviteResult ? (
+              <div className="org-invite-result">
+                <div>
+                  <strong>{orgInviteResult.phone}</strong>
+                  <span>
+                    {organizationRoleText[orgInviteResult.role]} 邀请已生成，复制接受链接给对方登录后打开。
+                  </span>
+                </div>
+                <code>{orgInviteResult.acceptUrl || orgInviteResult.token}</code>
+              </div>
+            ) : null}
+
+            <div className="view-grid two-columns">
+              <div className="metric-list compact">
+                {orgMembers.length ? (
+                  orgMembers.slice(0, 8).map((member) => {
+                    const canManageMember =
+                      manager &&
+                      member.role !== "owner" &&
+                      member.userId !== authUser?.id &&
+                      (activeOrganization?.role === "owner" || member.role !== "admin");
+                    const isManagingMember = managingOrgMemberId === member.userId;
+                    return (
+                      <div key={`${member.orgId}-${member.userId}`} className="metric-item org-member-row">
+                        <div>
+                          <span className="metric-name">{member.user?.displayName ?? member.userId}</span>
+                          <span className="metric-meta">{member.user?.phone ?? member.user?.email ?? member.userId}</span>
+                        </div>
+                        <div className="org-member-actions">
+                          {canManageMember ? (
+                            <select
+                              className="member-role-select"
+                              aria-label={`修改 ${member.user?.displayName ?? member.userId} 的组织角色`}
+                              value={member.role}
+                              disabled={Boolean(managingOrgMemberId)}
+                              onChange={(event) =>
+                                void updateOrganizationMember(
+                                  member,
+                                  event.target.value as Exclude<OrganizationRole, "owner">
+                                )
+                              }
+                            >
+                              <option value="admin">Admin</option>
+                              <option value="member">Member</option>
+                              <option value="viewer">Viewer</option>
+                            </select>
+                          ) : (
+                            <strong>{organizationRoleText[member.role]}</strong>
+                          )}
+                          {canManageMember ? (
+                            <button
+                              type="button"
+                              className="icon-button org-remove-button"
+                              aria-label={`移除 ${member.user?.displayName ?? member.userId}`}
+                              title="移除成员"
+                              disabled={Boolean(managingOrgMemberId)}
+                              onClick={() => void removeOrganizationMemberFromOrg(member)}
+                            >
+                              {isManagingMember ? <Loader2 size={15} className="spin" /> : <Trash2 size={15} />}
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <p className="muted-note">暂无成员数据。</p>
+                )}
+              </div>
+              <div className="task-library-list">
+                {orgTasks.length ? (
+                  orgTasks.slice(0, 8).map((task) => (
+                    <button
+                      key={task.id}
+                      type="button"
+                      className={`task-library-item ${activeTask?.id === task.id ? "is-active" : ""}`}
+                      onClick={() => {
+                        setActiveNav("agent");
+                        void selectTask(task.id);
+                      }}
+                    >
+                      <span className={`status-dot ${task.status}`} />
+                      <span>
+                        <strong>{getUserVisiblePrompt(task.prompt)}</strong>
+                        <small>{statusText[task.status]} · {formatDate(task.createdAt)}</small>
+                      </span>
+                    </button>
+                  ))
+                ) : (
+                  <p className="muted-note">当前组织还没有共享任务。</p>
+                )}
+              </div>
+            </div>
+          </>
+        ) : (
+          <p className="muted-note">选择组织后，新任务会以组织可见性创建；选择“个人私有”则只保存到当前账号。</p>
+        )}
+      </div>
     );
   }
 
@@ -2487,13 +4000,122 @@ export function AgentWorkspace() {
   }
 
   function renderLibraryView() {
+    const marketplaceCount = marketplaceTotal || marketplaceTemplates.length;
+    const libraryStatusCards = [
+      {
+        label: "历史任务",
+        value: String(tasks.length),
+        meta: `${completedTaskCount} 已完成 · ${runningTaskCount} 运行中`,
+        icon: <Archive size={15} />
+      },
+      {
+        label: "上传文件",
+        value: String(libraryFiles.length),
+        meta: libraryFiles[0]?.name ?? "暂无文件",
+        icon: <FileText size={15} />
+      },
+      {
+        label: "模板",
+        value: String(templates.length),
+        meta: `${templates.filter((template) => template.isPublic).length} 公共`,
+        icon: <BookmarkPlus size={15} />
+      },
+      {
+        label: "模板市场",
+        value: String(marketplaceCount),
+        meta: `${marketplaceTemplates.length} 当前页`,
+        icon: <Sparkles size={15} />
+      },
+      {
+        label: "Billing",
+        value: billingSummary ? formatUsd(billingSummary.estimatedCostUsd) : "$0.0000",
+        meta: billingSummary ? `${billingSummary.totalTokens.toLocaleString()} tokens` : "等待统计",
+        icon: <FileSpreadsheet size={15} />
+      }
+    ];
+    const librarySections: Array<{
+      id: LibrarySectionId;
+      label: string;
+      description: string;
+      keywords: string[];
+      status: string;
+      icon: ReactNode;
+      render: () => ReactNode;
+    }> = [
+      {
+        id: "tasks",
+        label: "历史任务",
+        description: "查看、搜索和删除历史任务，快速回到任务执行详情。",
+        keywords: ["task", "任务", "历史", "执行", "删除", "agent"],
+        status: String(tasks.length),
+        icon: <Archive size={15} />,
+        render: renderTaskLibrary
+      },
+      {
+        id: "files",
+        label: "上传文件",
+        description: "管理网页上传和桌面端同步的文件，查看摘要和清理无用文件。",
+        keywords: ["file", "文件", "上传", "pdf", "excel", "desktop", "my computer"],
+        status: String(libraryFiles.length),
+        icon: <FileText size={15} />,
+        render: renderUploadedFileLibrary
+      },
+      {
+        id: "templates",
+        label: "模板",
+        description: "保存当前任务为模板，复用 Prompt，并发布或下架自己的公共模板。",
+        keywords: ["template", "模板", "prompt", "复用", "发布", "下架"],
+        status: String(templates.length),
+        icon: <BookmarkPlus size={15} />,
+        render: renderTemplatePanel
+      },
+      {
+        id: "marketplace",
+        label: "模板市场",
+        description: "浏览公共模板、Fork 到个人库、评分并通过页码跳转。",
+        keywords: ["marketplace", "市场", "公共", "fork", "评分", "模板"],
+        status: String(marketplaceCount),
+        icon: <Sparkles size={15} />,
+        render: renderMarketplacePanel
+      },
+      {
+        id: "org",
+        label: "组织协作",
+        description: "管理组织空间、成员、邀请链接和共享任务入口。",
+        keywords: ["organization", "组织", "协作", "成员", "邀请", "权限"],
+        status: activeOrganization ? organizationRoleText[activeOrganization.role ?? "member"] : "private",
+        icon: <ShieldCheck size={15} />,
+        render: renderOrganizationPanel
+      },
+      {
+        id: "billing",
+        label: "Billing",
+        description: "查看本月模型成本、调用量、tokens 和任务级消耗。",
+        keywords: ["billing", "cost", "费用", "成本", "tokens", "调用"],
+        status: billingSummary ? formatUsd(billingSummary.estimatedCostUsd) : "$0.0000",
+        icon: <FileSpreadsheet size={15} />,
+        render: () => <BillingPanel summary={billingSummary} />
+      }
+    ];
+    const normalizedLibrarySearch = librarySearch.trim().toLowerCase();
+    const activeSection =
+      librarySections.find((section) => section.id === activeLibrarySection) ?? librarySections[0];
+    const visibleLibrarySections = normalizedLibrarySearch
+      ? librarySections.filter((section) =>
+          [section.label, section.description, section.status, ...section.keywords]
+            .join(" ")
+            .toLowerCase()
+            .includes(normalizedLibrarySearch)
+        )
+      : [activeSection];
+
     return (
       <div className="view-page">
         <div className="view-header">
           <div>
             <div className="empty-kicker">Library</div>
             <h1>任务资产库</h1>
-            <p>集中管理历史任务、可复用模板、交付物线索和本月模型成本。</p>
+            <p>按资产类型管理历史任务、上传文件、模板、市场、组织协作和模型成本。</p>
           </div>
           <button type="button" className="secondary-button" onClick={() => navigateTo("workspace")}>
             <Plus size={15} />
@@ -2501,160 +4123,203 @@ export function AgentWorkspace() {
           </button>
         </div>
 
-        <div className="library-stats view-stats">
-          <div className="stat-box">
-            <div className="stat-value">{tasks.length}</div>
-            <div className="stat-label">总任务</div>
-          </div>
-          <div className="stat-box">
-            <div className="stat-value">{runningTaskCount}</div>
-            <div className="stat-label">运行中</div>
-          </div>
-          <div className="stat-box">
-            <div className="stat-value">{completedTaskCount}</div>
-            <div className="stat-label">已完成</div>
-          </div>
-          <div className="stat-box">
-            <div className="stat-value">{templates.length}</div>
-            <div className="stat-label">模板</div>
-          </div>
-        </div>
-
-        <div className="view-grid two-columns">
-          <section className="section-panel">
-            <div className="panel-title">历史任务</div>
-            {renderTaskLibrary(16)}
-          </section>
-          <section className="section-panel">
-            <div className="panel-title">
-              <BookmarkPlus size={14} />
-              模板
+        <div className="settings-status-grid library-status-grid">
+          {libraryStatusCards.map((card) => (
+            <div className="settings-status-card" key={card.label}>
+              <span>{card.icon}</span>
+              <div>
+                <strong>{card.value}</strong>
+                <small>{card.label} · {card.meta}</small>
+              </div>
             </div>
-            {renderTemplatePanel()}
-          </section>
+          ))}
         </div>
 
-        <section className="section-panel">
-          <div className="panel-title">
-            <Sparkles size={14} />
-            模板市场
-          </div>
-          {renderMarketplacePanel()}
-        </section>
+        <div className="settings-center-layout library-center-layout">
+          <aside className="settings-index library-index" aria-label="Library 目录">
+            <label className="settings-search">
+              <Search size={14} />
+              <input
+                value={librarySearch}
+                onChange={(event) => setLibrarySearch(event.target.value)}
+                placeholder="搜索任务、文件、模板、成本"
+              />
+            </label>
+            <nav className="settings-index-list">
+              {librarySections.map((section) => (
+                <button
+                  key={section.id}
+                  type="button"
+                  className={`settings-index-button ${
+                    !normalizedLibrarySearch && section.id === activeSection.id ? "is-active" : ""
+                  }`}
+                  onClick={() => {
+                    setActiveLibrarySection(section.id);
+                    setLibrarySearch("");
+                  }}
+                >
+                  <span>{section.icon}</span>
+                  <span>
+                    <strong>{section.label}</strong>
+                    <small>{section.description}</small>
+                  </span>
+                  <em>{section.status}</em>
+                </button>
+              ))}
+            </nav>
+          </aside>
 
-        <section className="section-panel">
-          <div className="panel-title">
-            <FileSpreadsheet size={14} />
-            Billing
+          <div className="settings-content library-content">
+            {normalizedLibrarySearch ? (
+              <p className="settings-search-note">
+                搜索“{librarySearch}”匹配到 {visibleLibrarySections.length} 个模块。
+              </p>
+            ) : null}
+
+            {visibleLibrarySections.length ? (
+              visibleLibrarySections.map((section) => (
+                <section key={section.id} className="section-panel settings-section-card library-section-card">
+                  <div className="settings-section-heading">
+                    <div>
+                      <span>{section.icon}</span>
+                      <div>
+                        <strong>{section.label}</strong>
+                        <small>{section.description}</small>
+                      </div>
+                    </div>
+                    <em>{section.status}</em>
+                  </div>
+                  {section.render()}
+                </section>
+              ))
+            ) : (
+              <section className="section-panel settings-section-card">
+                <div className="settings-empty-result">
+                  <Search size={18} />
+                  <strong>没有找到相关资产</strong>
+                  <span>换个关键词试试，例如任务、文件、模板、成本、组织。</span>
+                </div>
+              </section>
+            )}
           </div>
-          <BillingPanel summary={billingSummary} />
-        </section>
+        </div>
+
       </div>
     );
   }
 
   function renderSettingsView() {
-    return (
-      <div className="view-page">
-        <div className="view-header">
-          <div>
-            <div className="empty-kicker">Settings</div>
-            <h1>系统设置</h1>
-            <p>配置模型、预算、Skills、MCP Server 和 Agent 可调用能力。</p>
-          </div>
-          <span className="status-chip">
-            {config?.hasApiKey ? <CheckCircle2 size={14} /> : <Clock3 size={14} />}
-            {config?.hasApiKey ? "API Key 已配置" : "使用本地回退"}
-          </span>
-        </div>
-
-        <div className="settings-page-grid">
-          <section className="section-panel settings-model-panel">
-            <div className="panel-title">模型与预算</div>
+    const sandboxLabel = sandboxStatus
+      ? sandboxStatus.mode === "local"
+        ? "local"
+        : sandboxStatus.dockerAvailable && sandboxStatus.imageAvailable
+          ? "ready"
+          : "check"
+      : "loading";
+    const myComputerLabel = myComputerStatus?.connected
+      ? hasOnlineDesktop
+        ? "online"
+        : "unpaired"
+      : "offline";
+    const localBrowserLabel = localBrowserStatus?.connected ? "connected" : "offline";
+    const mcpEnabledCount = mcpServers.filter((server) => server.enabled).length;
+    const databaseLabel = databaseStatus
+      ? databaseStatus.activeProvider === "postgres"
+        ? "postgres"
+        : "sqlite"
+      : "loading";
+    const settingsStatusCards = [
+      {
+        label: "API Key",
+        value: config?.hasApiKey ? "ready" : "local",
+        meta: config?.model ?? "deepseek-v4-flash",
+        icon: <Sparkles size={15} />
+      },
+      {
+        label: "沙盒",
+        value: sandboxLabel,
+        meta: sandboxStatus?.image ?? "等待检测",
+        icon: <SquareTerminal size={15} />
+      },
+      {
+        label: "My Computer",
+        value: myComputerLabel,
+        meta: hasOnlineDesktop ? "桌面端在线" : myComputerStatus?.connected ? "需配对桌面端" : "未连接",
+        icon: <Home size={15} />
+      },
+      {
+        label: "MCP",
+        value: `${mcpEnabledCount}/${mcpServers.length}`,
+        meta: mcpServers.length ? "server enabled" : "未接入 server",
+        icon: <Brain size={15} />
+      },
+      {
+        label: "数据",
+        value: databaseLabel,
+        meta: databaseStatus?.note ?? "SQLite 本地存储",
+        icon: <Database size={15} />
+      }
+    ];
+    const settingsSections: Array<{
+      id: SettingsSectionId;
+      label: string;
+      description: string;
+      keywords: string[];
+      status: string;
+      icon: ReactNode;
+      render: () => ReactNode;
+    }> = [
+      {
+        id: "model",
+        label: "模型与预算",
+        description: "DeepSeek、API Key、预算、Prompt Cache、模型路由和图片 Provider。",
+        keywords: ["model", "模型", "deepseek", "api key", "预算", "prompt cache", "路由", "图片", "provider"],
+        status: config?.hasApiKey ? "ready" : "local",
+        icon: <Sparkles size={15} />,
+        render: () => (
+          <>
             {renderSettingsControls()}
-          </section>
-
-          <section className="section-panel">
+            <div className="settings-divider" />
             <div className="panel-title">
               <Gauge size={14} />
               模型路由优化
             </div>
             {renderModelRouterOptimizerPanel()}
-          </section>
-
-          <section className="section-panel">
+          </>
+        )
+      },
+      {
+        id: "account",
+        label: "账号与组织",
+        description: "登录认证、验证码、OAuth、组织空间、成员邀请和权限管理。",
+        keywords: ["auth", "认证", "登录", "账号", "组织", "权限", "成员", "invite", "oauth"],
+        status: authStatus ? "ready" : "loading",
+        icon: <ShieldCheck size={15} />,
+        render: () => (
+          <>
             <div className="panel-title">
               <CheckCircle2 size={14} />
               认证
             </div>
             {renderAuthPanel()}
-          </section>
-
-          <section className="section-panel">
-            <div className="panel-title">
-              <Database size={14} />
-              数据库
-            </div>
-            {renderDatabasePanel()}
-          </section>
-
-          <section className="section-panel">
+            <div className="settings-divider" />
             <div className="panel-title">
               <ShieldCheck size={14} />
-              审计日志
+              组织与权限
             </div>
-            {renderAuditPanel()}
-          </section>
-
-          <section className="section-panel">
-            <div className="panel-title">
-              <Bell size={14} />
-              通知
-            </div>
-            {renderNotificationPanel()}
-          </section>
-
-          <section className="section-panel">
-            <div className="panel-title">
-              <Clock3 size={14} />
-              Scheduled / Mail / Slack
-            </div>
-            {renderScheduledTaskPanel()}
-          </section>
-
-          <section className="section-panel">
-            <div className="panel-title">
-              <SquareTerminal size={14} />
-              沙盒
-            </div>
-            {renderSandboxPanel()}
-          </section>
-
-          <section className="section-panel">
-            <div className="panel-title">
-              <Globe size={14} />
-              本地浏览器
-            </div>
-            {renderLocalBrowserPanel()}
-          </section>
-
-          <section className="section-panel">
-            <div className="panel-title">
-              <Home size={14} />
-              My Computer
-            </div>
-            {renderMyComputerPanel()}
-          </section>
-
-          <section className="section-panel">
-            <div className="panel-title">
-              <FileText size={14} />
-              OCR
-            </div>
-            {renderOcrPanel()}
-          </section>
-
-          <section className="section-panel">
+            {renderOrganizationPanel()}
+          </>
+        )
+      },
+      {
+        id: "agent",
+        label: "Agent 能力",
+        description: "Skills、MCP Server、工具开关和可调用能力目录。",
+        keywords: ["agent", "skills", "skill", "mcp", "工具", "server", "catalog", "能力"],
+        status: `${skills.filter((skill) => skill.enabled).length}/${skills.length}`,
+        icon: <Brain size={15} />,
+        render: () => (
+          <>
             <div className="panel-title">
               <Brain size={14} />
               Skills
@@ -2672,9 +4337,7 @@ export function AgentWorkspace() {
               onUpload={() => skillInputRef.current?.click()}
               onToggle={(skillId, enabled) => void toggleSkill(skillId, enabled)}
             />
-          </section>
-
-          <section className="section-panel settings-mcp-panel">
+            <div className="settings-divider" />
             <div className="panel-title">
               <SquareTerminal size={14} />
               MCP Servers
@@ -2693,7 +4356,209 @@ export function AgentWorkspace() {
               onRefresh={(serverId) => void refreshMcpServerTools(serverId)}
               onToolToggle={(serverId, toolName, enabled) => void toggleMcpTool(serverId, toolName, enabled)}
             />
-          </section>
+          </>
+        )
+      },
+      {
+        id: "my-computer",
+        label: "My Computer",
+        description: "桌面端配对、本机目录授权、文件分类、查重、移动和动作级授权。",
+        keywords: ["my computer", "desktop", "桌面", "本机", "文件", "目录", "分类", "查重", "移动", "授权", "剪贴板", "键鼠"],
+        status: myComputerLabel,
+        icon: <Home size={15} />,
+        render: renderMyComputerPanel
+      },
+      {
+        id: "browser",
+        label: "本地浏览器",
+        description: "Chrome CDP、浏览器扩展配对、域名白名单、截图和浏览器动作。",
+        keywords: ["browser", "chrome", "cdp", "浏览器", "扩展", "域名", "截图", "rehearsal"],
+        status: localBrowserLabel,
+        icon: <Globe size={15} />,
+        render: renderLocalBrowserPanel
+      },
+      {
+        id: "execution",
+        label: "沙盒与自动化",
+        description: "Docker 沙盒、OCR、通知、定时任务、Mail Manus 和 Slack/Webhook。",
+        keywords: ["sandbox", "docker", "沙盒", "ocr", "通知", "notification", "scheduled", "定时", "mail", "slack", "webhook"],
+        status: sandboxLabel,
+        icon: <SquareTerminal size={15} />,
+        render: () => (
+          <>
+            <div className="view-grid two-columns settings-inner-grid">
+              <div>
+                <div className="panel-title">
+                  <SquareTerminal size={14} />
+                  沙盒
+                </div>
+                {renderSandboxPanel()}
+              </div>
+              <div>
+                <div className="panel-title">
+                  <FileText size={14} />
+                  OCR
+                </div>
+                {renderOcrPanel()}
+              </div>
+            </div>
+            <div className="settings-divider" />
+            <div className="view-grid two-columns settings-inner-grid">
+              <div>
+                <div className="panel-title">
+                  <Bell size={14} />
+                  通知
+                </div>
+                {renderNotificationPanel()}
+              </div>
+              <div>
+                <div className="panel-title">
+                  <Clock3 size={14} />
+                  Scheduled / Mail / Slack
+                </div>
+                {renderScheduledTaskPanel()}
+              </div>
+            </div>
+          </>
+        )
+      },
+      {
+        id: "data",
+        label: "数据与安全",
+        description: "数据库状态、PostgreSQL 检查、审计日志、Hash Chain 和 CSV 导出。",
+        keywords: ["data", "database", "数据库", "sqlite", "postgres", "pg", "审计", "audit", "安全", "csv"],
+        status: databaseLabel,
+        icon: <Database size={15} />,
+        render: () => (
+          <div className="view-grid two-columns settings-inner-grid">
+            <div>
+              <div className="panel-title">
+                <Database size={14} />
+                数据库
+              </div>
+              {renderDatabasePanel()}
+            </div>
+            <div>
+              <div className="panel-title">
+                <ShieldCheck size={14} />
+                审计日志
+              </div>
+              {renderAuditPanel()}
+            </div>
+          </div>
+        )
+      }
+    ];
+    const normalizedSettingsSearch = settingsSearch.trim().toLowerCase();
+    const activeSection =
+      settingsSections.find((section) => section.id === activeSettingsSection) ?? settingsSections[0];
+    const visibleSettingsSections = normalizedSettingsSearch
+      ? settingsSections.filter((section) =>
+          [section.label, section.description, section.status, ...section.keywords]
+            .join(" ")
+            .toLowerCase()
+            .includes(normalizedSettingsSearch)
+        )
+      : [activeSection];
+
+    return (
+      <div className="view-page">
+        <div className="view-header">
+          <div>
+            <div className="empty-kicker">Settings</div>
+            <h1>系统设置</h1>
+            <p>按模块管理模型、桌面端、本地浏览器、Skills、MCP、沙盒和数据安全。</p>
+          </div>
+          <span className="status-chip">
+            {config?.hasApiKey ? <CheckCircle2 size={14} /> : <Clock3 size={14} />}
+            {config?.hasApiKey ? "API Key 已配置" : "使用本地回退"}
+          </span>
+        </div>
+
+        <div className="settings-status-grid">
+          {settingsStatusCards.map((card) => (
+            <div className="settings-status-card" key={card.label}>
+              <span>{card.icon}</span>
+              <div>
+                <strong>{card.value}</strong>
+                <small>{card.label} · {card.meta}</small>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="settings-center-layout">
+          <aside className="settings-index" aria-label="设置目录">
+            <label className="settings-search">
+              <Search size={14} />
+              <input
+                value={settingsSearch}
+                onChange={(event) => setSettingsSearch(event.target.value)}
+                placeholder="搜索 API、MCP、Docker、桌面端"
+              />
+            </label>
+            <nav className="settings-index-list">
+              {settingsSections.map((section) => (
+                <button
+                  key={section.id}
+                  type="button"
+                  className={`settings-index-button ${
+                    !normalizedSettingsSearch && section.id === activeSection.id ? "is-active" : ""
+                  }`}
+                  onClick={() => {
+                    setActiveSettingsSection(section.id);
+                    setSettingsSearch("");
+                  }}
+                >
+                  <span>{section.icon}</span>
+                  <span>
+                    <strong>{section.label}</strong>
+                    <small>{section.description}</small>
+                  </span>
+                  <em>{section.status}</em>
+                </button>
+              ))}
+            </nav>
+          </aside>
+
+          <div className="settings-content">
+            {normalizedSettingsSearch ? (
+              <p className="settings-search-note">
+                搜索“{settingsSearch}”匹配到 {visibleSettingsSections.length} 个模块。
+              </p>
+            ) : null}
+
+            {visibleSettingsSections.length ? (
+              visibleSettingsSections.map((section) => (
+                <section
+                  key={section.id}
+                  className={`section-panel settings-section-card ${
+                    section.id === "model" ? "settings-model-panel" : ""
+                  }`}
+                >
+                  <div className="settings-section-heading">
+                    <div>
+                      <span>{section.icon}</span>
+                      <div>
+                        <strong>{section.label}</strong>
+                        <small>{section.description}</small>
+                      </div>
+                    </div>
+                    <em>{section.status}</em>
+                  </div>
+                  {section.render()}
+                </section>
+              ))
+            ) : (
+              <section className="section-panel settings-section-card">
+                <div className="settings-empty-result">
+                  <Search size={18} />
+                  <strong>没有找到相关设置</strong>
+                  <span>换个关键词试试，例如 API、MCP、Docker、桌面端、数据库。</span>
+                </div>
+              </section>
+            )}
+          </div>
         </div>
       </div>
     );
@@ -2715,7 +4580,7 @@ export function AgentWorkspace() {
         </div>
         <section className="section-panel">
           <div className="panel-title">最近任务</div>
-          {renderTaskLibrary(10)}
+          {renderTaskLibrary()}
         </section>
       </div>
     );
@@ -3647,13 +5512,23 @@ export function AgentWorkspace() {
   function renderMyComputerPanel() {
     const statusLabel = myComputerStatus
       ? myComputerStatus.connected
-        ? "connected"
+        ? myComputerStatus.bridge === "next-local"
+          ? "local"
+          : "desktop"
         : "offline"
       : "unknown";
     const paused = Boolean(myComputerStatus?.paused);
     const readyCapabilities = myComputerStatus?.capabilities.filter((capability) => capability.ready).length ?? 0;
     const pendingCount = myComputerStatus?.pendingApprovals.length ?? 0;
     const rootLabel = myComputerStatus?.allowedRoots[0] ?? "尚未配置";
+    const desktopDevices = myComputerPairing?.pairedDevices ?? myComputerStatus?.desktopDevices ?? [];
+    const onlineDesktopCount = desktopDevices.filter((device) => device.status === "online").length;
+    const desktopClientStatus = onlineDesktopCount
+      ? `${onlineDesktopCount} 台在线`
+      : desktopDevices.length
+        ? `${desktopDevices.length} 台已配对，当前离线`
+        : "未配对";
+    const pendingFileRequestCount = myComputerFileRequests.filter((request) => request.status === "pending").length;
     const latestOperation = myComputerActionResult ?? myComputerPlan?.operation;
     const hasUndoableFileOperation = Boolean(
       myComputerStatus?.recentOperations.some((operation) =>
@@ -3667,12 +5542,24 @@ export function AgentWorkspace() {
         <div className="metric-list compact">
           <div className="metric-item">
             <div>
-              <span className="metric-name">桌面桥接</span>
+              <span className="metric-name">任务桥接</span>
               <span className="metric-meta">
-                {myComputerStatus?.bridge ?? "next-local"} · {myComputerStatus?.platform ?? "loading"}
+                {myComputerStatus?.bridge === "next-local" ? "Web 本地进程" : "桌面客户端"} ·{" "}
+                {myComputerStatus?.platform ?? "loading"}
               </span>
             </div>
             <strong>{statusLabel}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">桌面客户端</span>
+              <span className="metric-meta">
+                {desktopDevices.length
+                  ? "Electron/Tauri 配对设备，可断开后重新配对"
+                  : "尚未配对 Electron/Tauri 客户端"}
+              </span>
+            </div>
+            <strong>{desktopClientStatus}</strong>
           </div>
           <div className="metric-item">
             <div>
@@ -3696,6 +5583,15 @@ export function AgentWorkspace() {
               </span>
             </div>
             <strong>{paused ? "paused" : pendingCount ? "pending" : "active"}</strong>
+          </div>
+          <div className="metric-item">
+            <div>
+              <span className="metric-name">文件上传审批</span>
+              <span className="metric-meta">
+                {pendingFileRequestCount ? `${pendingFileRequestCount} 个请求等待桌面端处理` : "暂无待审批请求"}
+              </span>
+            </div>
+            <strong>{pendingFileRequestCount ? "pending" : myComputerFileRequests.length}</strong>
           </div>
         </div>
 
@@ -3758,6 +5654,140 @@ export function AgentWorkspace() {
             <ShieldCheck size={15} />
             清空授权
           </button>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={isCreatingMyComputerPairing}
+            onClick={() => void createMyComputerDesktopPairing()}
+          >
+            {isCreatingMyComputerPairing ? <Loader2 size={15} className="spin" /> : <Bot size={15} />}
+            桌面端配对
+          </button>
+        </div>
+
+        {paused ? (
+          <p className="muted-note warning-note my-computer-feedback">
+            My Computer 当前已暂停。点击“恢复 My Computer”后，扫描、Dry-run 和本机动作才会继续执行。
+          </p>
+        ) : null}
+        {myComputerError ? (
+          <p className="muted-note error-note my-computer-feedback">{myComputerError}</p>
+        ) : null}
+        {myComputerNotice ? (
+          <p className="muted-note success-note my-computer-feedback">{myComputerNotice}</p>
+        ) : null}
+
+        {myComputerPairing?.activeCode ? (
+          <div className="pairing-code-panel">
+            <strong>{myComputerPairing.activeCode.code}</strong>
+            <span>在 ManusXL Desktop 客户端输入此码，5 分钟内有效。</span>
+          </div>
+        ) : null}
+
+        {!desktopDevices.length ? (
+          <p className="muted-note warning-note my-computer-feedback">
+            当前只检测到 Web 本地桥接，尚未配对桌面客户端。请点击“桌面端配对”，把配对码输入 ManusXL
+            Desktop 后，工作台才可以切换到 My Computer 执行。
+          </p>
+        ) : null}
+
+        {desktopDevices.length ? (
+          <div className="browser-operation-list">
+            {desktopDevices.slice(0, 5).map((device) => (
+              <div className="browser-operation-item" key={device.id}>
+                <div>
+                  <span>{device.name}</span>
+                  <small>
+                    {device.bridge} · {device.platform} · v{device.appVersion} · last seen{" "}
+                    {new Date(device.lastSeenAt).toLocaleTimeString()}
+                  </small>
+                </div>
+                <div className="browser-operation-actions">
+                  <strong className={`operation-status is-${device.status === "online" ? "completed" : "blocked"}`}>
+                    {device.status}
+                  </strong>
+                  <button
+                    type="button"
+                    className="danger-button compact-button"
+                    disabled={isSavingMyComputer}
+                    onClick={() => void disconnectMyComputerDesktopDevice(device.id, device.name)}
+                  >
+                    <XCircle size={13} />
+                    断开
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        <div className="my-computer-result-block">
+          <span className="mini-label">AI 请求上传本机文件审批</span>
+          <div className="browser-action-grid">
+            <label className="settings-field">
+              <span>本机文件路径</span>
+              <input
+                value={myComputerFileRequestDraft.requestedPath}
+                onChange={(event) =>
+                  setMyComputerFileRequestDraft((current) => ({
+                    ...current,
+                    requestedPath: event.target.value
+                  }))
+                }
+                placeholder="/Users/langxing/Downloads/report.pdf"
+              />
+            </label>
+            <label className="settings-field">
+              <span>请求理由</span>
+              <input
+                value={myComputerFileRequestDraft.reason}
+                onChange={(event) =>
+                  setMyComputerFileRequestDraft((current) => ({
+                    ...current,
+                    reason: event.target.value
+                  }))
+                }
+                placeholder="AI 需要读取这个本机文件来继续任务"
+              />
+            </label>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={isRequestingMyComputerFileUpload || !desktopDevices.some((device) => device.status === "online")}
+              onClick={() => void requestMyComputerFileUpload()}
+            >
+              {isRequestingMyComputerFileUpload ? <Loader2 size={15} className="spin" /> : <Paperclip size={15} />}
+              请求桌面端上传
+            </button>
+          </div>
+          {desktopDevices.some((device) => device.status === "online") ? (
+            <p className="muted-note">
+              创建后请在 ManusXL Desktop 的“本机文件上传请求”区域批准或拒绝；批准后文件会进入 Library / 上传文件。
+            </p>
+          ) : (
+            <p className="muted-note warning-note my-computer-feedback">
+              需要先配对并保持桌面端在线，才能请求上传本机文件。
+            </p>
+          )}
+          {myComputerFileRequests.length ? (
+            <div className="browser-operation-list">
+              {myComputerFileRequests.slice(0, 5).map((request) => (
+                <div className="browser-operation-item" key={request.id}>
+                  <div>
+                    <span>{basenameForUi(request.requestedPath)}</span>
+                    <small>
+                      {request.reason} · {request.requestedPath}
+                      {request.uploadedFileId ? ` · 已进入 Library：${request.uploadedFileId}` : ""}
+                      {request.error ? ` · ${request.error}` : ""}
+                    </small>
+                  </div>
+                  <strong className={`operation-status is-${desktopFileRequestStatusClass(request.status)}`}>
+                    {request.status}
+                  </strong>
+                </div>
+              ))}
+            </div>
+          ) : null}
         </div>
 
         <div className="browser-action-grid">
@@ -3808,53 +5838,59 @@ export function AgentWorkspace() {
         </div>
 
         {myComputerScan ? (
-          <div className="browser-operation-list">
-            <div className="browser-operation-item">
-              <div>
-                <span>扫描完成</span>
-                <small>
-                  {myComputerScan.root} · {myComputerScan.total} 项
-                  {myComputerScan.truncated ? " · 已截断" : ""}
-                </small>
-              </div>
-              <strong className="operation-status is-completed">scan</strong>
-            </div>
-            {myComputerScan.entries.slice(0, 5).map((entry: MyComputerFileEntry) => (
-              <div className="browser-operation-item" key={entry.path}>
+          <div className="my-computer-result-block">
+            <span className="mini-label">扫描结果</span>
+            <div className="browser-operation-list">
+              <div className="browser-operation-item">
                 <div>
-                  <span>{entry.name}</span>
+                  <span>扫描完成</span>
                   <small>
-                    {entry.category ?? entry.kind} · {formatSize(entry.size)}
+                    {myComputerScan.root} · {myComputerScan.total} 项
+                    {myComputerScan.truncated ? " · 已截断" : ""}
                   </small>
                 </div>
-                <strong className="operation-status is-started">{entry.kind}</strong>
+                <strong className="operation-status is-completed">scan</strong>
               </div>
-            ))}
+              {myComputerScan.entries.slice(0, 5).map((entry: MyComputerFileEntry) => (
+                <div className="browser-operation-item" key={entry.path}>
+                  <div>
+                    <span>{entry.name}</span>
+                    <small>
+                      {entry.category ?? entry.kind} · {formatSize(entry.size)}
+                    </small>
+                  </div>
+                  <strong className="operation-status is-started">{entry.kind}</strong>
+                </div>
+              ))}
+            </div>
           </div>
         ) : null}
 
         {myComputerPlan ? (
-          <div className="browser-operation-list">
-            <div className="browser-operation-item">
-              <div>
-                <span>{myComputerPlan.operation.description}</span>
-                <small>
-                  {myComputerPlan.summary.actionCount} 个动作 · {myComputerPlan.summary.affectedFiles} 个文件
-                </small>
-              </div>
-              <strong className={`operation-status is-${myComputerPlan.operation.status}`}>
-                {myComputerPlan.operation.status}
-              </strong>
-            </div>
-            {myComputerPlan.operation.actions?.slice(0, 6).map((action) => (
-              <div className="browser-operation-item" key={action.id}>
+          <div className="my-computer-result-block">
+            <span className="mini-label">Dry-run 计划</span>
+            <div className="browser-operation-list">
+              <div className="browser-operation-item">
                 <div>
-                  <span>{basenameForUi(action.sourcePath)} → {basenameForUi(action.targetPath)}</span>
-                  <small>{action.reason}</small>
+                  <span>{myComputerPlan.operation.description}</span>
+                  <small>
+                    {myComputerPlan.summary.actionCount} 个动作 · {myComputerPlan.summary.affectedFiles} 个文件
+                  </small>
                 </div>
-                <strong className="operation-status is-pending_approval">{action.type}</strong>
+                <strong className={`operation-status is-${myComputerPlan.operation.status}`}>
+                  {myComputerPlan.operation.status}
+                </strong>
               </div>
-            ))}
+              {myComputerPlan.operation.actions?.slice(0, 6).map((action) => (
+                <div className="browser-operation-item" key={action.id}>
+                  <div>
+                    <span>{basenameForUi(action.sourcePath)} → {basenameForUi(action.targetPath)}</span>
+                    <small>{action.reason}</small>
+                  </div>
+                  <strong className="operation-status is-pending_approval">{action.type}</strong>
+                </div>
+              ))}
+            </div>
             {myComputerPlan.operation.status === "pending_approval" ? (
               <div className="panel-actions">
                 <button
@@ -4092,6 +6128,125 @@ export function AgentWorkspace() {
     );
   }
 
+  function renderComposer(variant: "home" | "footer" = "footer") {
+    const isHomeComposer = variant === "home";
+    const isContinuingTask = !isHomeComposer && activeNav === "agent" && canContinueTask(activeTask);
+    const isWaitingForActiveTask = !isHomeComposer && activeNav === "agent" && activeTask && !canContinueTask(activeTask);
+    const composerPlaceholder = isContinuingTask
+      ? "继续追问当前任务，例如：把结论整理成表格，或基于刚才结果继续分析"
+      : isWaitingForActiveTask
+        ? "当前任务运行中，完成后可以继续追问"
+        : "输入一个任务，例如：读取我上传的 Excel 并输出分析报告";
+    const composerExecutionTarget = isContinuingTask && activeTask
+      ? activeTask.executionTarget ?? "cloud"
+      : executionTarget;
+
+    return (
+      <>
+        <form
+          className={`composer-form ${isHomeComposer ? "home-composer-form" : ""}`}
+          onSubmit={onSubmit}
+        >
+          <div className="composer-input-stack">
+            {uploadedFiles.length > 0 ? (
+              <div className="upload-strip" aria-label="已上传文件">
+                {uploadedFiles.map((file) => (
+                  <span key={file.id} className="upload-chip">
+                    <FileText size={14} />
+                    <span>
+                      <strong>{file.name}</strong>
+                      <small>{formatSize(file.size)}</small>
+                    </span>
+                    <button
+                      type="button"
+                      className="upload-remove"
+                      aria-label={`移除 ${file.name}`}
+                      onClick={() =>
+                        setUploadedFiles((current) => current.filter((item) => item.id !== file.id))
+                      }
+                    >
+                      <X size={13} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            <textarea
+              className="prompt-box"
+              value={prompt}
+              onChange={(event) => setPrompt(event.target.value)}
+              placeholder={composerPlaceholder}
+            />
+          </div>
+          <div className="composer-actions">
+            <button
+              type="button"
+              className={`secondary-button compact-button execution-target-button ${
+                composerExecutionTarget === "my-computer" ? "is-active" : ""
+              }`}
+              disabled={isContinuingTask || Boolean(isWaitingForActiveTask) || !hasOnlineDesktop || isSubmitting}
+              title={
+                isContinuingTask
+                  ? "继续对话会沿用当前任务的执行目标"
+                  : hasOnlineDesktop
+                  ? composerExecutionTarget === "my-computer"
+                    ? "当前任务将派发到 My Computer 桌面端"
+                    : "切换为 My Computer 桌面端执行"
+                  : "需要先在 Settings / My Computer 配对并保持桌面端在线"
+              }
+              onClick={() =>
+                setExecutionTarget((current) => (current === "my-computer" ? "cloud" : "my-computer"))
+              }
+            >
+              <Bot size={15} />
+              {composerExecutionTarget === "my-computer" ? "My Computer" : "云端"}
+            </button>
+            <input
+              ref={fileInputRef}
+              className="hidden-file-input"
+              type="file"
+              multiple
+              accept=".txt,.md,.markdown,.json,.csv,.tsv,.html,.htm,.pdf,.docx,.xlsx,.png,.jpg,.jpeg,.webp,.gif,image/png,image/jpeg,image/webp,image/gif"
+              onChange={(event) => void uploadFiles(event)}
+            />
+            <button
+              type="button"
+              className="icon-button attach-button"
+              aria-label="上传文件"
+              title="上传文件"
+              disabled={isUploadingFile || isSubmitting}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              {isUploadingFile ? <Loader2 size={17} className="spin" /> : <Paperclip size={17} />}
+            </button>
+            <button
+              className="primary-button"
+              disabled={
+                isSubmitting ||
+                Boolean(isWaitingForActiveTask) ||
+                !selectedOrgCanCreateTask ||
+                (!prompt.trim() && uploadedFiles.length === 0)
+              }
+              title={
+                selectedOrgCanCreateTask
+                  ? isContinuingTask
+                    ? "继续当前任务对话"
+                    : activeOrganization
+                    ? `发送到 ${activeOrganization.name}`
+                    : "发送到个人私有任务"
+                  : "Viewer 角色只能查看组织任务"
+              }
+            >
+              {isSubmitting ? <Loader2 size={17} className="spin" /> : <Send size={17} />}
+              {isContinuingTask ? "继续" : "发送"}
+            </button>
+          </div>
+        </form>
+        {error ? <p className="muted-note composer-error">{error}</p> : null}
+      </>
+    );
+  }
+
   function renderMainContent() {
     if (activeNav === "library") return renderLibraryView();
     if (activeNav === "settings") return renderSettingsView();
@@ -4100,13 +6255,19 @@ export function AgentWorkspace() {
         <TaskDetail
           task={activeTask}
           isScheduling={isCreatingScheduledTask}
+          isCancelling={isCancellingTask}
           onSchedule={(task) => void scheduleTaskFromHistory(task)}
+          onCancel={() => void cancelActiveTask()}
         />
       ) : (
         renderAgentEmptyView()
       );
     }
-    return <EmptyState onPick={(value) => void submitTask(value)} />;
+    return (
+      <EmptyState onPick={(value) => void submitTask(value)}>
+        {renderComposer("home")}
+      </EmptyState>
+    );
   }
 
   function renderRightRail() {
@@ -4158,24 +6319,6 @@ export function AgentWorkspace() {
       );
     }
 
-    if (activeNav === "library") {
-      return (
-        <>
-          <section className={panelSectionClass("library")}>
-            <div className="panel-title">
-              <FileSpreadsheet size={14} />
-              Billing
-            </div>
-            <BillingPanel summary={billingSummary} />
-          </section>
-          <section className={panelSectionClass("agent")}>
-            <div className="panel-title">当前任务交付物</div>
-            <ArtifactList artifacts={activeTask?.artifacts ?? []} />
-          </section>
-        </>
-      );
-    }
-
     return (
       <>
         <section className={panelSectionClass("agent")}>
@@ -4209,6 +6352,16 @@ export function AgentWorkspace() {
       </>
     );
   }
+
+  const hideRightRail = isHomeView || activeNav === "library" || activeNav === "settings";
+  const shellClassName = [
+    "workspace-shell",
+    isHomeView ? "is-home" : "",
+    activeNav === "library" ? "is-library" : "",
+    activeNav === "settings" ? "is-settings" : ""
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   if (isAuthLoading) {
     return (
@@ -4245,7 +6398,7 @@ export function AgentWorkspace() {
   }
 
   return (
-    <div className="workspace-shell">
+    <div className={shellClassName}>
       <aside className="left-rail">
         <div className="brand">
           <span className="brand-mark" />
@@ -4309,7 +6462,30 @@ export function AgentWorkspace() {
         </nav>
 
         <div className="rail-section recent-section">
-          <div className="section-label">最近任务</div>
+          <div className="section-label recent-section-label">
+            <span>最近任务</span>
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="新建任务文件夹"
+              title="新建任务文件夹"
+              onClick={() => void createRecentTaskFolder()}
+            >
+              <FolderPlus size={14} />
+            </button>
+            <button
+              type="button"
+              className={`icon-button ${bulkTaskMode ? "is-active" : ""}`}
+              aria-label="批量选择任务"
+              title="批量选择任务"
+              onClick={() => {
+                setBulkTaskMode((current) => !current);
+                setSelectedTaskIds([]);
+              }}
+            >
+              <CheckCircle2 size={14} />
+            </button>
+          </div>
           <label className="rail-search">
             <Search size={13} />
             <input
@@ -4318,157 +6494,93 @@ export function AgentWorkspace() {
               placeholder="搜索任务"
             />
           </label>
-          {visibleTasks.length === 0 ? (
-            <p className="muted-note">还没有任务。</p>
-          ) : (
-            visibleTasks.slice(0, 50).map((task) => (
-              <button
-                key={task.id}
-                className={`task-list-button ${activeTask?.id === task.id ? "is-active" : ""}`}
-                onClick={() => {
-                  setActiveNav("agent");
-                  void selectTask(task.id);
-                }}
-              >
-                <span className={`status-dot ${task.status}`} />
-                <span>
-                  <span className="task-title">{task.prompt}</span>
-                  <span className="task-meta">
-                    {statusText[task.status]} · {formatDate(task.createdAt)}
-                  </span>
-                </span>
-              </button>
-            ))
-          )}
+          {renderRecentTaskFolders()}
         </div>
       </aside>
 
       <main className="main-column">
-        <header className="top-bar">
-          <span className="model-chip">
-            <Sparkles size={15} />
-            {config?.model ?? "deepseek-v4-flash"}
-          </span>
-          <span className="status-chip">
-            {config?.hasApiKey ? <CheckCircle2 size={14} /> : <Clock3 size={14} />}
-            {config?.hasApiKey ? "API Key 已配置" : "使用本地回退"}
-          </span>
-          {contextMetrics && contextMetrics.totalCalls > 0 ? (
+        <header className={`top-bar ${isHomeView ? "home-top-bar" : ""}`}>
+          <div className="top-status-group" aria-label="运行状态">
+            {!isHomeView ? (
+              <>
+                <span className="model-chip">
+                  <Sparkles size={15} />
+                  <span className="top-chip-label">{config?.model ?? "deepseek-v4-flash"}</span>
+                </span>
+                <span className="status-chip">
+                  {config?.hasApiKey ? <CheckCircle2 size={14} /> : <Clock3 size={14} />}
+                  <span className="top-chip-label">{config?.hasApiKey ? "API Key 已配置" : "使用本地回退"}</span>
+                </span>
+                {contextMetrics && contextMetrics.totalCalls > 0 ? (
+                  <span className="status-chip">
+                    <Gauge size={14} />
+                    <span className="top-chip-label">Context {formatPercent(contextMetrics.averageCacheHitRate)}</span>
+                  </span>
+                ) : null}
+                {contextMetrics && contextMetrics.totalCalls > 0 ? (
+                  <span className="status-chip">
+                    <FileSpreadsheet size={14} />
+                    <span className="top-chip-label">Cost {formatUsd(contextMetrics.estimatedCostUsd)}</span>
+                  </span>
+                ) : null}
+              </>
+            ) : null}
             <span className="status-chip">
-              <Gauge size={14} />
-              Context {formatPercent(contextMetrics.averageCacheHitRate)}
+              <Bot size={14} />
+              <span className="top-chip-label">{authUser.displayName}</span>
             </span>
-          ) : null}
-          {contextMetrics && contextMetrics.totalCalls > 0 ? (
-            <span className="status-chip">
-              <FileSpreadsheet size={14} />
-              Cost {formatUsd(contextMetrics.estimatedCostUsd)}
-            </span>
-          ) : null}
-          <span className="status-chip">
-            <Bot size={14} />
-            {authUser.displayName}
-          </span>
-          <span className="top-spacer" />
-          {activeTask && (activeTask.status === "running" || activeTask.status === "queued") ? (
-            <button className="secondary-button" onClick={() => void cancelActiveTask()}>
-              <CircleStop size={15} />
-              停止
-            </button>
-          ) : (
-            <>
-              {activeTask ? (
-                <button className="ghost-button" onClick={() => void retryActiveTask()} disabled={isSubmitting}>
+            <label className="org-context">
+              <ShieldCheck size={14} />
+              <select
+                aria-label="组织空间"
+                value={activeOrgId}
+                onChange={(event) => setActiveOrgId(event.target.value)}
+              >
+                <option value="">个人私有</option>
+                {organizations.map((organization) => (
+                  <option key={organization.id} value={organization.id}>
+                    {organization.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="top-action-group" aria-label="任务操作">
+            {activeTask && (activeTask.status === "running" || activeTask.status === "queued") ? (
+              <button className="danger-button" onClick={() => void cancelActiveTask()} disabled={isCancellingTask}>
+                {isCancellingTask ? <Loader2 size={15} className="spin" /> : <CircleStop size={15} />}
+                中断
+              </button>
+            ) : (
+              <>
+                {activeTask ? (
+                  <button className="ghost-button" onClick={() => void retryActiveTask()} disabled={isSubmitting}>
+                    <RefreshCw size={15} />
+                    重跑
+                  </button>
+                ) : null}
+                <button className="ghost-button" onClick={() => void refreshTasks()}>
                   <RefreshCw size={15} />
-                  重跑
+                  刷新
                 </button>
-              ) : null}
-              <button className="ghost-button" onClick={() => void refreshTasks()}>
-                <RefreshCw size={15} />
-                刷新
-              </button>
-              <button className="ghost-button" onClick={() => void logout()}>
-                <X size={15} />
-                退出
-              </button>
-            </>
-          )}
+                <button className="ghost-button" onClick={() => void logout()}>
+                  <X size={15} />
+                  退出
+                </button>
+              </>
+            )}
+          </div>
         </header>
 
         <section className="workspace-main">
           {renderMainContent()}
         </section>
 
-        {showComposer ? (
-          <footer className="composer">
-            <form className="composer-form" onSubmit={onSubmit}>
-              <div className="composer-input-stack">
-                {uploadedFiles.length > 0 ? (
-                  <div className="upload-strip" aria-label="已上传文件">
-                    {uploadedFiles.map((file) => (
-                      <span key={file.id} className="upload-chip">
-                        <FileText size={14} />
-                        <span>
-                          <strong>{file.name}</strong>
-                          <small>{formatSize(file.size)}</small>
-                        </span>
-                        <button
-                          type="button"
-                          className="upload-remove"
-                          aria-label={`移除 ${file.name}`}
-                          onClick={() =>
-                            setUploadedFiles((current) => current.filter((item) => item.id !== file.id))
-                          }
-                        >
-                          <X size={13} />
-                        </button>
-                      </span>
-                    ))}
-                  </div>
-                ) : null}
-                <textarea
-                  className="prompt-box"
-                  value={prompt}
-                  onChange={(event) => setPrompt(event.target.value)}
-                  placeholder="输入一个任务，例如：读取我上传的 Excel 并输出分析报告"
-                />
-              </div>
-              <div className="composer-actions">
-                <input
-                  ref={fileInputRef}
-                  className="hidden-file-input"
-                  type="file"
-                  multiple
-                  accept=".txt,.md,.markdown,.json,.csv,.tsv,.html,.htm,.pdf,.docx,.xlsx,.png,.jpg,.jpeg,.webp,.gif,image/png,image/jpeg,image/webp,image/gif"
-                  onChange={(event) => void uploadFiles(event)}
-                />
-                <button
-                  type="button"
-                  className="icon-button attach-button"
-                  aria-label="上传文件"
-                  title="上传文件"
-                  disabled={isUploadingFile || isSubmitting}
-                  onClick={() => fileInputRef.current?.click()}
-                >
-                  {isUploadingFile ? <Loader2 size={17} className="spin" /> : <Paperclip size={17} />}
-                </button>
-                <button
-                  className="primary-button"
-                  disabled={isSubmitting || (!prompt.trim() && uploadedFiles.length === 0)}
-                >
-                  {isSubmitting ? <Loader2 size={17} className="spin" /> : <Send size={17} />}
-                  发送
-                </button>
-              </div>
-            </form>
-            {error ? <p className="muted-note">{error}</p> : null}
-          </footer>
-        ) : null}
+        {showComposer && !isHomeView ? <footer className="composer">{renderComposer("footer")}</footer> : null}
       </main>
 
-      <aside className="right-rail">
-        {renderRightRail()}
-      </aside>
+      {!hideRightRail ? <aside className="right-rail">{renderRightRail()}</aside> : null}
+      {renderRecentTaskContextMenu()}
     </div>
   );
 }
@@ -4606,17 +6718,24 @@ function AuthScreen({
   );
 }
 
-function EmptyState({ onPick }: { onPick: (prompt: string) => void }) {
+function EmptyState({
+  onPick,
+  children
+}: {
+  onPick: (prompt: string) => void;
+  children?: ReactNode;
+}) {
   return (
     <div className="empty-state">
-      <div className="empty-kicker">Agent Workspace</div>
-      <h1 className="empty-title">把任务交给 ManusXL。</h1>
+      <div className="empty-kicker">ManusXL</div>
+      <h1 className="empty-title">我能为你做什么？</h1>
       <p className="empty-copy">
-        输入一个目标，系统会拆解计划、流式展示执行步骤，并把结果沉淀到右侧交付物区域。
+        上传文件或输入目标，ManusXL 会整理执行路径、沉淀结论，并生成可下载交付物。
       </p>
+      {children}
       <div className="suggestion-grid">
         {suggestions.map((item) => (
-          <button key={item} className="suggestion-button" onClick={() => onPick(item)}>
+          <button key={item} type="button" className="suggestion-button" onClick={() => onPick(item)}>
             <span>{item}</span>
             <span className="tiny-chip">
               <Play size={12} />
@@ -4632,55 +6751,156 @@ function EmptyState({ onPick }: { onPick: (prompt: string) => void }) {
 function TaskDetail({
   task,
   isScheduling,
-  onSchedule
+  isCancelling,
+  onSchedule,
+  onCancel
 }: {
   task: Task;
   isScheduling: boolean;
+  isCancelling: boolean;
   onSchedule: (task: Task) => void;
+  onCancel: () => void;
 }) {
+  const visiblePrompt = getTaskDisplayTitle(task);
+  const uploadedContext = parsePromptUploadedFiles(task.prompt);
+  const usefulEvents = task.events.filter(isUsefulTimelineEvent);
+  const artifactCount = task.artifacts.length;
+  const finalAnswer = task.finalAnswer?.trim();
+  const isInterruptible = task.status === "running" || task.status === "queued";
+
   return (
     <div className="task-detail">
       <div className="task-heading">
         <span className={`status-dot ${task.status}`} />
-        <div>
-          <h1>{task.prompt}</h1>
-          <p>
-            {task.id} · {statusText[task.status]} · {task.model}
-          </p>
+        <div className="task-heading-content">
+          <div className="task-heading-main">
+            <div className="task-heading-title">
+              <h1>{visiblePrompt}</h1>
+              <p>
+                {task.id} · {statusText[task.status]} · {task.model}
+              </p>
+            </div>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={isScheduling || isInterruptible}
+              onClick={() => onSchedule(task)}
+            >
+              {isScheduling ? <Loader2 size={15} className="spin" /> : <Clock3 size={15} />}
+              设为定时任务
+            </button>
+            {isInterruptible ? (
+              <button
+                type="button"
+                className="danger-button"
+                disabled={isCancelling}
+                onClick={onCancel}
+              >
+                {isCancelling ? <Loader2 size={15} className="spin" /> : <CircleStop size={15} />}
+                中断任务
+              </button>
+            ) : null}
+          </div>
+
+          {uploadedContext.length > 0 ? (
+            <section className="task-file-context" aria-label="上传文件上下文">
+              <div className="task-file-context-head">
+                <span>
+                  <Paperclip size={14} />
+                  上传文件上下文
+                </span>
+                <small>{uploadedContext.length} 个文件，正文预览已折叠供 Agent 使用</small>
+              </div>
+              <div className="task-file-context-grid">
+                {uploadedContext.map((file, index) => (
+                  <article key={`${file.name}-${index}`} className="task-file-context-item">
+                    <div>
+                      <strong>{file.name}</strong>
+                      {file.meta ? <small>{file.meta}</small> : null}
+                    </div>
+                    {file.summary ? <p>{file.summary}</p> : null}
+                    {file.preview ? <em>{file.preview}</em> : null}
+                  </article>
+                ))}
+              </div>
+            </section>
+          ) : null}
         </div>
-        <button
-          type="button"
-          className="secondary-button"
-          disabled={isScheduling}
-          onClick={() => onSchedule(task)}
-        >
-          {isScheduling ? <Loader2 size={15} className="spin" /> : <Clock3 size={15} />}
-          设为定时任务
-        </button>
       </div>
 
-      <div className="step-timeline">
-        {task.events.length === 0 ? (
-          <div className="step-row">
-            <span className="step-icon">
-              <Loader2 size={16} />
-            </span>
-            <div className="step-body">
-              <div className="step-head">
-                <span className="step-title">等待 Agent 启动</span>
-              </div>
-              <div className="step-content">任务已创建，正在进入执行队列。</div>
-            </div>
+      <section className="task-result-shell">
+        <div className="task-status-strip">
+          <div>
+            <span>当前状态</span>
+            <strong>{statusText[task.status]}</strong>
+            <small>{currentTaskStage(task)}</small>
           </div>
+          <div>
+            <span>交付文件</span>
+            <strong>{artifactCount}</strong>
+            <small>{artifactCount > 0 ? "右侧已按用途说明" : "生成后会出现在右侧"}</small>
+          </div>
+          <div>
+            <span>执行摘要</span>
+            <strong>{usefulEvents.length}</strong>
+            <small>详细过程已折叠</small>
+          </div>
+        </div>
+
+        {finalAnswer ? (
+          <article className="final-answer-card">
+            <div className="result-section-head">
+              <span>
+                <CheckCircle2 size={15} />
+                最终结果
+              </span>
+              <small>{formatDate(task.updatedAt)}</small>
+            </div>
+            <div className="final-answer-content">{finalAnswer}</div>
+          </article>
         ) : (
-          task.events.map((event) => <StepRow key={event.id} event={event} />)
+          <article className="final-answer-card is-pending">
+            <div className="result-section-head">
+              <span>
+                <Loader2 size={15} className={task.status === "running" || task.status === "queued" ? "spin" : ""} />
+                正在处理
+              </span>
+            </div>
+            <p>{currentTaskStage(task)}</p>
+          </article>
         )}
-      </div>
+
+        <details className="execution-details">
+          <summary>
+            <span>查看执行过程</span>
+            <small>仅用于排查和追踪，默认不展示给普通使用流程</small>
+          </summary>
+          <div className="step-timeline">
+            {usefulEvents.length === 0 ? (
+              <div className="step-row">
+                <span className="step-icon">
+                  <Loader2 size={16} />
+                </span>
+                <div className="step-body">
+                  <div className="step-head">
+                    <span className="step-title">等待 Agent 启动</span>
+                  </div>
+                  <div className="step-content">任务已创建，正在进入执行队列。</div>
+                </div>
+              </div>
+            ) : (
+              usefulEvents.map((event) => <StepRow key={event.id} event={event} />)
+            )}
+          </div>
+        </details>
+      </section>
     </div>
   );
 }
 
 function StepRow({ event }: { event: AgentEvent }) {
+  const safePayload = event.type === "tool_call" && event.payload ? sanitizePayloadForUi(event.payload) : null;
+
   return (
     <article className="step-row">
       <span className="step-icon">{getEventIcon(event.type)}</span>
@@ -4691,8 +6911,8 @@ function StepRow({ event }: { event: AgentEvent }) {
           <span className="step-time">{formatTime(event.createdAt)}</span>
         </div>
         {event.content ? <div className="step-content">{event.content}</div> : null}
-        {event.type === "tool_call" && event.payload ? (
-          <pre className="payload-block">{JSON.stringify(event.payload, null, 2)}</pre>
+        {safePayload ? (
+          <pre className="payload-block">{JSON.stringify(safePayload, null, 2)}</pre>
         ) : null}
       </div>
     </article>
@@ -4704,13 +6924,19 @@ function ArtifactList({ artifacts }: { artifacts: Artifact[] }) {
     return <p className="muted-note">当前任务还没有交付物。</p>;
   }
 
+  const sortedArtifacts = [...artifacts].sort((left, right) => {
+    const priority = artifactPriority(left) - artifactPriority(right);
+    return priority || left.name.localeCompare(right.name);
+  });
+
   return (
     <div className="artifact-list">
-      {artifacts.map((artifact) => (
+      {sortedArtifacts.map((artifact) => (
         <a key={artifact.id} className="artifact-item" href={artifact.url}>
           <span className="artifact-icon">{getArtifactIcon(artifact.type)}</span>
           <span>
             <span className="artifact-name">{artifact.name}</span>
+            <span className="artifact-purpose">{artifactPurpose(artifact)}</span>
             <span className="artifact-meta">
               {artifact.type.toUpperCase()} · {formatSize(artifact.size)}
             </span>
@@ -4722,25 +6948,101 @@ function ArtifactList({ artifacts }: { artifacts: Artifact[] }) {
   );
 }
 
+function PaginationControls({
+  page,
+  pageSize,
+  total,
+  onPageChange
+}: {
+  page: number;
+  pageSize: number;
+  total: number;
+  onPageChange: (page: number) => void;
+}) {
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const start = total === 0 ? 0 : (page - 1) * pageSize + 1;
+  const end = Math.min(total, page * pageSize);
+
+  if (total <= pageSize) {
+    return total > 0 ? <p className="muted-note pagination-note">显示 {total} 项</p> : null;
+  }
+
+  function submitJump(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    const rawPage = Number(formData.get("page"));
+    if (!Number.isFinite(rawPage)) return;
+    onPageChange(Math.max(1, Math.min(totalPages, Math.round(rawPage))));
+  }
+
+  return (
+    <div className="pagination-row">
+      <span>
+        {start}-{end} / {total}
+      </span>
+      <form className="pagination-jump" onSubmit={submitJump}>
+        <label>
+          <span>跳到</span>
+          <input
+            key={page}
+            name="page"
+            type="number"
+            inputMode="numeric"
+            min={1}
+            max={totalPages}
+            defaultValue={page}
+            aria-label="跳转页码"
+          />
+        </label>
+        <button type="submit" className="secondary-button compact-button">
+          跳转
+        </button>
+      </form>
+      <div>
+        <button
+          type="button"
+          className="secondary-button compact-button"
+          disabled={page <= 1}
+          onClick={() => onPageChange(Math.max(1, page - 1))}
+        >
+          上一页
+        </button>
+        <button
+          type="button"
+          className="secondary-button compact-button"
+          disabled={page >= totalPages}
+          onClick={() => onPageChange(Math.min(totalPages, page + 1))}
+        >
+          下一页
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function TemplateList({
   templates,
   allTags,
   activeTag,
+  currentUserId,
   onTagChange,
   canSave,
   onSave,
   onUse,
   onPublish,
+  onUnpublish,
   onDelete
 }: {
   templates: TaskTemplate[];
   allTags: string[];
   activeTag: string;
+  currentUserId?: string;
   onTagChange: (tag: string) => void;
   canSave: boolean;
   onSave: () => void;
   onUse: (template: TaskTemplate) => void;
   onPublish: (templateId: string) => void;
+  onUnpublish: (templateId: string) => void;
   onDelete: (templateId: string) => void;
 }) {
   return (
@@ -4771,43 +7073,64 @@ function TemplateList({
       {templates.length === 0 ? (
         <p className="muted-note">还没有模板。</p>
       ) : (
-        <div className="template-list">
-          {templates.slice(0, 8).map((template) => (
-            <div key={template.id} className="template-item">
-              <button className="template-main" onClick={() => onUse(template)}>
-                <span className="template-name">{template.name}</span>
-                <span className="template-meta">
-                  {[
-                    template.isPublic ? "公共" : "个人",
-                    template.tags.length > 0 ? template.tags.join(" · ") : "prompt template"
-                  ].join(" · ")}
-                </span>
-              </button>
-              {template.isPublic ? (
-                <span className="template-lock" aria-label="公共模板不可删除">
-                  公
-                </span>
-              ) : (
-                <>
-                  <button
-                    className="icon-button"
-                    aria-label={`发布模板 ${template.name}`}
-                    title={template.reviewStatus === "rejected" ? template.rejectionReason : "发布到模板市场"}
-                    onClick={() => onPublish(template.id)}
-                  >
-                    <Sparkles size={14} />
-                  </button>
-                  <button
-                    className="icon-button"
-                    aria-label={`删除模板 ${template.name}`}
-                    onClick={() => onDelete(template.id)}
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </>
-              )}
-            </div>
-          ))}
+        <div className="template-list library-scroll-list">
+          {templates.map((template) => {
+            const isOwnPublicTemplate = Boolean(
+              template.isPublic && currentUserId && template.ownerId === currentUserId
+            );
+            return (
+              <div key={template.id} className="template-item">
+                <button className="template-main" onClick={() => onUse(template)}>
+                  <span className="template-name">{template.name}</span>
+                  <span className="template-meta">
+                    {[
+                      template.isPublic ? "公共" : "个人",
+                      template.tags.length > 0 ? template.tags.join(" · ") : "prompt template"
+                    ].join(" · ")}
+                  </span>
+                </button>
+                {template.isPublic ? (
+                  isOwnPublicTemplate ? (
+                    <>
+                      <button
+                        className="icon-button template-unpublish-button"
+                        aria-label={`下架模板 ${template.name}`}
+                        title="从模板市场下架"
+                        onClick={() => onUnpublish(template.id)}
+                      >
+                        <XCircle size={14} />
+                      </button>
+                      <span className="template-lock" aria-label="已发布到模板市场">
+                        公
+                      </span>
+                    </>
+                  ) : (
+                    <span className="template-lock" aria-label="公共模板不可删除">
+                      公
+                    </span>
+                  )
+                ) : (
+                  <>
+                    <button
+                      className="icon-button"
+                      aria-label={`发布模板 ${template.name}`}
+                      title={template.reviewStatus === "rejected" ? template.rejectionReason : "发布到模板市场"}
+                      onClick={() => onPublish(template.id)}
+                    >
+                      <Sparkles size={14} />
+                    </button>
+                    <button
+                      className="icon-button"
+                      aria-label={`删除模板 ${template.name}`}
+                      onClick={() => onDelete(template.id)}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -4816,19 +7139,31 @@ function TemplateList({
 
 function MarketplaceTemplateList({
   templates,
+  total,
+  page,
+  pageSize,
   sort,
   isForking,
+  currentUserId,
+  onPageChange,
   onSortChange,
   onUse,
   onFork,
+  onUnpublish,
   onRate
 }: {
   templates: TaskTemplate[];
+  total: number;
+  page: number;
+  pageSize: number;
   sort: MarketplaceSort;
   isForking: boolean;
+  currentUserId?: string;
+  onPageChange: (page: number) => void;
   onSortChange: (sort: MarketplaceSort) => void;
   onUse: (template: TaskTemplate) => void;
   onFork: (templateId: string) => void;
+  onUnpublish: (templateId: string) => void;
   onRate: (templateId: string, rating: number) => void;
 }) {
   const sortOptions: Array<{ value: MarketplaceSort; label: string }> = [
@@ -4837,6 +7172,8 @@ function MarketplaceTemplateList({
     { value: "topRated", label: "高分" },
     { value: "latest", label: "最新" }
   ];
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const currentPage = Math.min(page, totalPages);
 
   return (
     <div className="marketplace-panel">
@@ -4855,41 +7192,65 @@ function MarketplaceTemplateList({
         <p className="muted-note">模板市场还没有可用模板。</p>
       ) : (
         <div className="marketplace-grid">
-          {templates.slice(0, 10).map((template) => (
-            <article key={template.id} className="marketplace-item">
-              <button className="marketplace-main" onClick={() => onUse(template)}>
-                <span className="template-name">{template.name}</span>
-                <span className="template-meta">
-                  {[
-                    template.category ?? "general",
-                    `评分 ${(template.ratingAverage ?? 0).toFixed(1)}(${template.ratingCount ?? 0})`,
-                    `Fork ${template.forkCount ?? 0}`
-                  ].join(" · ")}
-                </span>
-                <span className="marketplace-description">{template.description}</span>
-              </button>
-              <div className="marketplace-actions">
-                <button
-                  type="button"
-                  className="secondary-button compact-button"
-                  disabled={isForking}
-                  onClick={() => onFork(template.id)}
-                >
-                  <Plus size={13} />
-                  Fork
+          {templates.map((template) => {
+            const isOwnPublicTemplate = Boolean(
+              template.isPublic && currentUserId && template.ownerId === currentUserId
+            );
+            return (
+              <article key={template.id} className="marketplace-item">
+                <button className="marketplace-main" onClick={() => onUse(template)}>
+                  <span className="template-name">{template.name}</span>
+                  <span className="template-meta">
+                    {[
+                      template.category ?? "general",
+                      `评分 ${(template.ratingAverage ?? 0).toFixed(1)}(${template.ratingCount ?? 0})`,
+                      `Fork ${template.forkCount ?? 0}`
+                    ].join(" · ")}
+                  </span>
+                  <span className="marketplace-description">{template.description}</span>
                 </button>
-                <button
-                  type="button"
-                  className="secondary-button compact-button"
-                  onClick={() => onRate(template.id, 5)}
-                >
-                  5 分
-                </button>
-              </div>
-            </article>
-          ))}
+                <div className="marketplace-actions">
+                  {isOwnPublicTemplate ? (
+                    <button
+                      type="button"
+                      className="secondary-button compact-button"
+                      onClick={() => onUnpublish(template.id)}
+                    >
+                      <XCircle size={13} />
+                      下架
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="secondary-button compact-button"
+                      disabled={isForking}
+                      onClick={() => onFork(template.id)}
+                    >
+                      <Plus size={13} />
+                      Fork
+                    </button>
+                  )}
+                  <div className="rating-control" aria-label={`给模板 ${template.name} 评分`}>
+                    {[1, 2, 3, 4, 5].map((rating) => (
+                      <button
+                        key={rating}
+                        type="button"
+                        className={`rating-button ${template.myRating === rating ? "is-active" : ""}`}
+                        title={template.myRating ? `你已评分 ${template.myRating} 分，点击可修改` : `评分 ${rating} 分`}
+                        onClick={() => onRate(template.id, rating)}
+                      >
+                        {rating}
+                      </button>
+                    ))}
+                  </div>
+                  {template.myRating ? <span className="rating-user-note">我的评分 {template.myRating}</span> : null}
+                </div>
+              </article>
+            );
+          })}
         </div>
       )}
+      <PaginationControls page={currentPage} pageSize={pageSize} total={total} onPageChange={onPageChange} />
     </div>
   );
 }
@@ -5171,11 +7532,11 @@ function BillingPanel({ summary }: { summary: BillingSummary | null }) {
           <div className="stat-label">调用</div>
         </div>
       </div>
-      <div className="metric-list">
-        {summary.byTask.slice(0, 5).map((task) => (
+      <div className="metric-list library-scroll-list">
+        {summary.byTask.map((task) => (
           <div key={task.taskId} className="metric-item">
             <div>
-              <span className="metric-name">{task.prompt.slice(0, 34)}</span>
+              <span className="metric-name">{getUserVisiblePrompt(task.prompt).slice(0, 34)}</span>
               <span className="metric-meta">
                 {task.model} · {task.totalCalls} calls · {formatNumber(task.totalTokens)} tokens
               </span>

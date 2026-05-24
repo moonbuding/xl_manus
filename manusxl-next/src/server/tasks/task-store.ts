@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { byteSize, createId } from "@/lib/id";
 import { safeRecordAuditLog } from "@/server/audit/audit-store";
@@ -12,7 +12,7 @@ import {
   runPsql
 } from "@/server/db/provider";
 import { getManusDb } from "@/server/sqlite";
-import type { AgentEvent, Artifact, Task, TaskStatus } from "@/types/agent";
+import type { AgentEvent, Artifact, Task, TaskExecutionTarget, TaskFolder, TaskStatus } from "@/types/agent";
 
 type Subscriber = (event: AgentEvent) => void;
 
@@ -46,6 +46,7 @@ interface TaskPersistenceAdapter {
   readTasks: () => Map<string, Task>;
   persistTask: (task: Task) => void;
   insertFile: (artifact: Artifact, ownerId?: string) => void;
+  deleteTask: (taskId: string, ownerId?: string) => boolean;
   flushEvents: (
     events: Array<{ event: AgentEvent; ownerId?: string }>,
     tasks: Task[]
@@ -53,10 +54,15 @@ interface TaskPersistenceAdapter {
 }
 
 const dataFile = dataPath("tasks.json");
+const taskFoldersFile = dataPath("task-folders.json");
 const workspaceRoot = dataPath("workspaces");
 
+function taskWorkspaceDir(taskId: string, ownerId?: string) {
+  return ownerId ? join(workspaceRoot, ownerId, taskId) : join(workspaceRoot, taskId);
+}
+
 function taskArtifactDir(taskId: string, ownerId?: string) {
-  return ownerId ? join(workspaceRoot, ownerId, taskId, "artifacts") : join(workspaceRoot, taskId, "artifacts");
+  return join(taskWorkspaceDir(taskId, ownerId), "artifacts");
 }
 
 function sanitizeFilename(value: string) {
@@ -72,6 +78,26 @@ function readPersistedTasks() {
   } catch {
     return new Map<string, Task>();
   }
+}
+
+function readTaskFolders() {
+  try {
+    if (!existsSync(taskFoldersFile)) return [];
+    const raw = readFileSync(taskFoldersFile, "utf8");
+    const parsed = JSON.parse(raw) as TaskFolder[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeTaskFolders(folders: TaskFolder[]) {
+  mkdirSync(dataPath(), { recursive: true });
+  writeFileSync(taskFoldersFile, JSON.stringify(folders, null, 2));
+}
+
+function normalizeTaskFolderName(name: string) {
+  return name.replace(/\s+/g, " ").trim().slice(0, 36);
 }
 
 function openSqliteDatabase() {
@@ -134,6 +160,26 @@ function createSqlitePersistence(): TaskPersistenceAdapter {
     readTasks: () => readSqliteTasks(db),
     persistTask: (task) => upsertTask(db, task),
     insertFile: (artifact, ownerId) => insertFile(db, artifact, ownerId),
+    deleteTask: (taskId, ownerId) => {
+      db.exec("BEGIN");
+      try {
+        if (ownerId) {
+          db.prepare("DELETE FROM task_files WHERE task_id = ? AND owner_id = ?").run(taskId, ownerId);
+          db.prepare("DELETE FROM task_steps WHERE task_id = ? AND owner_id = ?").run(taskId, ownerId);
+          const result = db.prepare("DELETE FROM tasks WHERE id = ? AND owner_id = ?").run(taskId, ownerId);
+          db.exec("COMMIT");
+          return result.changes > 0;
+        }
+        db.prepare("DELETE FROM task_files WHERE task_id = ?").run(taskId);
+        db.prepare("DELETE FROM task_steps WHERE task_id = ?").run(taskId);
+        const result = db.prepare("DELETE FROM tasks WHERE id = ?").run(taskId);
+        db.exec("COMMIT");
+        return result.changes > 0;
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
     flushEvents: (events, tasks) => {
       db.exec("BEGIN");
       try {
@@ -393,6 +439,29 @@ function createPostgresPersistence(): TaskPersistenceAdapter {
     insertFile: (artifact, ownerId) => {
       runPsql(["-c", fileInsertSql(artifact, ownerId)]);
     },
+    deleteTask: (taskId, ownerId) => {
+      const taskWhere = ownerId
+        ? `id = ${postgresValue(taskId)} AND owner_id = ${postgresValue(ownerId)}`
+        : `id = ${postgresValue(taskId)}`;
+      const childWhere = ownerId
+        ? `task_id = ${postgresValue(taskId)} AND owner_id = ${postgresValue(ownerId)}`
+        : `task_id = ${postgresValue(taskId)}`;
+      const output = runPsql([
+        "-At",
+        "-c",
+        `
+          BEGIN;
+          DELETE FROM task_files WHERE ${childWhere};
+          DELETE FROM task_steps WHERE ${childWhere};
+          WITH deleted AS (
+            DELETE FROM tasks WHERE ${taskWhere} RETURNING id
+          )
+          SELECT COUNT(*) FROM deleted;
+          COMMIT;
+        `
+      ]);
+      return Number.parseInt(output.trim().split(/\s+/).find((part) => /^\d+$/.test(part)) ?? "0", 10) > 0;
+    },
     flushEvents: (events, tasks) => {
       const sql = [
         "BEGIN;",
@@ -643,7 +712,8 @@ export function listTasks(query?: string, ownerId?: string) {
     .filter((task) => (ownerId ? task.ownerId === ownerId : true))
     .filter((task) =>
       normalizedQuery
-        ? task.prompt.toLowerCase().includes(normalizedQuery) ||
+        ? task.title?.toLowerCase().includes(normalizedQuery) ||
+          task.prompt.toLowerCase().includes(normalizedQuery) ||
           task.id.toLowerCase().includes(normalizedQuery)
         : true
     )
@@ -666,11 +736,95 @@ export function getTask(taskId: string, ownerId?: string) {
   return task;
 }
 
+export function listTaskFolders(ownerId: string) {
+  return readTaskFolders()
+    .filter((folder) => folder.ownerId === ownerId)
+    .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt));
+}
+
+export function createTaskFolder(ownerId: string, name: string) {
+  const safeName = normalizeTaskFolderName(name);
+  if (!safeName) return { ok: false as const, status: 400, error: "Folder name is required" };
+  const folders = readTaskFolders();
+  const now = new Date().toISOString();
+  const folder: TaskFolder = {
+    id: createId("folder"),
+    ownerId,
+    name: safeName,
+    createdAt: now,
+    updatedAt: now
+  };
+  folders.push(folder);
+  writeTaskFolders(folders);
+  return { ok: true as const, folder };
+}
+
+export function updateTaskFolder(folderId: string, ownerId: string, name: string) {
+  const safeName = normalizeTaskFolderName(name);
+  if (!safeName) return { ok: false as const, status: 400, error: "Folder name is required" };
+  const folders = readTaskFolders();
+  const index = folders.findIndex((folder) => folder.id === folderId && folder.ownerId === ownerId);
+  if (index < 0) return { ok: false as const, status: 404, error: "Folder not found" };
+  folders[index] = { ...folders[index], name: safeName, updatedAt: new Date().toISOString() };
+  writeTaskFolders(folders);
+  return { ok: true as const, folder: folders[index] };
+}
+
+export function deleteTaskFolder(folderId: string, ownerId: string) {
+  const folders = readTaskFolders();
+  const folder = folders.find((candidate) => candidate.id === folderId && candidate.ownerId === ownerId);
+  if (!folder) return { ok: false as const, status: 404, error: "Folder not found" };
+  writeTaskFolders(folders.filter((candidate) => candidate.id !== folderId));
+  const state = getState();
+  const changedTasks: Task[] = [];
+  state.tasks.forEach((task) => {
+    if (task.ownerId === ownerId && task.folderId === folderId) {
+      task.folderId = undefined;
+      task.updatedAt = new Date().toISOString();
+      changedTasks.push(task);
+    }
+  });
+  changedTasks.forEach((task) => persistTask(task));
+  return { ok: true as const, folder };
+}
+
+export function updateTaskMetadata(
+  taskId: string,
+  ownerId: string,
+  patch: { title?: string | null; folderId?: string | null }
+) {
+  const task = getTask(taskId, ownerId);
+  if (!task) return { ok: false as const, status: 404, error: "Task not found" };
+
+  if ("title" in patch) {
+    const title = patch.title?.replace(/\s+/g, " ").trim().slice(0, 80);
+    task.title = title || undefined;
+  }
+
+  if ("folderId" in patch) {
+    const folderId = patch.folderId?.trim();
+    if (folderId) {
+      const folder = readTaskFolders().find(
+        (candidate) => candidate.id === folderId && candidate.ownerId === ownerId
+      );
+      if (!folder) return { ok: false as const, status: 404, error: "Folder not found" };
+      task.folderId = folderId;
+    } else {
+      task.folderId = undefined;
+    }
+  }
+
+  task.updatedAt = new Date().toISOString();
+  persistTask(task);
+  return { ok: true as const, task };
+}
+
 export function createTask(
   prompt: string,
   model: string,
   ownerId?: string,
-  uploadedFileIds: string[] = []
+  uploadedFileIds: string[] = [],
+  options: { executionTarget?: TaskExecutionTarget } = {}
 ) {
   const state = getState();
   const now = new Date().toISOString();
@@ -679,6 +833,7 @@ export function createTask(
     ownerId,
     prompt,
     uploadedFileIds: uploadedFileIds.length > 0 ? uploadedFileIds : undefined,
+    executionTarget: options.executionTarget ?? "cloud",
     model,
     status: "queued",
     createdAt: now,
@@ -690,6 +845,59 @@ export function createTask(
   state.tasks.set(task.id, task);
   persistTask(task);
   return task;
+}
+
+function taskTitleFromPrompt(prompt: string) {
+  const markerIndex = prompt.indexOf("[上传文件摘要]");
+  const visiblePrompt = markerIndex >= 0 ? prompt.slice(0, markerIndex) : prompt;
+  return visiblePrompt.replace(/\s+/g, " ").trim().slice(0, 80) || "未命名任务";
+}
+
+export function continueTaskConversation(
+  taskId: string,
+  ownerId: string,
+  prompt: string,
+  options: {
+    model?: string;
+    uploadedFileIds?: string[];
+  } = {}
+) {
+  const task = getTask(taskId, ownerId);
+  if (!task) return { ok: false as const, status: 404, error: "Task not found" };
+  if (task.status === "queued" || task.status === "running") {
+    return { ok: false as const, status: 409, error: "当前任务仍在运行，请等待完成后继续对话。" };
+  }
+
+  const followUp = prompt.trim();
+  if (!followUp) return { ok: false as const, status: 400, error: "Prompt is required" };
+
+  const turn = task.events.filter((event) => event.title?.startsWith("用户追问")).length + 1;
+  const now = new Date().toISOString();
+  if (!task.title?.trim()) task.title = taskTitleFromPrompt(task.prompt);
+  task.prompt = [
+    task.prompt,
+    "",
+    `[继续对话 ${turn}]`,
+    "请基于这个任务此前的执行过程、记忆、交付物和最终结果继续处理下面的追问，不要把它当成全新的独立任务。",
+    followUp
+  ].join("\n");
+  task.model = options.model?.trim() || task.model;
+  task.uploadedFileIds = Array.from(new Set([...(task.uploadedFileIds ?? []), ...(options.uploadedFileIds ?? [])]));
+  if (task.uploadedFileIds.length === 0) task.uploadedFileIds = undefined;
+  task.status = "queued";
+  task.error = undefined;
+  task.finalAnswer = undefined;
+  task.updatedAt = now;
+  persistTask(task);
+
+  addTaskEvent(taskId, {
+    type: "message",
+    stepIndex: task.events.length + 1,
+    title: `用户追问 ${turn}`,
+    content: followUp
+  });
+
+  return { ok: true as const, task: getTask(taskId, ownerId) ?? task };
 }
 
 export function updateTaskStatus(taskId: string, status: TaskStatus, error?: string) {
@@ -814,4 +1022,41 @@ export function cancelTask(taskId: string, ownerId?: string) {
     content: "用户取消了当前任务。"
   });
   return getTask(taskId);
+}
+
+export function deleteTask(taskId: string, ownerId?: string) {
+  const state = getState();
+  const task = getTask(taskId, ownerId);
+  if (!task) return { ok: false as const, status: 404, error: "Task not found" };
+  if (task.status === "queued" || task.status === "running") {
+    return { ok: false as const, status: 409, error: "运行中的任务不能删除，请先停止任务。" };
+  }
+
+  const deleted = state.persistence.deleteTask(taskId, ownerId);
+  if (!deleted) return { ok: false as const, status: 404, error: "Task not found" };
+
+  state.tasks.delete(taskId);
+  state.pendingTaskIds.delete(taskId);
+  state.pendingEvents = state.pendingEvents.filter((item) => item.event.taskId !== taskId);
+  state.subscribers.delete(taskId);
+  rmSync(taskWorkspaceDir(taskId, task.ownerId), { recursive: true, force: true });
+
+  return { ok: true as const, task };
+}
+
+export function deleteTasks(taskIds: string[], ownerId?: string) {
+  const uniqueIds = Array.from(new Set(taskIds.map((taskId) => taskId.trim()).filter(Boolean)));
+  const deleted: string[] = [];
+  const failed: Array<{ taskId: string; error: string }> = [];
+
+  uniqueIds.forEach((taskId) => {
+    const result = deleteTask(taskId, ownerId);
+    if (result.ok) {
+      deleted.push(taskId);
+    } else {
+      failed.push({ taskId, error: result.error });
+    }
+  });
+
+  return { deleted, failed };
 }

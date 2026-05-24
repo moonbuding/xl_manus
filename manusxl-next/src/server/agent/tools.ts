@@ -23,6 +23,7 @@ import {
 } from "@/server/skills/skill-registry";
 import { callMcpServerTool, enabledMcpTools, listEnabledMcpServers } from "@/server/mcp/mcp-registry";
 import { ensureTaskWorkspace } from "@/server/workspace/task-workspace";
+import type { ArtifactType } from "@/types/agent";
 
 const DEFAULT_TOOL_TIMEOUT_MS = 10_000;
 const DEFAULT_TOOL_MAX_BUFFER_BYTES = 1024 * 1024;
@@ -353,8 +354,78 @@ function isWideResearchIntent(value: string) {
   );
 }
 
-function isSlideDeckIntent(value: string) {
-  return /pptx?|powerpoint|slides?|slide deck|幻灯片|演示文稿|路演|bp|投资人|融资|商业计划书|汇报材料|演讲稿/i.test(
+export function isFactualResearchIntent(value: string) {
+  return /调研|研究|资料|背景|事实|来源|新闻|最新|近期|时事|政策|外交|经贸|市场|行业|竞品|公司|国家|总统|政府|选举|特朗普|trump|拜登|biden|习近平|访华|访美|中美|美国|中国|欧盟|俄乌|加沙|能源|新能源|top\s*\d+|排名|前五/i.test(
+    value
+  );
+}
+
+function hasCreationSignal(value: string) {
+  return /输出|生成|创建|制作|做一个|写一|写个|写成|整理成|导出|保存为|交付|给我|为我|帮我/i.test(
+    value
+  );
+}
+
+function hasFormatNearAction(value: string, formatPattern: string) {
+  const pattern = new RegExp(
+    `(?:输出|生成|创建|制作|做一个|写一|写个|写成|整理成|导出|保存为|交付|给我|为我|帮我).{0,36}(?:${formatPattern})|(?:${formatPattern}).{0,18}(?:格式|文件|文档|交付物|版本)`,
+    "i"
+  );
+  return pattern.test(value);
+}
+
+export function detectRequestedArtifactTypes(value: string) {
+  const intent = taskIntentText(value);
+  const lower = intent.toLowerCase();
+  const explicitTypes: ArtifactType[] = [];
+  const creationSignal = hasCreationSignal(intent);
+  const sourceOnlyDocument =
+    /(?:上传|读取|解析|分析|打开|导入).{0,16}(?:word|docx|文档|讲稿|演讲稿)/i.test(intent) &&
+    !/(?:输出|生成|创建|制作|做一个|写一|写个|写成|整理成|导出|保存为).{0,36}(?:word|docx|文档|讲稿|演讲稿)/i.test(
+      intent
+    );
+
+  if (!sourceOnlyDocument && hasFormatNearAction(intent, String.raw`\bword\b|\bdocx\b|word\s*文档`)) {
+    explicitTypes.push("docx");
+  }
+  if (
+    hasFormatNearAction(
+      intent,
+      String.raw`\bpptx?\b|powerpoint|slides?|slide deck|幻灯片|演示文稿|路演|bp|商业计划书`
+    )
+  ) {
+    explicitTypes.push("pptx");
+  }
+  if (hasFormatNearAction(intent, String.raw`\bpdf\b`)) explicitTypes.push("pdf");
+  if (hasFormatNearAction(intent, String.raw`\bmarkdown\b|\bmd\b`)) explicitTypes.push("md");
+  if (hasFormatNearAction(intent, String.raw`\bhtml\b|网页|页面`)) explicitTypes.push("html");
+  if (hasFormatNearAction(intent, String.raw`\bxlsx\b|\bexcel\b|工作簿|表格`)) explicitTypes.push("xlsx");
+  if (hasFormatNearAction(intent, String.raw`\bcsv\b`)) explicitTypes.push("csv");
+  if (/zip|打包|压缩包/.test(lower) && creationSignal) explicitTypes.push("zip");
+
+  const documentLike = /演讲稿|讲稿|发言稿|讲话稿|文档|报告|文章|摘要|说明|方案/i.test(intent);
+  if (!sourceOnlyDocument && explicitTypes.length === 0 && creationSignal && documentLike) {
+    explicitTypes.push("docx");
+  }
+
+  return Array.from(new Set(explicitTypes));
+}
+
+export function isDocumentIntent(value: string) {
+  const types = detectRequestedArtifactTypes(value);
+  return (
+    types.includes("docx") ||
+    types.includes("pdf") ||
+    types.includes("md") ||
+    (types.length === 0 && hasCreationSignal(taskIntentText(value)) && /演讲稿|讲稿|发言稿|讲话稿|文档|报告|文章|摘要|说明|方案/i.test(value))
+  );
+}
+
+export function isSlideDeckIntent(value: string) {
+  const requestedTypes = detectRequestedArtifactTypes(value);
+  if (requestedTypes.includes("pptx")) return true;
+  if (requestedTypes.includes("docx") && !requestedTypes.includes("pptx")) return false;
+  return /pptx?|powerpoint|slides?|slide deck|幻灯片|演示文稿|路演|bp|投资人|融资|商业计划书/i.test(
     value
   );
 }
@@ -381,6 +452,15 @@ export function selectToolsForPrompt(prompt: string, ownerId?: string): AgentToo
   }
   if (isSlideDeckIntent(intent)) {
     selected.push("slide_deck_builder", "artifact_writer", "data_analysis");
+    if (isFactualResearchIntent(intent)) {
+      selected.push("web_research");
+    }
+  }
+  if (isDocumentIntent(intent)) {
+    selected.push("artifact_writer", "data_analysis");
+    if (isFactualResearchIntent(intent)) {
+      selected.push("web_research");
+    }
   }
   if (isWebAppBuilderIntent(intent)) {
     selected.push("web_app_builder", "file_workspace", "artifact_writer", "data_analysis");
@@ -444,6 +524,8 @@ export function inferToolsForStep(step: string): AgentToolName[] {
 
   if (isWideResearchIntent(step)) candidates.push("spawn_sub_agents");
   if (isSlideDeckIntent(step)) candidates.push("slide_deck_builder");
+  if (isSlideDeckIntent(step) && isFactualResearchIntent(step)) candidates.push("web_research");
+  if (isDocumentIntent(step) && isFactualResearchIntent(step)) candidates.push("web_research");
   if (isWebAppBuilderIntent(step)) candidates.push("web_app_builder");
   if (isImageGenerationIntent(step)) candidates.push("image_generator");
   if (/python|脚本|代码|计算|统计|notebook/.test(lower)) candidates.push("python_execute");
@@ -692,9 +774,18 @@ async function runWebResearch(input: AgentToolInput): Promise<AgentToolResult> {
     return {
       toolName: "web_research",
       ok: true,
-      observation: `已完成真实网页搜索，返回 ${results.length} 条候选资料：${results
-        .map((item, index) => `${index + 1}. ${item.title}`)
-        .join("；")}`,
+      observation: [
+        `已完成真实网页搜索，返回 ${results.length} 条候选资料。`,
+        ...results.slice(0, 5).map((item, index) =>
+          [
+            `${index + 1}. ${item.title}`,
+            item.snippet ? `摘要：${item.snippet.slice(0, 180)}` : "",
+            item.url ? `来源：${item.url}` : ""
+          ]
+            .filter(Boolean)
+            .join("；")
+        )
+      ].join("\n"),
       payload: { query, results }
     };
   } catch (error) {
@@ -2766,6 +2857,7 @@ interface WideResearchSubAgentResult {
   attempts: number;
   summary: string;
   findings: string[];
+  sources?: SearchResult[];
   confidence: number;
   latencyMs: number;
   error?: string;
@@ -2879,6 +2971,74 @@ function fallbackWideResearchItems(text: string, count: number) {
   return Array.from({ length: count }, (_, index) => `${label} ${String(index + 1).padStart(3, "0")}`);
 }
 
+function knownWideResearchCandidates(text: string) {
+  if (/新能源|新能源汽车|新能源车|NEV|电动车|电动汽车|销量/.test(text)) {
+    return [
+      "比亚迪",
+      "特斯拉中国",
+      "吉利汽车",
+      "长安汽车",
+      "奇瑞汽车",
+      "上汽通用五菱",
+      "广汽埃安",
+      "理想汽车",
+      "蔚来",
+      "小鹏汽车",
+      "零跑汽车",
+      "赛力斯/问界"
+    ];
+  }
+
+  return [];
+}
+
+function inferWideResearchItemsFromSearch(results: SearchResult[], text: string, count: number) {
+  const known = knownWideResearchCandidates(text);
+  if (known.length === 0) return [];
+
+  const haystack = results
+    .map((result) => `${result.title}\n${result.snippet}`)
+    .join("\n")
+    .toLowerCase();
+  const ranked = known
+    .map((item, index) => {
+      const aliases = item.split(/[\/、]/).map((alias) => alias.trim().toLowerCase());
+      const firstHit = aliases
+        .map((alias) => haystack.indexOf(alias))
+        .filter((position) => position >= 0)
+        .sort((a, b) => a - b)[0];
+      return { item, score: firstHit === undefined ? 10000 + index : firstHit };
+    })
+    .sort((a, b) => a.score - b.score)
+    .map((entry) => entry.item);
+
+  return ranked.slice(0, count);
+}
+
+async function resolveWideResearchItems(sourceText: string, requestedCount: number) {
+  const explicitItems = extractExplicitWideResearchItems(sourceText);
+  if (explicitItems.length >= 2) {
+    return { items: explicitItems, source: "explicit_input" };
+  }
+
+  const knownItems = knownWideResearchCandidates(sourceText);
+  if (knownItems.length >= 2) {
+    try {
+      const searchResults = await webSearch(sourceText.slice(0, 180));
+      const inferredItems = inferWideResearchItemsFromSearch(searchResults, sourceText, requestedCount);
+      if (inferredItems.length >= 2) {
+        return { items: inferredItems, source: "search_guided_candidates", seedSources: searchResults };
+      }
+    } catch {
+      // Fall back to domain candidates below.
+    }
+
+    return { items: knownItems.slice(0, requestedCount), source: "domain_candidates" };
+  }
+
+  return { items: fallbackWideResearchItems(sourceText, requestedCount), source: "generated_placeholders" };
+}
+
 function hashText(value: string) {
   let hash = 0;
   for (let index = 0; index < value.length; index += 1) {
@@ -2888,7 +3048,18 @@ function hashText(value: string) {
 }
 
 function wideResearchCsv(results: WideResearchSubAgentResult[]) {
-  const headers = ["id", "item", "status", "attempts", "confidence", "latencyMs", "summary", "findings", "error"];
+  const headers = [
+    "id",
+    "item",
+    "status",
+    "attempts",
+    "confidence",
+    "latencyMs",
+    "summary",
+    "findings",
+    "sources",
+    "error"
+  ];
   return [
     headers.join(","),
     ...results.map((result) =>
@@ -2901,6 +3072,7 @@ function wideResearchCsv(results: WideResearchSubAgentResult[]) {
         result.latencyMs,
         result.summary,
         result.findings.join(" | "),
+        (result.sources ?? []).map((source) => `${source.title} ${source.url}`).join(" | "),
         result.error ?? ""
       ]
         .map((value) => csvEscape(String(value)))
@@ -2944,15 +3116,16 @@ function wideResearchMarkdown(
       : "本轮没有跳过的子 Agent。",
     "",
     "## 子 Agent 结果",
-    "| # | 对象 | 状态 | 置信度 | 摘要 |",
-    "| - | - | - | - | - |",
+    "| # | 对象 | 状态 | 置信度 | 摘要 | 主要依据 |",
+    "| - | - | - | - | - | - |",
     ...results.map((result, index) =>
       [
         String(index + 1),
         markdownTableCell(result.item),
         result.status,
         result.confidence.toFixed(2),
-        markdownTableCell(result.summary)
+        markdownTableCell(result.summary),
+        markdownTableCell((result.sources ?? []).slice(0, 2).map((source) => source.title).join("；") || "待补充")
       ].join(" | ")
     )
   ].join("\n");
@@ -2976,19 +3149,30 @@ async function runVirtualSubAgent(
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 5 + (fingerprint % 12)));
     if (!shouldFail) {
+      const sources = await webSearch(`${item} ${prompt}`.slice(0, 180)).catch(() => []);
+      const topSources = sources.slice(0, 3);
+      const sourceFindings = topSources.map((source, sourceIndex) =>
+        `${item} 依据 ${sourceIndex + 1}：${source.title}${source.snippet ? `；${source.snippet.slice(0, 180)}` : ""}`
+      );
+      const confidenceWithSources = Number(Math.min(0.96, confidence + (topSources.length > 0 ? 0.06 : 0)).toFixed(2));
+
       return {
         id,
         item,
         status: "completed",
         attempts: attempt,
-        confidence,
+        confidence: confidenceWithSources,
         latencyMs: Date.now() - startedAt,
-        summary: `${item} 已完成独立调研草稿：覆盖定位、关键指标、可比维度和下一步核验点。`,
+        summary:
+          topSources.length > 0
+            ? `${item} 已完成资料检索：提取 ${topSources.length} 条来源，可用于横向对比与事实核验。`
+            : `${item} 已完成独立调研草稿：未拿到稳定网页来源，需在最终报告中标注待复核。`,
         findings: [
-          `${item}：已抽取适合横向对比的基础维度。`,
+          ...(sourceFindings.length > 0 ? sourceFindings : [`${item}：未检索到稳定来源，建议补充权威数据。`]),
           `${item}：建议补充最新公开数据、价格/规模口径和风险来源。`,
           `${item}：可进入主 Agent 的 structured_merge 汇总。`
-        ]
+        ],
+        sources: topSources
       };
     }
   }
@@ -3051,9 +3235,8 @@ async function runSpawnSubAgents(input: AgentToolInput): Promise<AgentToolResult
     configuredPositiveNumber("MANUSXL_SUB_AGENT_CONCURRENCY", 8),
     maxSubAgents
   );
-  const explicitItems = extractExplicitWideResearchItems(sourceText);
-  const sourceItems =
-    explicitItems.length >= 2 ? explicitItems : fallbackWideResearchItems(sourceText, requestedCount);
+  const resolvedItems = await resolveWideResearchItems(sourceText, requestedCount);
+  const sourceItems = resolvedItems.items;
   const items = sourceItems.slice(0, maxSubAgents);
   const capped = sourceItems.length > items.length || requestedCount > maxSubAgents;
   const startedAt = Date.now();
@@ -3067,6 +3250,7 @@ async function runSpawnSubAgents(input: AgentToolInput): Promise<AgentToolResult
     payload: {
       tool: "spawn_sub_agents",
       phase: "start",
+      itemSource: resolvedItems.source,
       requestedCount,
       actualCount: items.length,
       concurrencyLimit,
@@ -3118,6 +3302,7 @@ async function runSpawnSubAgents(input: AgentToolInput): Promise<AgentToolResult
       mode: "local_virtual_sub_agents_mvp",
       requestedCount,
       actualCount: results.length,
+      itemSource: resolvedItems.source,
       maxSubAgents,
       concurrencyLimit,
       capped,
@@ -3169,6 +3354,7 @@ async function runSpawnSubAgents(input: AgentToolInput): Promise<AgentToolResult
         mode: "local_virtual_sub_agents_mvp",
         requestedCount,
         actualCount: results.length,
+        itemSource: resolvedItems.source,
         maxSubAgents,
         concurrencyLimit,
         capped,

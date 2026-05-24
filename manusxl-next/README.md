@@ -262,6 +262,14 @@ npm run e2e:design
 
 该脚本会验证 Settings 图片 provider 配置、`image_generator` 工具调用、本地 PNG/SVG/manifest/ZIP 交付物，以及外部 provider 未配置 API Key 时自动回退本地生成，确保 PPT/网页素材生成不会阻塞主任务。
 
+团队/组织验收：
+
+```bash
+npm run e2e:org
+```
+
+该脚本会验证创建多个组织、邀请同事加入、Viewer 只读权限、组织共享任务可见，以及组织任务配额满后拒绝新任务。
+
 批量文件处理验收：
 
 ```bash
@@ -287,6 +295,7 @@ npm run e2e:batch
 - 审计日志、CSV 导出和 hash chain 校验
 - 批量文件重命名/分类 dry-run 清单与可下载批处理包
 - 模板市场：公开模板、Fork 到个人 Library、评分排序和基础 prompt 注入审核
+- 团队/组织 MVP：组织创建、成员邀请、owner/admin/member/viewer 角色、组织任务共享和任务配额拦截
 - 任务完成/失败通知：Email、Webhook、Slack 偏好、通知日志和开发环境测试发送
 - 动态模型路由优化：基于历史 Context 指标推荐规划/执行/总结模型，展示 A/B 回放并支持一键应用覆盖
 - Scheduled Tasks + Mail Manus + Manus for Slack MVP：interval/cron 触发、入站邮件 webhook、Slack Events webhook 统一创建 Agent 任务

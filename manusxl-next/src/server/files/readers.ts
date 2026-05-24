@@ -1,6 +1,9 @@
+import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { basename, extname, join } from "node:path";
+import { promisify } from "node:util";
 import { inflateRawSync, inflateSync } from "node:zlib";
 import { createId } from "@/lib/id";
 import { dataPath } from "@/server/data-root";
@@ -15,6 +18,8 @@ import type { UploadedFileSummary } from "@/types/agent";
 
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 const TEXT_PREVIEW_LIMIT = 4200;
+const PDF_EXTRACTION_LIMIT = 12000;
+const execFileAsync = promisify(execFile);
 
 interface ZipEntry {
   name: string;
@@ -35,6 +40,8 @@ interface UploadPersistenceAdapter {
   ensureSchema: () => void;
   save: (record: UploadedFileRecord) => void;
   get: (fileId: string, ownerId?: string) => UploadedFileRecord | undefined;
+  list: (ownerId: string, limit: number) => UploadedFileRecord[];
+  delete: (fileId: string, ownerId?: string) => void;
 }
 
 const globalForUploads = globalThis as unknown as {
@@ -117,6 +124,30 @@ function getUploadedFileRecordSqlite(fileId: string, ownerId?: string) {
   return row ? (JSON.parse(row.data_json) as UploadedFileRecord) : undefined;
 }
 
+function listUploadedFileRecordsSqlite(ownerId: string, limit: number) {
+  const rows = getUploadDb()
+    .prepare(
+      `
+        SELECT data_json
+        FROM uploaded_files
+        WHERE owner_id = ?
+        ORDER BY created_at DESC
+        LIMIT ?
+      `
+    )
+    .all(ownerId, Math.max(1, Math.min(limit, 200))) as Array<{ data_json: string }>;
+  return rows.map((row) => JSON.parse(row.data_json) as UploadedFileRecord);
+}
+
+function deleteUploadedFileRecordSqlite(fileId: string, ownerId?: string) {
+  const db = getUploadDb();
+  if (ownerId) {
+    db.prepare("DELETE FROM uploaded_files WHERE id = ? AND owner_id = ?").run(fileId, ownerId);
+    return;
+  }
+  db.prepare("DELETE FROM uploaded_files WHERE id = ?").run(fileId);
+}
+
 function postgresSchemaPath() {
   return join(process.cwd(), "db", "postgres", "0001_initial.sql");
 }
@@ -193,6 +224,37 @@ function getUploadedFileRecordPostgres(fileId: string, ownerId?: string) {
   return row ? (JSON.parse(row) as UploadedFileRecord) : undefined;
 }
 
+function listUploadedFileRecordsPostgres(ownerId: string, limit: number) {
+  const output = runPsql([
+    "-At",
+    "-c",
+    `
+      SELECT data_json::text
+      FROM uploaded_files
+      WHERE owner_id = ${postgresValue(ownerId)}
+      ORDER BY created_at DESC
+      LIMIT ${Math.max(1, Math.min(limit, 200))};
+    `
+  ]);
+  return output
+    .split("\n")
+    .map((row) => row.trim())
+    .filter(Boolean)
+    .map((row) => JSON.parse(row) as UploadedFileRecord);
+}
+
+function deleteUploadedFileRecordPostgres(fileId: string, ownerId?: string) {
+  const ownerFilter = ownerId ? `AND owner_id = ${postgresValue(ownerId)}` : "";
+  runPsql([
+    "-c",
+    `
+      DELETE FROM uploaded_files
+      WHERE id = ${postgresValue(fileId)}
+      ${ownerFilter};
+    `
+  ]);
+}
+
 function createSqliteUploadStore(): UploadPersistenceAdapter {
   return {
     provider: "sqlite",
@@ -200,7 +262,9 @@ function createSqliteUploadStore(): UploadPersistenceAdapter {
       getUploadDb();
     },
     save: saveUploadRecordSqlite,
-    get: getUploadedFileRecordSqlite
+    get: getUploadedFileRecordSqlite,
+    list: listUploadedFileRecordsSqlite,
+    delete: deleteUploadedFileRecordSqlite
   };
 }
 
@@ -212,7 +276,9 @@ function createPostgresUploadStore(): UploadPersistenceAdapter {
     save: (record) => {
       runPsql(["-c", uploadRecordUpsertSql(record)]);
     },
-    get: getUploadedFileRecordPostgres
+    get: getUploadedFileRecordPostgres,
+    list: listUploadedFileRecordsPostgres,
+    delete: deleteUploadedFileRecordPostgres
   };
 }
 
@@ -238,7 +304,13 @@ function createUploadStore(): UploadPersistenceAdapter {
 }
 
 function getUploadStore() {
-  globalForUploads.manusxlUploadStore ??= createUploadStore();
+  if (
+    !globalForUploads.manusxlUploadStore ||
+    typeof globalForUploads.manusxlUploadStore.list !== "function" ||
+    typeof globalForUploads.manusxlUploadStore.delete !== "function"
+  ) {
+    globalForUploads.manusxlUploadStore = createUploadStore();
+  }
   globalForUploads.manusxlUploadStore.ensureSchema();
   return globalForUploads.manusxlUploadStore;
 }
@@ -259,6 +331,45 @@ export function listUploadedFileRecords(ownerId: string | undefined, fileIds: st
   return uniqueIds
     .map((fileId) => getUploadedFileRecord(fileId, ownerId))
     .filter((record): record is UploadedFileRecord => Boolean(record));
+}
+
+function uploadExpiresAt(record: UploadedFileRecord) {
+  const value = record.metadata?.expiresAt;
+  return typeof value === "string" ? value : undefined;
+}
+
+function isUploadExpired(record: UploadedFileRecord, now = Date.now()) {
+  const expiresAt = uploadExpiresAt(record);
+  return expiresAt ? Date.parse(expiresAt) <= now : false;
+}
+
+export async function cleanupExpiredUploadedFiles(ownerId?: string) {
+  if (!ownerId) return [];
+  const store = getUploadStore();
+  const expired = store.list(ownerId, 200).filter((record) => isUploadExpired(record));
+  await Promise.all(
+    expired.map(async (record) => {
+      store.delete(record.id, ownerId);
+      await unlink(record.storedPath).catch(() => undefined);
+    })
+  );
+  return expired;
+}
+
+export async function listUploadedFilesForOwner(ownerId: string, limit = 80) {
+  await cleanupExpiredUploadedFiles(ownerId);
+  return getUploadStore()
+    .list(ownerId, limit)
+    .filter((record) => !isUploadExpired(record));
+}
+
+export async function deleteUploadedFileForOwner(fileId: string, ownerId: string) {
+  const store = getUploadStore();
+  const record = store.get(fileId, ownerId);
+  if (!record) return undefined;
+  store.delete(fileId, ownerId);
+  await unlink(record.storedPath).catch(() => undefined);
+  return record;
 }
 
 function sanitizeFilename(value: string) {
@@ -836,6 +947,111 @@ function isPdfContentStream(stream: PdfStream) {
   return /\bBT\b/.test(stream.content) && /(?:Tj|TJ|')/.test(stream.content);
 }
 
+function findExecutable(candidates: string[]) {
+  return candidates.find((candidate) => existsSync(candidate));
+}
+
+async function runTextCommand(command: string, args: string[], timeoutMs: number) {
+  const { stdout } = await execFileAsync(command, args, {
+    timeout: timeoutMs,
+    maxBuffer: 8 * 1024 * 1024
+  });
+  return normalizeText(String(stdout), PDF_EXTRACTION_LIMIT);
+}
+
+async function readPdfWithPdftotext(filePath: string) {
+  const pdftotext = findExecutable([
+    "/opt/homebrew/bin/pdftotext",
+    "/usr/local/bin/pdftotext",
+    "/usr/bin/pdftotext"
+  ]);
+  if (!pdftotext) return "";
+
+  try {
+    return await runTextCommand(pdftotext, ["-layout", filePath, "-"], 10000);
+  } catch {
+    return "";
+  }
+}
+
+async function readPdfWithPython(filePath: string) {
+  const python = findExecutable([
+    "/opt/anaconda3/bin/python3",
+    "/opt/homebrew/bin/python3",
+    "/usr/local/bin/python3",
+    "/usr/bin/python3"
+  ]);
+  if (!python) return "";
+
+  const script = [
+    "import sys",
+    "path = sys.argv[1]",
+    "text = ''",
+    "try:",
+    "    import pdfplumber",
+    "    with pdfplumber.open(path) as pdf:",
+    "        text = '\\n'.join((page.extract_text() or '') for page in pdf.pages[:20])",
+    "except Exception:",
+    "    try:",
+    "        from pypdf import PdfReader",
+    "        reader = PdfReader(path)",
+    "        text = '\\n'.join((page.extract_text() or '') for page in reader.pages[:20])",
+    "    except Exception:",
+    "        text = ''",
+    "sys.stdout.write(text)"
+  ].join("\n");
+
+  try {
+    return await runTextCommand(python, ["-c", script, filePath], 12000);
+  } catch {
+    return "";
+  }
+}
+
+async function readPdfWithTesseract(filePath: string) {
+  const sips = findExecutable(["/usr/bin/sips"]);
+  const tesseract = findExecutable([
+    "/opt/homebrew/bin/tesseract",
+    "/usr/local/bin/tesseract",
+    "/usr/bin/tesseract"
+  ]);
+  if (!sips || !tesseract) return "";
+
+  const tempDir = await mkdtemp(join(tmpdir(), "manusxl-pdf-ocr-"));
+  const pngPath = join(tempDir, "page.png");
+  try {
+    await execFileAsync(sips, ["-s", "format", "png", filePath, "--out", pngPath], {
+      timeout: 10000,
+      maxBuffer: 1024 * 1024
+    });
+
+    for (const language of ["chi_sim+eng", "eng"]) {
+      try {
+        const text = await runTextCommand(tesseract, [pngPath, "stdout", "-l", language, "--psm", "6"], 25000);
+        if (isReadablePdfText(text)) return text;
+      } catch {
+        // Try the next installed language set.
+      }
+    }
+    return "";
+  } finally {
+    await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+async function readPdfWithExternalTools(filePath: string) {
+  const candidates = [
+    { extraction: "pdftotext", text: await readPdfWithPdftotext(filePath) },
+    { extraction: "python-pdf", text: await readPdfWithPython(filePath) }
+  ];
+  const textCandidate = candidates.find((candidate) => isReadablePdfText(candidate.text));
+  if (textCandidate) return textCandidate;
+
+  const ocrText = await readPdfWithTesseract(filePath);
+  if (isReadablePdfText(ocrText)) return { extraction: "ocr-first-page", text: ocrText };
+  return { extraction: "", text: "" };
+}
+
 function extractPdfTextFromOperators(content: string, fontMaps = new Map<string, Map<number, string>>()) {
   const pieces: string[] = [];
   let activeCMap: Map<number, string> | undefined;
@@ -887,7 +1103,7 @@ function extractPdfTextFromOperators(content: string, fontMaps = new Map<string,
   return cleanupPdfText(pieces.join(""));
 }
 
-function readPdf(buffer: Buffer) {
+async function readPdf(buffer: Buffer, filePath?: string) {
   const raw = buffer.toString("latin1");
   const streams = extractPdfStreams(buffer);
   const fontMaps = buildPdfFontMaps(raw, streams);
@@ -897,7 +1113,16 @@ function readPdf(buffer: Buffer) {
     .join("\n");
   const decodedText = extractPdfTextFromOperators(content, fontMaps);
   const fallbackText = extractPdfTextFromOperators(`${content}\n${raw}`);
-  const text = isReadablePdfText(decodedText) ? decodedText : isReadablePdfText(fallbackText) ? fallbackText : "";
+  let text = isReadablePdfText(decodedText) ? decodedText : isReadablePdfText(fallbackText) ? fallbackText : "";
+  let extraction = text ? (isReadablePdfText(decodedText) ? "to-unicode-cmap" : "operator-fallback") : "";
+
+  if (!text && filePath) {
+    const external = await readPdfWithExternalTools(filePath);
+    if (external.text) {
+      text = external.text;
+      extraction = external.extraction;
+    }
+  }
 
   return {
     text:
@@ -906,8 +1131,10 @@ function readPdf(buffer: Buffer) {
     metadata: {
       format: "pdf",
       pages: (raw.match(/\/Type\s*\/Page\b/g) ?? []).length,
+      imageObjects: (raw.match(/\/Subtype\s*\/Image\b/g) ?? []).length,
       textReadable: Boolean(text),
-      extraction: text ? "to-unicode-cmap" : "unreadable"
+      ocrApplied: extraction === "ocr-first-page",
+      extraction: extraction || "unreadable"
     }
   };
 }
@@ -962,7 +1189,7 @@ export async function analyzeStoredFile(input: {
       columns: rows[0]?.length ?? 0
     };
   } else if (extension === ".pdf" || input.mimeType === "application/pdf") {
-    const parsed = readPdf(buffer);
+    const parsed = await readPdf(buffer, input.storedPath);
     text = parsed.text;
     metadata = parsed.metadata;
   } else if (
@@ -1026,6 +1253,33 @@ export async function saveUploadedFile(file: File, ownerId?: string) {
   };
 }
 
+export async function saveUploadedFileBuffer(input: {
+  name: string;
+  mimeType?: string;
+  buffer: Buffer;
+  ownerId?: string;
+}) {
+  const size = input.buffer.byteLength;
+  if (size <= 0) throw new Error("文件为空。");
+  if (size > MAX_UPLOAD_BYTES) throw new Error("文件超过 25MB，当前版本暂不处理。");
+
+  const id = createId("upload");
+  const safeName = sanitizeFilename(input.name || "upload.bin");
+  const uploadRoot = input.ownerId ? dataPath("uploads", input.ownerId) : dataPath("uploads");
+  await mkdir(uploadRoot, { recursive: true });
+
+  const storedPath = join(uploadRoot, `${id}-${safeName}`);
+  await writeFile(storedPath, input.buffer);
+
+  return {
+    id,
+    name: safeName,
+    mimeType: input.mimeType || "application/octet-stream",
+    size,
+    storedPath
+  };
+}
+
 export async function saveAndAnalyzeUpload(file: File, ownerId?: string) {
   const stored = await saveUploadedFile(file, ownerId);
   const summary = await analyzeStoredFile(stored);
@@ -1036,4 +1290,29 @@ export async function saveAndAnalyzeUpload(file: File, ownerId?: string) {
     createdAt: new Date().toISOString()
   });
   return summary;
+}
+
+export async function saveAndAnalyzeUploadBuffer(input: {
+  name: string;
+  mimeType?: string;
+  buffer: Buffer;
+  ownerId?: string;
+  metadata?: Record<string, string | number | boolean>;
+}) {
+  const stored = await saveUploadedFileBuffer(input);
+  const summary = await analyzeStoredFile(stored);
+  const enriched = {
+    ...summary,
+    metadata: {
+      ...summary.metadata,
+      ...(input.metadata ?? {})
+    }
+  };
+  saveUploadRecord({
+    ...enriched,
+    ownerId: input.ownerId,
+    storedPath: stored.storedPath,
+    createdAt: new Date().toISOString()
+  });
+  return enriched;
 }
