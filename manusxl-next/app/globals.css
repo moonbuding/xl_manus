@@ -2600,6 +2600,13 @@ a {
   min-width: 0;
 }
 
+.browser-operation-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 7px;
+}
+
 .browser-operation-item span {
   display: block;
   color: var(--ink);

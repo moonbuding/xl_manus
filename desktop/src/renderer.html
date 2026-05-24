@@ -184,7 +184,10 @@
           <strong>连接状态</strong>
           <span class="chip" id="statusChip">loading</span>
         </div>
-        <button class="secondary" id="heartbeatButton">立即心跳</button>
+        <div class="actions">
+          <button class="secondary" id="heartbeatButton">立即心跳</button>
+          <button class="danger" id="disconnectButton" disabled>断开配对</button>
+        </div>
         <pre id="log">{}</pre>
       </section>
 
@@ -203,7 +206,11 @@
           <span class="chip" id="uploadStatusChip">ready</span>
         </div>
         <p class="task-title" id="uploadSummary">选择一个本机文件上传到云端上传库，默认 7 天 TTL。</p>
-        <button class="secondary" id="uploadFileButton">上传本机文件到云端</button>
+        <div class="actions">
+          <button class="secondary" id="uploadFileButton">选择本机文件</button>
+          <button id="confirmUploadButton" disabled>确认上传</button>
+        </div>
+        <button class="danger" id="cancelUploadButton" disabled>取消待上传文件</button>
       </section>
 
       <section class="panel">
@@ -227,6 +234,7 @@
       const pairingCode = document.getElementById("pairingCode");
       const pairButton = document.getElementById("pairButton");
       const heartbeatButton = document.getElementById("heartbeatButton");
+      const disconnectButton = document.getElementById("disconnectButton");
       const saveServer = document.getElementById("saveServer");
       const statusChip = document.getElementById("statusChip");
       const taskStatusChip = document.getElementById("taskStatusChip");
@@ -235,6 +243,8 @@
       const uploadStatusChip = document.getElementById("uploadStatusChip");
       const uploadSummary = document.getElementById("uploadSummary");
       const uploadFileButton = document.getElementById("uploadFileButton");
+      const confirmUploadButton = document.getElementById("confirmUploadButton");
+      const cancelUploadButton = document.getElementById("cancelUploadButton");
       const requestStatusChip = document.getElementById("requestStatusChip");
       const requestReason = document.getElementById("requestReason");
       const requestPath = document.getElementById("requestPath");
@@ -245,16 +255,25 @@
 
       function render(value) {
         log.textContent = JSON.stringify(value, null, 2);
-        statusChip.textContent = value.configured || value.ok ? "connected" : "not paired";
+        const heartbeatOk = Boolean(value.lastHeartbeat?.ok || value.ok);
+        const paired = Boolean(value.configured || value.device);
+        statusChip.textContent = heartbeatOk ? "online" : paired ? "paired" : "not paired";
+        disconnectButton.disabled = !paired;
         const currentTask = value.currentTask;
         taskStatusChip.textContent = currentTask ? currentTask.status : "idle";
         taskPrompt.textContent = currentTask ? currentTask.prompt : "暂无正在执行的任务。";
         stopTaskButton.disabled = !currentTask;
         const upload = value.lastUpload;
-        uploadStatusChip.textContent = upload?.ok ? "uploaded" : "ready";
-        uploadSummary.textContent = upload?.file
-          ? `${upload.file.name} · ${upload.file.size} bytes · expires ${upload.expiresAt || "unknown"}`
-          : "选择一个本机文件上传到云端上传库，默认 7 天 TTL。";
+        const pendingUpload = value.pendingUploadFile;
+        uploadStatusChip.textContent = pendingUpload ? "pending" : upload?.ok ? "uploaded" : "ready";
+        uploadSummary.textContent = pendingUpload
+          ? `待确认上传：${pendingUpload.name} · ${pendingUpload.size} bytes · ${pendingUpload.path}`
+          : upload?.file
+            ? `${upload.file.name} · ${upload.file.size} bytes · expires ${upload.expiresAt || "unknown"}`
+            : "选择一个本机文件后，需要再次确认才会上传到云端上传库。";
+        confirmUploadButton.disabled = !pendingUpload;
+        cancelUploadButton.disabled = !pendingUpload;
+        uploadFileButton.textContent = pendingUpload ? "重新选择文件" : "选择本机文件";
         const pendingRequests = value.pendingFileRequests || value.lastHeartbeat?.fileRequests || value.fileRequests || [];
         const request = pendingRequests[0];
         currentFileRequestId = request?.id || "";
@@ -301,6 +320,14 @@
         }
       });
 
+      disconnectButton.addEventListener("click", async () => {
+        try {
+          render(await api.unpair());
+        } catch (error) {
+          render({ ok: false, error: String(error) });
+        }
+      });
+
       stopTaskButton.addEventListener("click", async () => {
         try {
           render(await api.cancelCurrentTask());
@@ -312,6 +339,22 @@
       uploadFileButton.addEventListener("click", async () => {
         try {
           render(await api.uploadFile());
+        } catch (error) {
+          render({ ok: false, error: String(error) });
+        }
+      });
+
+      confirmUploadButton.addEventListener("click", async () => {
+        try {
+          render(await api.confirmUploadFile());
+        } catch (error) {
+          render({ ok: false, error: String(error) });
+        }
+      });
+
+      cancelUploadButton.addEventListener("click", async () => {
+        try {
+          render(await api.cancelUploadFile());
         } catch (error) {
           render({ ok: false, error: String(error) });
         }

@@ -114,6 +114,12 @@ app.whenReady().then(() => {
     startHeartbeatLoop();
     return result;
   });
+  ipcMain.handle("desktop:unpair", async () => {
+    const status = await desktopClient.unpair();
+    mainWindow?.webContents.send("desktop:status", status);
+    await refreshTray();
+    return status;
+  });
   ipcMain.handle("desktop:heartbeat", async () => runHeartbeat(true));
   ipcMain.handle("desktop:cancel-current-task", async () => {
     const status = await desktopClient.cancelCurrentTask();
@@ -125,7 +131,18 @@ app.whenReady().then(() => {
       ? await dialog.showOpenDialog(mainWindow, { properties: ["openFile"] })
       : await dialog.showOpenDialog({ properties: ["openFile"] });
     if (selected.canceled || !selected.filePaths[0]) return desktopClient.status();
-    const status = await desktopClient.uploadLocalFile(selected.filePaths[0]);
+    const status = await desktopClient.selectUploadFile(selected.filePaths[0]);
+    mainWindow?.webContents.send("desktop:status", status);
+    return status;
+  });
+  ipcMain.handle("desktop:confirm-upload-file", async () => {
+    const status = await desktopClient.uploadPendingFile();
+    mainWindow?.webContents.send("desktop:status", status);
+    await refreshTray();
+    return status;
+  });
+  ipcMain.handle("desktop:cancel-upload-file", async () => {
+    const status = await desktopClient.cancelPendingUpload();
     mainWindow?.webContents.send("desktop:status", status);
     await refreshTray();
     return status;

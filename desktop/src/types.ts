@@ -108,9 +108,16 @@ export interface DesktopRuntimeStatus {
   currentTask?: DesktopTaskAssignment;
   lastTask?: DesktopTaskAssignment;
   lastUpload?: DesktopCloudUploadResult;
+  pendingUploadFile?: DesktopPendingUploadFile;
   pendingFileRequests?: DesktopFileRequest[];
   lastFileRequest?: DesktopFileRequest;
   lastError?: string;
+}
+
+export interface DesktopPendingUploadFile {
+  path: string;
+  name: string;
+  size: number;
 }
 
 export interface DesktopCloudUploadResult {

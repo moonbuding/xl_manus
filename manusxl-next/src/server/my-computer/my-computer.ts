@@ -843,6 +843,43 @@ export function verifyMyComputerDesktopPairingCode(input: {
   };
 }
 
+export function disconnectMyComputerDesktopDevice(ownerId: string, deviceId: string) {
+  const records = desktopDeviceRecords();
+  const index = records.findIndex((candidate) => candidate.ownerId === ownerId && candidate.id === deviceId);
+  if (index < 0) {
+    return { ok: false as const, status: 404, error: "桌面端设备不存在或不属于当前用户。" };
+  }
+  const [device] = records.splice(index, 1);
+  const now = new Date().toISOString();
+  for (const assignment of desktopTaskAssignments()) {
+    if (
+      assignment.ownerId === ownerId &&
+      assignment.deviceId === deviceId &&
+      ["queued", "assigned"].includes(assignment.status)
+    ) {
+      assignment.status = "cancelled";
+      assignment.updatedAt = now;
+    }
+  }
+  for (const request of desktopFileUploadRequests()) {
+    if (request.ownerId === ownerId && request.deviceId === deviceId && request.status === "pending") {
+      request.status = "denied";
+      request.updatedAt = now;
+      request.decidedAt = now;
+      request.error = "桌面端已断开配对。";
+    }
+  }
+  return { ok: true as const, device: publicDesktopDevice(device) };
+}
+
+export function disconnectMyComputerDesktopDeviceByToken(token?: string) {
+  const device = resolveMyComputerDesktopDeviceToken(token);
+  if (!device) {
+    return { ok: false as const, status: 401, error: "桌面端未配对或令牌已失效。" };
+  }
+  return disconnectMyComputerDesktopDevice(device.ownerId, device.id);
+}
+
 export function resolveMyComputerDesktopDeviceToken(token?: string) {
   if (!token) return undefined;
   const hash = hashDesktopDeviceToken(token);

@@ -40,6 +40,7 @@ import { archiveTmpIfNeeded, taskWorkspacePaths } from "@/server/workspace/task-
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const globalForRuntime = globalThis as unknown as {
   manusxlRunningTasks?: Set<string>;
+  manusxlTaskAbortControllers?: Map<string, AbortController>;
 };
 
 const DEFAULT_PLAN = [
@@ -498,6 +499,18 @@ function getRunningTasks() {
   return globalForRuntime.manusxlRunningTasks;
 }
 
+function getTaskAbortControllers() {
+  globalForRuntime.manusxlTaskAbortControllers ??= new Map<string, AbortController>();
+  return globalForRuntime.manusxlTaskAbortControllers;
+}
+
+export function abortAgentTask(taskId: string) {
+  const controller = getTaskAbortControllers().get(taskId);
+  if (!controller || controller.signal.aborted) return false;
+  controller.abort();
+  return true;
+}
+
 function isGeneratedArtifact(value: unknown): value is GeneratedArtifact {
   const candidate = value as Partial<GeneratedArtifact>;
   return (
@@ -532,6 +545,7 @@ export async function runAgentTask(taskId: string, options: { resumed?: boolean 
   const startedAt = Date.now();
   const timeoutMs = getTaskTimeoutMs();
   const timeoutController = new AbortController();
+  getTaskAbortControllers().set(taskId, timeoutController);
   const timeoutTimer = setTimeout(() => timeoutController.abort(), timeoutMs);
 
   try {
@@ -912,6 +926,7 @@ export async function runAgentTask(taskId: string, options: { resumed?: boolean 
     });
   } finally {
     clearTimeout(timeoutTimer);
+    getTaskAbortControllers().delete(taskId);
     await cleanupSandboxForWorkspace(taskWorkspacePaths(taskId, task.ownerId).root);
     runningTasks.delete(taskId);
   }

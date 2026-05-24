@@ -490,8 +490,14 @@ function currentTaskStage(task: Task) {
   return latest ? latest.title ?? latest.content : "正在准备执行。";
 }
 
+function canContinueTask(task: Task | null) {
+  return Boolean(task && !["queued", "running"].includes(task.status));
+}
+
 function mergeTaskEvent(task: Task, event: AgentEvent): Task {
   const exists = task.events.some((item) => item.id === event.id);
+  if (exists) return task;
+
   const artifact = extractArtifact(event);
   const nextArtifacts =
     artifact && !task.artifacts.some((item) => item.id === artifact.id)
@@ -722,6 +728,7 @@ export function AgentWorkspace() {
     values: Record<string, string>;
   } | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isCancellingTask, setIsCancellingTask] = useState(false);
   const [isUploadingFile, setIsUploadingFile] = useState(false);
   const [isForkingTemplate, setIsForkingTemplate] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -861,6 +868,7 @@ export function AgentWorkspace() {
   const initialInviteTokenRef = useRef<string | null>(null);
   const activeTaskId = activeTask?.id;
   const activeTaskStatus = activeTask?.status;
+  const activeTaskLatestEventId = activeTask?.events.at(-1)?.id;
 
   const runningTaskCount = useMemo(
     () => tasks.filter((task) => task.status === "running" || task.status === "queued").length,
@@ -1242,6 +1250,29 @@ export function AgentWorkspace() {
       setError(message);
     } finally {
       setIsCreatingMyComputerPairing(false);
+    }
+  }, [refreshMyComputerStatus]);
+
+  const disconnectMyComputerDesktopDevice = useCallback(async (deviceId: string, deviceName: string) => {
+    const confirmed = window.confirm(`断开桌面端「${deviceName}」？断开后需要重新配对才能派发 My Computer 任务。`);
+    if (!confirmed) return;
+    setIsSavingMyComputer(true);
+    setMyComputerError(null);
+    setMyComputerNotice(null);
+    try {
+      const response = await fetch(`/api/my-computer/desktop/devices/${encodeURIComponent(deviceId)}`, {
+        method: "DELETE"
+      });
+      const data = await readJson<{ ok?: boolean; error?: string }>(response);
+      if (!response.ok) throw new Error(data.error ?? "断开桌面端失败");
+      setMyComputerNotice(`已断开桌面端：${deviceName}`);
+      await refreshMyComputerStatus();
+    } catch (caught: unknown) {
+      const message = getErrorMessage(caught, "断开桌面端失败");
+      setMyComputerError(message);
+      setError(message);
+    } finally {
+      setIsSavingMyComputer(false);
     }
   }, [refreshMyComputerStatus]);
 
@@ -1718,19 +1749,23 @@ export function AgentWorkspace() {
   }, []);
 
   const connectStream = useCallback(
-    (taskId: string) => {
+    (taskId: string, options: { afterEventId?: string; knownEventIds?: string[] } = {}) => {
       closeStream();
-      const source = new EventSource(`/api/tasks/${taskId}/events`);
+      const knownEventIds = new Set(options.knownEventIds ?? []);
+      const params = options.afterEventId ? `?lastEventId=${encodeURIComponent(options.afterEventId)}` : "";
+      const source = new EventSource(`/api/tasks/${taskId}/events${params}`);
       eventSourceRef.current = source;
 
       source.addEventListener("agent_event", (message) => {
         const event = JSON.parse(message.data) as AgentEvent;
+        const isKnownEvent = knownEventIds.has(event.id);
+        knownEventIds.add(event.id);
         setActiveTask((current) => (current?.id === taskId ? mergeTaskEvent(current, event) : current));
         setTasks((current) =>
           current.map((task) => (task.id === taskId ? mergeTaskEvent(task, event) : task))
         );
 
-        if (event.type === "finished" || event.type === "failed") {
+        if (!isKnownEvent && (event.type === "finished" || event.type === "failed")) {
           source.close();
           eventSourceRef.current = null;
           void refreshTasks();
@@ -1754,7 +1789,10 @@ export function AgentWorkspace() {
       setActiveTask(task);
       setActiveNav("agent");
       if (task.status === "running" || task.status === "queued") {
-        connectStream(task.id);
+        connectStream(task.id, {
+          afterEventId: task.events.at(-1)?.id,
+          knownEventIds: task.events.map((event) => event.id)
+        });
       } else {
         closeStream();
       }
@@ -1928,8 +1966,11 @@ export function AgentWorkspace() {
 
   useEffect(() => {
     if (!activeTaskId || (activeTaskStatus !== "running" && activeTaskStatus !== "queued")) return;
-    connectStream(activeTaskId);
-  }, [activeTaskId, activeTaskStatus, connectStream]);
+    if (eventSourceRef.current) return;
+    connectStream(activeTaskId, {
+      afterEventId: activeTaskLatestEventId
+    });
+  }, [activeTaskId, activeTaskLatestEventId, activeTaskStatus, connectStream]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -2055,27 +2096,39 @@ export function AgentWorkspace() {
   async function submitTask(nextPrompt = prompt) {
     const trimmed = buildPromptWithFiles(nextPrompt, uploadedFiles);
     if ((!nextPrompt.trim() && uploadedFiles.length === 0) || isSubmitting) return;
+    const shouldContinueTask = activeNav === "agent" && canContinueTask(activeTask);
+    const continueTaskId = shouldContinueTask ? activeTask?.id : undefined;
 
     setIsSubmitting(true);
     setError(null);
 
     try {
-      const response = await fetch("/api/tasks", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt: trimmed,
-          model: config?.model,
-          fileIds: uploadedFiles.map((file) => file.id),
-          orgId: activeOrgId || undefined,
-          visibility: activeOrgId ? "org" : "private",
-          executionTarget
-        })
-      });
+      if (activeNav === "agent" && activeTask && !shouldContinueTask) {
+        throw new Error("当前任务仍在运行，请等待完成后继续对话，或点击“新任务”开启独立任务。");
+      }
+      if (shouldContinueTask && !continueTaskId) {
+        throw new Error("没有可继续的当前任务，请点击“新任务”开启独立任务。");
+      }
+
+      const response = await fetch(
+        shouldContinueTask ? `/api/tasks/${continueTaskId}/messages` : "/api/tasks",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            prompt: trimmed,
+            model: config?.model,
+            fileIds: uploadedFiles.map((file) => file.id),
+            orgId: activeOrgId || undefined,
+            visibility: activeOrgId ? "org" : "private",
+            executionTarget
+          })
+        }
+      );
 
       if (!response.ok) {
         const data = await readJson<{ error?: string }>(response, {});
-        throw new Error(data.error ?? `创建任务失败 (${response.status})`);
+        throw new Error(data.error ?? `${shouldContinueTask ? "继续对话" : "创建任务"}失败 (${response.status})`);
       }
 
       const data = await readJson<CreateTaskResponse>(response);
@@ -2100,7 +2153,10 @@ export function AgentWorkspace() {
       setActiveTask(task);
       setActiveNav("agent");
       setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
-      connectStream(task.id);
+      connectStream(task.id, {
+        afterEventId: task.events.at(-1)?.id,
+        knownEventIds: task.events.map((event) => event.id)
+      });
       if (activeOrgId) {
         void refreshOrganizationWorkspace(activeOrgId);
         void refreshOrganizations();
@@ -2150,9 +2206,25 @@ export function AgentWorkspace() {
 
   async function cancelActiveTask() {
     if (!activeTask) return;
-    await fetch(`/api/tasks/${activeTask.id}/cancel`, { method: "POST" });
-    closeStream();
-    await refreshTasks();
+    const taskId = activeTask.id;
+    setIsCancellingTask(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/tasks/${taskId}/cancel`, { method: "POST" });
+      const data = await readJson<(Task & { error?: string }) | { error?: string }>(response, {});
+      if (!response.ok) {
+        throw new Error((data as { error?: string }).error ?? `中断任务失败 (${response.status})`);
+      }
+      const task = data as Task;
+      closeStream();
+      setActiveTask((current) => (current?.id === taskId ? task : current));
+      setTasks((current) => current.map((item) => (item.id === taskId ? task : item)));
+      await refreshTasks();
+    } catch (caught) {
+      setError(getErrorMessage(caught, "中断任务失败"));
+    } finally {
+      setIsCancellingTask(false);
+    }
   }
 
   async function retryActiveTask() {
@@ -2183,7 +2255,10 @@ export function AgentWorkspace() {
       setActiveTask(task);
       setActiveNav("agent");
       setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
-      connectStream(task.id);
+      connectStream(task.id, {
+        afterEventId: task.events.at(-1)?.id,
+        knownEventIds: task.events.map((event) => event.id)
+      });
     } catch (caught) {
       setError(getErrorMessage(caught, "重跑任务失败"));
     } finally {
@@ -4066,7 +4141,7 @@ export function AgentWorkspace() {
     const myComputerLabel = myComputerStatus?.connected
       ? hasOnlineDesktop
         ? "online"
-        : "bridge"
+        : "unpaired"
       : "offline";
     const localBrowserLabel = localBrowserStatus?.connected ? "connected" : "offline";
     const mcpEnabledCount = mcpServers.filter((server) => server.enabled).length;
@@ -4091,7 +4166,7 @@ export function AgentWorkspace() {
       {
         label: "My Computer",
         value: myComputerLabel,
-        meta: hasOnlineDesktop ? "桌面端在线" : myComputerStatus?.bridge ?? "未连接",
+        meta: hasOnlineDesktop ? "桌面端在线" : myComputerStatus?.connected ? "需配对桌面端" : "未连接",
         icon: <Home size={15} />
       },
       {
@@ -5359,7 +5434,9 @@ export function AgentWorkspace() {
   function renderMyComputerPanel() {
     const statusLabel = myComputerStatus
       ? myComputerStatus.connected
-        ? "connected"
+        ? myComputerStatus.bridge === "next-local"
+          ? "local"
+          : "desktop"
         : "offline"
       : "unknown";
     const paused = Boolean(myComputerStatus?.paused);
@@ -5368,6 +5445,11 @@ export function AgentWorkspace() {
     const rootLabel = myComputerStatus?.allowedRoots[0] ?? "尚未配置";
     const desktopDevices = myComputerPairing?.pairedDevices ?? myComputerStatus?.desktopDevices ?? [];
     const onlineDesktopCount = desktopDevices.filter((device) => device.status === "online").length;
+    const desktopClientStatus = onlineDesktopCount
+      ? `${onlineDesktopCount} 台在线`
+      : desktopDevices.length
+        ? `${desktopDevices.length} 台已配对，当前离线`
+        : "未配对";
     const latestOperation = myComputerActionResult ?? myComputerPlan?.operation;
     const hasUndoableFileOperation = Boolean(
       myComputerStatus?.recentOperations.some((operation) =>
@@ -5381,9 +5463,10 @@ export function AgentWorkspace() {
         <div className="metric-list compact">
           <div className="metric-item">
             <div>
-              <span className="metric-name">桌面桥接</span>
+              <span className="metric-name">任务桥接</span>
               <span className="metric-meta">
-                {myComputerStatus?.bridge ?? "next-local"} · {myComputerStatus?.platform ?? "loading"}
+                {myComputerStatus?.bridge === "next-local" ? "Web 本地进程" : "桌面客户端"} ·{" "}
+                {myComputerStatus?.platform ?? "loading"}
               </span>
             </div>
             <strong>{statusLabel}</strong>
@@ -5392,10 +5475,12 @@ export function AgentWorkspace() {
             <div>
               <span className="metric-name">桌面客户端</span>
               <span className="metric-meta">
-                {onlineDesktopCount ? `${onlineDesktopCount} 台在线` : "等待 Electron/Tauri 客户端配对"}
+                {desktopDevices.length
+                  ? "Electron/Tauri 配对设备，可断开后重新配对"
+                  : "尚未配对 Electron/Tauri 客户端"}
               </span>
             </div>
-            <strong>{desktopDevices.length}</strong>
+            <strong>{desktopClientStatus}</strong>
           </div>
           <div className="metric-item">
             <div>
@@ -5511,6 +5596,13 @@ export function AgentWorkspace() {
           </div>
         ) : null}
 
+        {!desktopDevices.length ? (
+          <p className="muted-note warning-note my-computer-feedback">
+            当前只检测到 Web 本地桥接，尚未配对桌面客户端。请点击“桌面端配对”，把配对码输入 ManusXL
+            Desktop 后，工作台才可以切换到 My Computer 执行。
+          </p>
+        ) : null}
+
         {desktopDevices.length ? (
           <div className="browser-operation-list">
             {desktopDevices.slice(0, 5).map((device) => (
@@ -5522,9 +5614,20 @@ export function AgentWorkspace() {
                     {new Date(device.lastSeenAt).toLocaleTimeString()}
                   </small>
                 </div>
-                <strong className={`operation-status is-${device.status === "online" ? "completed" : "blocked"}`}>
-                  {device.status}
-                </strong>
+                <div className="browser-operation-actions">
+                  <strong className={`operation-status is-${device.status === "online" ? "completed" : "blocked"}`}>
+                    {device.status}
+                  </strong>
+                  <button
+                    type="button"
+                    className="danger-button compact-button"
+                    disabled={isSavingMyComputer}
+                    onClick={() => void disconnectMyComputerDesktopDevice(device.id, device.name)}
+                  >
+                    <XCircle size={13} />
+                    断开
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -5870,6 +5973,16 @@ export function AgentWorkspace() {
 
   function renderComposer(variant: "home" | "footer" = "footer") {
     const isHomeComposer = variant === "home";
+    const isContinuingTask = !isHomeComposer && activeNav === "agent" && canContinueTask(activeTask);
+    const isWaitingForActiveTask = !isHomeComposer && activeNav === "agent" && activeTask && !canContinueTask(activeTask);
+    const composerPlaceholder = isContinuingTask
+      ? "继续追问当前任务，例如：把结论整理成表格，或基于刚才结果继续分析"
+      : isWaitingForActiveTask
+        ? "当前任务运行中，完成后可以继续追问"
+        : "输入一个任务，例如：读取我上传的 Excel 并输出分析报告";
+    const composerExecutionTarget = isContinuingTask && activeTask
+      ? activeTask.executionTarget ?? "cloud"
+      : executionTarget;
 
     return (
       <>
@@ -5905,19 +6018,21 @@ export function AgentWorkspace() {
               className="prompt-box"
               value={prompt}
               onChange={(event) => setPrompt(event.target.value)}
-              placeholder="输入一个任务，例如：读取我上传的 Excel 并输出分析报告"
+              placeholder={composerPlaceholder}
             />
           </div>
           <div className="composer-actions">
             <button
               type="button"
               className={`secondary-button compact-button execution-target-button ${
-                executionTarget === "my-computer" ? "is-active" : ""
+                composerExecutionTarget === "my-computer" ? "is-active" : ""
               }`}
-              disabled={!hasOnlineDesktop || isSubmitting}
+              disabled={isContinuingTask || Boolean(isWaitingForActiveTask) || !hasOnlineDesktop || isSubmitting}
               title={
-                hasOnlineDesktop
-                  ? executionTarget === "my-computer"
+                isContinuingTask
+                  ? "继续对话会沿用当前任务的执行目标"
+                  : hasOnlineDesktop
+                  ? composerExecutionTarget === "my-computer"
                     ? "当前任务将派发到 My Computer 桌面端"
                     : "切换为 My Computer 桌面端执行"
                   : "需要先在 Settings / My Computer 配对并保持桌面端在线"
@@ -5927,7 +6042,7 @@ export function AgentWorkspace() {
               }
             >
               <Bot size={15} />
-              {executionTarget === "my-computer" ? "My Computer" : "云端"}
+              {composerExecutionTarget === "my-computer" ? "My Computer" : "云端"}
             </button>
             <input
               ref={fileInputRef}
@@ -5951,19 +6066,22 @@ export function AgentWorkspace() {
               className="primary-button"
               disabled={
                 isSubmitting ||
+                Boolean(isWaitingForActiveTask) ||
                 !selectedOrgCanCreateTask ||
                 (!prompt.trim() && uploadedFiles.length === 0)
               }
               title={
                 selectedOrgCanCreateTask
-                  ? activeOrganization
+                  ? isContinuingTask
+                    ? "继续当前任务对话"
+                    : activeOrganization
                     ? `发送到 ${activeOrganization.name}`
                     : "发送到个人私有任务"
                   : "Viewer 角色只能查看组织任务"
               }
             >
               {isSubmitting ? <Loader2 size={17} className="spin" /> : <Send size={17} />}
-              发送
+              {isContinuingTask ? "继续" : "发送"}
             </button>
           </div>
         </form>
@@ -5980,7 +6098,9 @@ export function AgentWorkspace() {
         <TaskDetail
           task={activeTask}
           isScheduling={isCreatingScheduledTask}
+          isCancelling={isCancellingTask}
           onSchedule={(task) => void scheduleTaskFromHistory(task)}
+          onCancel={() => void cancelActiveTask()}
         />
       ) : (
         renderAgentEmptyView()
@@ -6268,9 +6388,9 @@ export function AgentWorkspace() {
           </label>
           {!isHomeView ? <span className="top-spacer" /> : null}
           {activeTask && (activeTask.status === "running" || activeTask.status === "queued") ? (
-            <button className="secondary-button" onClick={() => void cancelActiveTask()}>
-              <CircleStop size={15} />
-              停止
+            <button className="danger-button" onClick={() => void cancelActiveTask()} disabled={isCancellingTask}>
+              {isCancellingTask ? <Loader2 size={15} className="spin" /> : <CircleStop size={15} />}
+              中断
             </button>
           ) : (
             <>
@@ -6471,17 +6591,22 @@ function EmptyState({
 function TaskDetail({
   task,
   isScheduling,
-  onSchedule
+  isCancelling,
+  onSchedule,
+  onCancel
 }: {
   task: Task;
   isScheduling: boolean;
+  isCancelling: boolean;
   onSchedule: (task: Task) => void;
+  onCancel: () => void;
 }) {
   const visiblePrompt = getTaskDisplayTitle(task);
   const uploadedContext = parsePromptUploadedFiles(task.prompt);
   const usefulEvents = task.events.filter(isUsefulTimelineEvent);
   const artifactCount = task.artifacts.length;
   const finalAnswer = task.finalAnswer?.trim();
+  const isInterruptible = task.status === "running" || task.status === "queued";
 
   return (
     <div className="task-detail">
@@ -6498,12 +6623,23 @@ function TaskDetail({
             <button
               type="button"
               className="secondary-button"
-              disabled={isScheduling}
+              disabled={isScheduling || isInterruptible}
               onClick={() => onSchedule(task)}
             >
               {isScheduling ? <Loader2 size={15} className="spin" /> : <Clock3 size={15} />}
               设为定时任务
             </button>
+            {isInterruptible ? (
+              <button
+                type="button"
+                className="danger-button"
+                disabled={isCancelling}
+                onClick={onCancel}
+              >
+                {isCancelling ? <Loader2 size={15} className="spin" /> : <CircleStop size={15} />}
+                中断任务
+              </button>
+            ) : null}
           </div>
 
           {uploadedContext.length > 0 ? (

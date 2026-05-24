@@ -7,6 +7,7 @@ import type {
   DesktopCloudUploadResult,
   DesktopDeviceConfig,
   DesktopFileRequest,
+  DesktopPendingUploadFile,
   DesktopRuntimeStatus,
   DesktopTaskAssignment,
   DesktopTaskClaimResponse,
@@ -36,6 +37,7 @@ export class DesktopAgentClient {
   private currentTask?: DesktopTaskAssignment;
   private lastTask?: DesktopTaskAssignment;
   private lastUpload?: DesktopCloudUploadResult;
+  private pendingUploadFile?: DesktopPendingUploadFile;
   private lastError?: string;
 
   constructor(
@@ -97,6 +99,26 @@ export class DesktopAgentClient {
     return response;
   }
 
+  async unpair() {
+    const config = await this.load();
+    if (config.token) {
+      try {
+        await this.post<{ ok: boolean; error?: string }>("/api/my-computer/desktop/disconnect", {}, config.token);
+      } catch {
+        // Local disconnect should still clear stale tokens if the server record has already expired.
+      }
+    }
+    await this.save({
+      serverUrl: config.serverUrl,
+      deviceName: config.deviceName || `ManusXL Desktop ${hostname()}`
+    });
+    this.lastHeartbeat = undefined;
+    this.currentTask = undefined;
+    this.lastTask = undefined;
+    this.lastError = undefined;
+    return this.status();
+  }
+
   async heartbeat() {
     const config = await this.load();
     if (!config.token) {
@@ -138,6 +160,7 @@ export class DesktopAgentClient {
       currentTask: this.currentTask,
       lastTask: this.lastTask,
       lastUpload: this.lastUpload,
+      pendingUploadFile: this.pendingUploadFile,
       pendingFileRequests: this.lastHeartbeat?.fileRequests ?? [],
       lastFileRequest: this.lastFileRequest,
       lastError: this.lastError
@@ -145,6 +168,31 @@ export class DesktopAgentClient {
   }
 
   private lastFileRequest?: DesktopFileRequest;
+
+  async selectUploadFile(filePath: string) {
+    const info = await stat(filePath);
+    if (!info.isFile()) throw new Error("Only regular files can be uploaded.");
+    this.pendingUploadFile = {
+      path: filePath,
+      name: basename(filePath),
+      size: info.size
+    };
+    this.lastError = undefined;
+    return this.status();
+  }
+
+  async cancelPendingUpload() {
+    this.pendingUploadFile = undefined;
+    return this.status();
+  }
+
+  async uploadPendingFile() {
+    if (!this.pendingUploadFile) throw new Error("No local file is selected for upload.");
+    const uploaded = await this.uploadLocalFileToCloud(this.pendingUploadFile.path);
+    this.lastUpload = uploaded;
+    this.pendingUploadFile = undefined;
+    return this.status();
+  }
 
   async uploadLocalFile(filePath: string) {
     const uploaded = await this.uploadLocalFileToCloud(filePath);

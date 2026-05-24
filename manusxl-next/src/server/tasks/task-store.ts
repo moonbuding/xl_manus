@@ -847,6 +847,59 @@ export function createTask(
   return task;
 }
 
+function taskTitleFromPrompt(prompt: string) {
+  const markerIndex = prompt.indexOf("[上传文件摘要]");
+  const visiblePrompt = markerIndex >= 0 ? prompt.slice(0, markerIndex) : prompt;
+  return visiblePrompt.replace(/\s+/g, " ").trim().slice(0, 80) || "未命名任务";
+}
+
+export function continueTaskConversation(
+  taskId: string,
+  ownerId: string,
+  prompt: string,
+  options: {
+    model?: string;
+    uploadedFileIds?: string[];
+  } = {}
+) {
+  const task = getTask(taskId, ownerId);
+  if (!task) return { ok: false as const, status: 404, error: "Task not found" };
+  if (task.status === "queued" || task.status === "running") {
+    return { ok: false as const, status: 409, error: "当前任务仍在运行，请等待完成后继续对话。" };
+  }
+
+  const followUp = prompt.trim();
+  if (!followUp) return { ok: false as const, status: 400, error: "Prompt is required" };
+
+  const turn = task.events.filter((event) => event.title?.startsWith("用户追问")).length + 1;
+  const now = new Date().toISOString();
+  if (!task.title?.trim()) task.title = taskTitleFromPrompt(task.prompt);
+  task.prompt = [
+    task.prompt,
+    "",
+    `[继续对话 ${turn}]`,
+    "请基于这个任务此前的执行过程、记忆、交付物和最终结果继续处理下面的追问，不要把它当成全新的独立任务。",
+    followUp
+  ].join("\n");
+  task.model = options.model?.trim() || task.model;
+  task.uploadedFileIds = Array.from(new Set([...(task.uploadedFileIds ?? []), ...(options.uploadedFileIds ?? [])]));
+  if (task.uploadedFileIds.length === 0) task.uploadedFileIds = undefined;
+  task.status = "queued";
+  task.error = undefined;
+  task.finalAnswer = undefined;
+  task.updatedAt = now;
+  persistTask(task);
+
+  addTaskEvent(taskId, {
+    type: "message",
+    stepIndex: task.events.length + 1,
+    title: `用户追问 ${turn}`,
+    content: followUp
+  });
+
+  return { ok: true as const, task: getTask(taskId, ownerId) ?? task };
+}
+
 export function updateTaskStatus(taskId: string, status: TaskStatus, error?: string) {
   const task = getTask(taskId);
   if (!task) return;
