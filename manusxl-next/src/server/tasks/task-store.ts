@@ -12,7 +12,7 @@ import {
   runPsql
 } from "@/server/db/provider";
 import { getManusDb } from "@/server/sqlite";
-import type { AgentEvent, Artifact, Task, TaskExecutionTarget, TaskStatus } from "@/types/agent";
+import type { AgentEvent, Artifact, Task, TaskExecutionTarget, TaskFolder, TaskStatus } from "@/types/agent";
 
 type Subscriber = (event: AgentEvent) => void;
 
@@ -54,6 +54,7 @@ interface TaskPersistenceAdapter {
 }
 
 const dataFile = dataPath("tasks.json");
+const taskFoldersFile = dataPath("task-folders.json");
 const workspaceRoot = dataPath("workspaces");
 
 function taskWorkspaceDir(taskId: string, ownerId?: string) {
@@ -77,6 +78,26 @@ function readPersistedTasks() {
   } catch {
     return new Map<string, Task>();
   }
+}
+
+function readTaskFolders() {
+  try {
+    if (!existsSync(taskFoldersFile)) return [];
+    const raw = readFileSync(taskFoldersFile, "utf8");
+    const parsed = JSON.parse(raw) as TaskFolder[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeTaskFolders(folders: TaskFolder[]) {
+  mkdirSync(dataPath(), { recursive: true });
+  writeFileSync(taskFoldersFile, JSON.stringify(folders, null, 2));
+}
+
+function normalizeTaskFolderName(name: string) {
+  return name.replace(/\s+/g, " ").trim().slice(0, 36);
 }
 
 function openSqliteDatabase() {
@@ -691,7 +712,8 @@ export function listTasks(query?: string, ownerId?: string) {
     .filter((task) => (ownerId ? task.ownerId === ownerId : true))
     .filter((task) =>
       normalizedQuery
-        ? task.prompt.toLowerCase().includes(normalizedQuery) ||
+        ? task.title?.toLowerCase().includes(normalizedQuery) ||
+          task.prompt.toLowerCase().includes(normalizedQuery) ||
           task.id.toLowerCase().includes(normalizedQuery)
         : true
     )
@@ -712,6 +734,89 @@ export function getTask(taskId: string, ownerId?: string) {
   if (!task) return undefined;
   if (ownerId && task.ownerId !== ownerId) return undefined;
   return task;
+}
+
+export function listTaskFolders(ownerId: string) {
+  return readTaskFolders()
+    .filter((folder) => folder.ownerId === ownerId)
+    .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt));
+}
+
+export function createTaskFolder(ownerId: string, name: string) {
+  const safeName = normalizeTaskFolderName(name);
+  if (!safeName) return { ok: false as const, status: 400, error: "Folder name is required" };
+  const folders = readTaskFolders();
+  const now = new Date().toISOString();
+  const folder: TaskFolder = {
+    id: createId("folder"),
+    ownerId,
+    name: safeName,
+    createdAt: now,
+    updatedAt: now
+  };
+  folders.push(folder);
+  writeTaskFolders(folders);
+  return { ok: true as const, folder };
+}
+
+export function updateTaskFolder(folderId: string, ownerId: string, name: string) {
+  const safeName = normalizeTaskFolderName(name);
+  if (!safeName) return { ok: false as const, status: 400, error: "Folder name is required" };
+  const folders = readTaskFolders();
+  const index = folders.findIndex((folder) => folder.id === folderId && folder.ownerId === ownerId);
+  if (index < 0) return { ok: false as const, status: 404, error: "Folder not found" };
+  folders[index] = { ...folders[index], name: safeName, updatedAt: new Date().toISOString() };
+  writeTaskFolders(folders);
+  return { ok: true as const, folder: folders[index] };
+}
+
+export function deleteTaskFolder(folderId: string, ownerId: string) {
+  const folders = readTaskFolders();
+  const folder = folders.find((candidate) => candidate.id === folderId && candidate.ownerId === ownerId);
+  if (!folder) return { ok: false as const, status: 404, error: "Folder not found" };
+  writeTaskFolders(folders.filter((candidate) => candidate.id !== folderId));
+  const state = getState();
+  const changedTasks: Task[] = [];
+  state.tasks.forEach((task) => {
+    if (task.ownerId === ownerId && task.folderId === folderId) {
+      task.folderId = undefined;
+      task.updatedAt = new Date().toISOString();
+      changedTasks.push(task);
+    }
+  });
+  changedTasks.forEach((task) => persistTask(task));
+  return { ok: true as const, folder };
+}
+
+export function updateTaskMetadata(
+  taskId: string,
+  ownerId: string,
+  patch: { title?: string | null; folderId?: string | null }
+) {
+  const task = getTask(taskId, ownerId);
+  if (!task) return { ok: false as const, status: 404, error: "Task not found" };
+
+  if ("title" in patch) {
+    const title = patch.title?.replace(/\s+/g, " ").trim().slice(0, 80);
+    task.title = title || undefined;
+  }
+
+  if ("folderId" in patch) {
+    const folderId = patch.folderId?.trim();
+    if (folderId) {
+      const folder = readTaskFolders().find(
+        (candidate) => candidate.id === folderId && candidate.ownerId === ownerId
+      );
+      if (!folder) return { ok: false as const, status: 404, error: "Folder not found" };
+      task.folderId = folderId;
+    } else {
+      task.folderId = undefined;
+    }
+  }
+
+  task.updatedAt = new Date().toISOString();
+  persistTask(task);
+  return { ok: true as const, task };
 }
 
 export function createTask(
@@ -884,4 +989,21 @@ export function deleteTask(taskId: string, ownerId?: string) {
   rmSync(taskWorkspaceDir(taskId, task.ownerId), { recursive: true, force: true });
 
   return { ok: true as const, task };
+}
+
+export function deleteTasks(taskIds: string[], ownerId?: string) {
+  const uniqueIds = Array.from(new Set(taskIds.map((taskId) => taskId.trim()).filter(Boolean)));
+  const deleted: string[] = [];
+  const failed: Array<{ taskId: string; error: string }> = [];
+
+  uniqueIds.forEach((taskId) => {
+    const result = deleteTask(taskId, ownerId);
+    if (result.ok) {
+      deleted.push(taskId);
+    } else {
+      failed.push({ taskId, error: result.error });
+    }
+  });
+
+  return { deleted, failed };
 }

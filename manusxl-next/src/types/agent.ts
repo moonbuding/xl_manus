@@ -405,6 +405,8 @@ export interface AgentEvent {
 export interface Task {
   id: string;
   ownerId?: string;
+  title?: string;
+  folderId?: string;
   prompt: string;
   uploadedFileIds?: string[];
   executionTarget?: TaskExecutionTarget;
@@ -416,6 +418,14 @@ export interface Task {
   artifacts: Artifact[];
   error?: string;
   finalAnswer?: string;
+}
+
+export interface TaskFolder {
+  id: string;
+  ownerId: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface CreateTaskRequest {

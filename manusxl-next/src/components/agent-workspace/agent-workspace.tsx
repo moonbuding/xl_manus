@@ -18,13 +18,17 @@ import {
   FileSpreadsheet,
   FileText,
   FileType,
+  Folder,
+  FolderPlus,
   Gauge,
   Globe,
   Home,
   Camera,
   Loader2,
+  MoreHorizontal,
   PanelRight,
   Paperclip,
+  Pencil,
   Play,
   Plus,
   Presentation,
@@ -41,7 +45,9 @@ import {
 } from "lucide-react";
 import {
   ChangeEvent,
+  DragEvent,
   FormEvent,
+  MouseEvent,
   type ReactNode,
   useCallback,
   useEffect,
@@ -91,6 +97,7 @@ import type {
   ScheduledTaskKind,
   Task,
   TaskExecutionTarget,
+  TaskFolder,
   TaskTemplate,
   TaskStatus,
   UploadedLibraryFile,
@@ -208,6 +215,7 @@ const organizationRoleText: Record<OrganizationRole, string> = {
 type NavigationView = "workspace" | "agent" | "library" | "settings";
 type AuthMode = "phone" | "email-login" | "email-register";
 type MarketplaceSort = "featured" | "popular" | "topRated" | "latest";
+type LibrarySectionId = "tasks" | "files" | "templates" | "marketplace" | "org" | "billing";
 type SettingsSectionId =
   | "model"
   | "account"
@@ -542,6 +550,10 @@ function getUserVisiblePrompt(value: string) {
   return visible.replace(/\s+/g, " ").trim() || "未命名任务";
 }
 
+function getTaskDisplayTitle(task: Task) {
+  return task.title?.trim() || getUserVisiblePrompt(task.prompt);
+}
+
 function parsePromptUploadedFiles(value: string) {
   const markerIndex = value.indexOf(uploadedFileContextMarker);
   if (markerIndex < 0) return [];
@@ -649,6 +661,7 @@ export function AgentWorkspace() {
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFileSummary[]>([]);
   const [libraryFiles, setLibraryFiles] = useState<UploadedLibraryFile[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [taskFolders, setTaskFolders] = useState<TaskFolder[]>([]);
   const [templates, setTemplates] = useState<TaskTemplate[]>([]);
   const [marketplaceTemplates, setMarketplaceTemplates] = useState<TaskTemplate[]>([]);
   const [skills, setSkills] = useState<AgentSkill[]>([]);
@@ -713,8 +726,18 @@ export function AgentWorkspace() {
   const [isForkingTemplate, setIsForkingTemplate] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [taskQuery, setTaskQuery] = useState("");
+  const [librarySearch, setLibrarySearch] = useState("");
+  const [activeLibrarySection, setActiveLibrarySection] = useState<LibrarySectionId>("tasks");
   const [settingsSearch, setSettingsSearch] = useState("");
   const [activeSettingsSection, setActiveSettingsSection] = useState<SettingsSectionId>("model");
+  const [taskContextMenu, setTaskContextMenu] = useState<{
+    taskId: string;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [bulkTaskMode, setBulkTaskMode] = useState(false);
+  const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([]);
+  const [expandedTaskFolderIds, setExpandedTaskFolderIds] = useState<string[]>([]);
   const [templateTagFilter, setTemplateTagFilter] = useState("all");
   const [marketplaceSort, setMarketplaceSort] = useState<MarketplaceSort>("featured");
   const [marketplacePage, setMarketplacePage] = useState(1);
@@ -864,10 +887,15 @@ export function AgentWorkspace() {
     if (!normalized) return tasks;
     return tasks.filter(
       (task) =>
+        task.title?.toLowerCase().includes(normalized) ||
         task.prompt.toLowerCase().includes(normalized) ||
-        task.id.toLowerCase().includes(normalized)
+        task.id.toLowerCase().includes(normalized) ||
+        taskFolders
+          .find((folder) => folder.id === task.folderId)
+          ?.name.toLowerCase()
+          .includes(normalized)
     );
-  }, [taskQuery, tasks]);
+  }, [taskFolders, taskQuery, tasks]);
 
   const templateTags = useMemo(
     () => Array.from(new Set(templates.flatMap((template) => template.tags))).sort(),
@@ -1584,6 +1612,28 @@ export function AgentWorkspace() {
     }
   }, []);
 
+  const refreshTaskFolders = useCallback(async () => {
+    try {
+      const response = await fetch("/api/task-folders", { cache: "no-store" });
+      if (response.status === 401) {
+        setTaskFolders([]);
+        return;
+      }
+      if (!response.ok) return;
+      const data = await readJson<{ folders: TaskFolder[] }>(response, { folders: [] });
+      setTaskFolders(data.folders);
+      setExpandedTaskFolderIds((current) => {
+        const currentSet = new Set(current);
+        data.folders.forEach((folder) => currentSet.add(folder.id));
+        return Array.from(currentSet).filter((folderId) =>
+          data.folders.some((folder) => folder.id === folderId)
+        );
+      });
+    } catch {
+      setTaskFolders([]);
+    }
+  }, []);
+
   const refreshLibraryFiles = useCallback(async () => {
     try {
       const response = await fetch("/api/files", { cache: "no-store" });
@@ -1734,6 +1784,7 @@ export function AgentWorkspace() {
         if (!user) return;
         await resumePendingTasks();
         await refreshTasks();
+        void refreshTaskFolders();
         void refreshLibraryFiles();
         void refreshAuthStatus();
         void refreshAudit();
@@ -1812,6 +1863,7 @@ export function AgentWorkspace() {
     refreshScheduledTasks,
     refreshRouterOptimizer,
     refreshSandboxStatus,
+    refreshTaskFolders,
     resumePendingTasks,
     refreshSkills,
     refreshTasks,
@@ -1825,6 +1877,22 @@ export function AgentWorkspace() {
     }, 0);
     return () => window.clearTimeout(timer);
   }, [authUser, marketplacePage, marketplaceSort, refreshMarketplaceTemplates]);
+
+  useEffect(() => {
+    if (!taskContextMenu) return;
+    function closeMenu() {
+      setTaskContextMenu(null);
+    }
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") setTaskContextMenu(null);
+    }
+    window.addEventListener("click", closeMenu);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("click", closeMenu);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [taskContextMenu]);
 
   useEffect(() => {
     if (!authUser) return;
@@ -2496,7 +2564,7 @@ export function AgentWorkspace() {
 
   async function deleteTaskFromLibrary(taskId: string) {
     const task = tasks.find((item) => item.id === taskId);
-    const title = task ? getUserVisiblePrompt(task.prompt) : "这个任务";
+    const title = task ? getTaskDisplayTitle(task) : "这个任务";
     if (!window.confirm(`确认删除「${title}」？任务交付物也会从本地库中移除。`)) return;
     const response = await fetch(`/api/tasks/${taskId}`, { method: "DELETE" });
     if (!response.ok) {
@@ -2506,6 +2574,129 @@ export function AgentWorkspace() {
     }
     setTasks((current) => current.filter((item) => item.id !== taskId));
     setActiveTask((current) => (current?.id === taskId ? null : current));
+    setSelectedTaskIds((current) => current.filter((id) => id !== taskId));
+  }
+
+  async function renameRecentTask(taskId: string) {
+    const task = tasks.find((item) => item.id === taskId);
+    if (!task) return;
+    const nextTitle = window.prompt("修改任务标题", getTaskDisplayTitle(task));
+    if (nextTitle === null) return;
+    const response = await fetch(`/api/tasks/${taskId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: nextTitle })
+    });
+    if (!response.ok) {
+      const data = await readJson<{ error?: string }>(response, {});
+      setError(data.error ?? "修改任务标题失败");
+      return;
+    }
+    const updated = await readJson<Task>(response);
+    setTasks((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+    setActiveTask((current) => (current?.id === updated.id ? updated : current));
+  }
+
+  async function moveRecentTaskToFolder(taskId: string, folderId: string | null) {
+    const response = await fetch(`/api/tasks/${taskId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ folderId })
+    });
+    if (!response.ok) {
+      const data = await readJson<{ error?: string }>(response, {});
+      setError(data.error ?? "移动任务失败");
+      return;
+    }
+    const updated = await readJson<Task>(response);
+    setTasks((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+    setActiveTask((current) => (current?.id === updated.id ? updated : current));
+    if (folderId) {
+      setExpandedTaskFolderIds((current) =>
+        current.includes(folderId) ? current : [...current, folderId]
+      );
+    }
+  }
+
+  async function createRecentTaskFolder() {
+    const name = window.prompt("新建文件夹名称", "新文件夹");
+    if (!name) return;
+    const response = await fetch("/api/task-folders", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name })
+    });
+    if (!response.ok) {
+      const data = await readJson<{ error?: string }>(response, {});
+      setError(data.error ?? "创建文件夹失败");
+      return;
+    }
+    const folder = await readJson<TaskFolder>(response);
+    setTaskFolders((current) => [...current, folder]);
+    setExpandedTaskFolderIds((current) => [...new Set([...current, folder.id])]);
+  }
+
+  async function renameRecentTaskFolder(folderId: string) {
+    const folder = taskFolders.find((item) => item.id === folderId);
+    if (!folder) return;
+    const name = window.prompt("修改文件夹名称", folder.name);
+    if (!name) return;
+    const response = await fetch(`/api/task-folders/${folderId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name })
+    });
+    if (!response.ok) {
+      const data = await readJson<{ error?: string }>(response, {});
+      setError(data.error ?? "修改文件夹失败");
+      return;
+    }
+    const updated = await readJson<TaskFolder>(response);
+    setTaskFolders((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+  }
+
+  async function deleteRecentTaskFolder(folderId: string) {
+    const folder = taskFolders.find((item) => item.id === folderId);
+    if (!folder) return;
+    if (!window.confirm(`确认删除文件夹「${folder.name}」？文件夹内任务会移回未归档。`)) return;
+    const response = await fetch(`/api/task-folders/${folderId}`, { method: "DELETE" });
+    if (!response.ok) {
+      const data = await readJson<{ error?: string }>(response, {});
+      setError(data.error ?? "删除文件夹失败");
+      return;
+    }
+    setTaskFolders((current) => current.filter((item) => item.id !== folderId));
+    setTasks((current) =>
+      current.map((task) => (task.folderId === folderId ? { ...task, folderId: undefined } : task))
+    );
+    setExpandedTaskFolderIds((current) => current.filter((id) => id !== folderId));
+  }
+
+  async function deleteSelectedRecentTasks() {
+    const taskIds = selectedTaskIds.filter((taskId) => tasks.some((task) => task.id === taskId));
+    if (taskIds.length === 0) return;
+    if (!window.confirm(`确认删除选中的 ${taskIds.length} 个任务？运行中的任务会自动跳过。`)) return;
+    const response = await fetch("/api/tasks/batch-delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ taskIds })
+    });
+    const data = await readJson<{ deleted?: string[]; failed?: Array<{ taskId: string; error: string }>; error?: string }>(
+      response,
+      {}
+    );
+    if (!response.ok) {
+      setError(data.error ?? "批量删除失败");
+      return;
+    }
+    const deleted = new Set(data.deleted ?? []);
+    setTasks((current) => current.filter((task) => !deleted.has(task.id)));
+    setActiveTask((current) => (current && deleted.has(current.id) ? null : current));
+    setSelectedTaskIds([]);
+    setBulkTaskMode(false);
+    if (data.failed?.length) {
+      setError(`已删除 ${deleted.size} 个任务，${data.failed.length} 个任务未删除。`);
+    }
   }
 
   async function deleteUploadedFileFromLibrary(fileId: string) {
@@ -2767,6 +2958,268 @@ export function AgentWorkspace() {
     return `panel-section ${activeNav === view ? "is-focused" : ""}`;
   }
 
+  function openTaskContextMenu(event: MouseEvent, taskId: string) {
+    event.preventDefault();
+    event.stopPropagation();
+    setTaskContextMenu({ taskId, x: event.clientX, y: event.clientY });
+  }
+
+  function toggleTaskSelection(taskId: string) {
+    setSelectedTaskIds((current) =>
+      current.includes(taskId) ? current.filter((id) => id !== taskId) : [...current, taskId]
+    );
+  }
+
+  function toggleTaskFolder(folderId: string) {
+    setExpandedTaskFolderIds((current) =>
+      current.includes(folderId) ? current.filter((id) => id !== folderId) : [...current, folderId]
+    );
+  }
+
+  function handleTaskDragStart(event: DragEvent, taskId: string) {
+    event.dataTransfer.setData("text/plain", taskId);
+    event.dataTransfer.effectAllowed = "move";
+  }
+
+  function handleTaskFolderDrop(event: DragEvent, folderId: string | null) {
+    event.preventDefault();
+    const taskId = event.dataTransfer.getData("text/plain");
+    if (!taskId) return;
+    void moveRecentTaskToFolder(taskId, folderId);
+  }
+
+  function renderRecentTaskItem(task: Task) {
+    const selected = selectedTaskIds.includes(task.id);
+    return (
+      <div
+        key={task.id}
+        className={`recent-task-row ${activeTask?.id === task.id ? "is-active" : ""} ${
+          selected ? "is-selected" : ""
+        }`}
+        draggable
+        onDragStart={(event) => handleTaskDragStart(event, task.id)}
+        onContextMenu={(event) => openTaskContextMenu(event, task.id)}
+      >
+        {bulkTaskMode ? (
+          <input
+            type="checkbox"
+            aria-label={`选择任务 ${getTaskDisplayTitle(task)}`}
+            checked={selected}
+            onChange={() => toggleTaskSelection(task.id)}
+            onClick={(event) => event.stopPropagation()}
+          />
+        ) : null}
+        <button
+          type="button"
+          className="task-list-button"
+          onClick={() => {
+            if (bulkTaskMode) {
+              toggleTaskSelection(task.id);
+              return;
+            }
+            setActiveNav("agent");
+            void selectTask(task.id);
+          }}
+        >
+          <span className={`status-dot ${task.status}`} />
+          <span>
+            <span className="task-title">{getTaskDisplayTitle(task)}</span>
+            <span className="task-meta">
+              {statusText[task.status]} · {formatDate(task.createdAt)}
+            </span>
+          </span>
+        </button>
+        <button
+          type="button"
+          className="icon-button recent-task-menu-button"
+          aria-label={`打开任务菜单 ${getTaskDisplayTitle(task)}`}
+          onClick={(event) => openTaskContextMenu(event, task.id)}
+        >
+          <MoreHorizontal size={13} />
+        </button>
+      </div>
+    );
+  }
+
+  function renderRecentTaskContextMenu() {
+    if (!taskContextMenu) return null;
+    const task = tasks.find((item) => item.id === taskContextMenu.taskId);
+    if (!task) return null;
+    const canDelete = task.status !== "running" && task.status !== "queued";
+
+    return (
+      <div
+        className="task-context-menu"
+        style={{ left: taskContextMenu.x, top: taskContextMenu.y }}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <button
+          type="button"
+          onClick={() => {
+            setTaskContextMenu(null);
+            void renameRecentTask(task.id);
+          }}
+        >
+          <Pencil size={13} />
+          修改标题
+        </button>
+        <button
+          type="button"
+          disabled={!canDelete}
+          onClick={() => {
+            setTaskContextMenu(null);
+            void deleteTaskFromLibrary(task.id);
+          }}
+        >
+          <Trash2 size={13} />
+          删除任务
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setBulkTaskMode(true);
+            setSelectedTaskIds((current) => (current.includes(task.id) ? current : [...current, task.id]));
+            setTaskContextMenu(null);
+          }}
+        >
+          <CheckCircle2 size={13} />
+          批量删除任务
+        </button>
+        <div className="task-context-divider" />
+        <span className="task-context-label">移动到</span>
+        {task.folderId ? (
+          <button
+            type="button"
+            onClick={() => {
+              setTaskContextMenu(null);
+              void moveRecentTaskToFolder(task.id, null);
+            }}
+          >
+            <Folder size={13} />
+            未归档
+          </button>
+        ) : null}
+        {taskFolders.length ? (
+          taskFolders.map((folder) => (
+            <button
+              key={folder.id}
+              type="button"
+              disabled={task.folderId === folder.id}
+              onClick={() => {
+                setTaskContextMenu(null);
+                void moveRecentTaskToFolder(task.id, folder.id);
+              }}
+            >
+              <Folder size={13} />
+              {folder.name}
+            </button>
+          ))
+        ) : (
+          <span className="task-context-empty">还没有文件夹</span>
+        )}
+      </div>
+    );
+  }
+
+  function renderRecentTaskFolders() {
+    const visibleTaskIds = new Set(visibleTasks.map((task) => task.id));
+    const visibleFolders = taskFolders
+      .map((folder) => ({
+        folder,
+        tasks: tasks.filter((task) => task.folderId === folder.id && visibleTaskIds.has(task.id))
+      }))
+      .filter((item) => item.tasks.length > 0 || !taskQuery.trim());
+    const unfiledTasks = visibleTasks.filter(
+      (task) => !task.folderId || !taskFolders.some((folder) => folder.id === task.folderId)
+    );
+
+    if (visibleTasks.length === 0 && taskFolders.length === 0) {
+      return <p className="muted-note">还没有任务。</p>;
+    }
+
+    return (
+      <div className="recent-task-manager">
+        {bulkTaskMode ? (
+          <div className="recent-bulk-bar">
+            <span>已选 {selectedTaskIds.length}</span>
+            <button
+              type="button"
+              className="ghost-button compact-button"
+              onClick={() => {
+                setBulkTaskMode(false);
+                setSelectedTaskIds([]);
+              }}
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              className="danger-button compact-button"
+              disabled={selectedTaskIds.length === 0}
+              onClick={() => void deleteSelectedRecentTasks()}
+            >
+              删除
+            </button>
+          </div>
+        ) : null}
+
+        {visibleFolders.map(({ folder, tasks: folderTasks }) => {
+          const expanded = expandedTaskFolderIds.includes(folder.id);
+          return (
+            <div
+              key={folder.id}
+              className="recent-folder"
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={(event) => handleTaskFolderDrop(event, folder.id)}
+            >
+              <div className="recent-folder-head">
+                <button type="button" className="recent-folder-button" onClick={() => toggleTaskFolder(folder.id)}>
+                  <Folder size={14} />
+                  <span>{folder.name}</span>
+                  <em>{folderTasks.length}</em>
+                </button>
+                <button
+                  type="button"
+                  className="icon-button recent-task-menu-button"
+                  aria-label={`重命名文件夹 ${folder.name}`}
+                  onClick={() => void renameRecentTaskFolder(folder.id)}
+                >
+                  <Pencil size={12} />
+                </button>
+                <button
+                  type="button"
+                  className="icon-button recent-task-menu-button"
+                  aria-label={`删除文件夹 ${folder.name}`}
+                  onClick={() => void deleteRecentTaskFolder(folder.id)}
+                >
+                  <Trash2 size={12} />
+                </button>
+              </div>
+              {expanded ? (
+                <div className="recent-folder-body">
+                  {folderTasks.length ? folderTasks.map(renderRecentTaskItem) : (
+                    <p className="muted-note">拖拽任务到这里。</p>
+                  )}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+
+        <div
+          className="recent-unfiled-drop"
+          onDragOver={(event) => event.preventDefault()}
+          onDrop={(event) => handleTaskFolderDrop(event, null)}
+        >
+          {taskFolders.length ? <span className="recent-group-label">未归档</span> : null}
+          {unfiledTasks.length ? unfiledTasks.slice(0, 50).map(renderRecentTaskItem) : (
+            <p className="muted-note">没有未归档任务。</p>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   function renderTaskLibrary() {
     if (tasks.length === 0) {
       return <p className="muted-note">还没有历史任务，先从工作台创建一个新任务。</p>;
@@ -2786,7 +3239,7 @@ export function AgentWorkspace() {
             >
               <span className={`status-dot ${task.status}`} />
               <span>
-                <strong>{getUserVisiblePrompt(task.prompt)}</strong>
+                <strong>{getTaskDisplayTitle(task)}</strong>
                 <small>
                   {statusText[task.status]} · {task.model} · {formatDate(task.createdAt)}
                 </small>
@@ -2795,7 +3248,7 @@ export function AgentWorkspace() {
             <button
               type="button"
               className="icon-button library-delete-button"
-              aria-label={`删除任务 ${getUserVisiblePrompt(task.prompt)}`}
+              aria-label={`删除任务 ${getTaskDisplayTitle(task)}`}
               disabled={task.status === "running" || task.status === "queued"}
               title={task.status === "running" || task.status === "queued" ? "运行中的任务需要先停止" : "删除任务"}
               onClick={() => void deleteTaskFromLibrary(task.id)}
@@ -3394,13 +3847,122 @@ export function AgentWorkspace() {
   }
 
   function renderLibraryView() {
+    const marketplaceCount = marketplaceTotal || marketplaceTemplates.length;
+    const libraryStatusCards = [
+      {
+        label: "历史任务",
+        value: String(tasks.length),
+        meta: `${completedTaskCount} 已完成 · ${runningTaskCount} 运行中`,
+        icon: <Archive size={15} />
+      },
+      {
+        label: "上传文件",
+        value: String(libraryFiles.length),
+        meta: libraryFiles[0]?.name ?? "暂无文件",
+        icon: <FileText size={15} />
+      },
+      {
+        label: "模板",
+        value: String(templates.length),
+        meta: `${templates.filter((template) => template.isPublic).length} 公共`,
+        icon: <BookmarkPlus size={15} />
+      },
+      {
+        label: "模板市场",
+        value: String(marketplaceCount),
+        meta: `${marketplaceTemplates.length} 当前页`,
+        icon: <Sparkles size={15} />
+      },
+      {
+        label: "Billing",
+        value: billingSummary ? formatUsd(billingSummary.estimatedCostUsd) : "$0.0000",
+        meta: billingSummary ? `${billingSummary.totalTokens.toLocaleString()} tokens` : "等待统计",
+        icon: <FileSpreadsheet size={15} />
+      }
+    ];
+    const librarySections: Array<{
+      id: LibrarySectionId;
+      label: string;
+      description: string;
+      keywords: string[];
+      status: string;
+      icon: ReactNode;
+      render: () => ReactNode;
+    }> = [
+      {
+        id: "tasks",
+        label: "历史任务",
+        description: "查看、搜索和删除历史任务，快速回到任务执行详情。",
+        keywords: ["task", "任务", "历史", "执行", "删除", "agent"],
+        status: String(tasks.length),
+        icon: <Archive size={15} />,
+        render: renderTaskLibrary
+      },
+      {
+        id: "files",
+        label: "上传文件",
+        description: "管理网页上传和桌面端同步的文件，查看摘要和清理无用文件。",
+        keywords: ["file", "文件", "上传", "pdf", "excel", "desktop", "my computer"],
+        status: String(libraryFiles.length),
+        icon: <FileText size={15} />,
+        render: renderUploadedFileLibrary
+      },
+      {
+        id: "templates",
+        label: "模板",
+        description: "保存当前任务为模板，复用 Prompt，并发布或下架自己的公共模板。",
+        keywords: ["template", "模板", "prompt", "复用", "发布", "下架"],
+        status: String(templates.length),
+        icon: <BookmarkPlus size={15} />,
+        render: renderTemplatePanel
+      },
+      {
+        id: "marketplace",
+        label: "模板市场",
+        description: "浏览公共模板、Fork 到个人库、评分并通过页码跳转。",
+        keywords: ["marketplace", "市场", "公共", "fork", "评分", "模板"],
+        status: String(marketplaceCount),
+        icon: <Sparkles size={15} />,
+        render: renderMarketplacePanel
+      },
+      {
+        id: "org",
+        label: "组织协作",
+        description: "管理组织空间、成员、邀请链接和共享任务入口。",
+        keywords: ["organization", "组织", "协作", "成员", "邀请", "权限"],
+        status: activeOrganization ? organizationRoleText[activeOrganization.role ?? "member"] : "private",
+        icon: <ShieldCheck size={15} />,
+        render: renderOrganizationPanel
+      },
+      {
+        id: "billing",
+        label: "Billing",
+        description: "查看本月模型成本、调用量、tokens 和任务级消耗。",
+        keywords: ["billing", "cost", "费用", "成本", "tokens", "调用"],
+        status: billingSummary ? formatUsd(billingSummary.estimatedCostUsd) : "$0.0000",
+        icon: <FileSpreadsheet size={15} />,
+        render: () => <BillingPanel summary={billingSummary} />
+      }
+    ];
+    const normalizedLibrarySearch = librarySearch.trim().toLowerCase();
+    const activeSection =
+      librarySections.find((section) => section.id === activeLibrarySection) ?? librarySections[0];
+    const visibleLibrarySections = normalizedLibrarySearch
+      ? librarySections.filter((section) =>
+          [section.label, section.description, section.status, ...section.keywords]
+            .join(" ")
+            .toLowerCase()
+            .includes(normalizedLibrarySearch)
+        )
+      : [activeSection];
+
     return (
       <div className="view-page">
         <div className="view-header">
           <div>
             <div className="empty-kicker">Library</div>
             <h1>任务资产库</h1>
-            <p>集中管理历史任务、可复用模板、交付物线索和本月模型成本。</p>
+            <p>按资产类型管理历史任务、上传文件、模板、市场、组织协作和模型成本。</p>
           </div>
           <button type="button" className="secondary-button" onClick={() => navigateTo("workspace")}>
             <Plus size={15} />
@@ -3408,71 +3970,86 @@ export function AgentWorkspace() {
           </button>
         </div>
 
-        <div className="library-stats view-stats">
-          <div className="stat-box">
-            <div className="stat-value">{tasks.length}</div>
-            <div className="stat-label">总任务</div>
-          </div>
-          <div className="stat-box">
-            <div className="stat-value">{runningTaskCount}</div>
-            <div className="stat-label">运行中</div>
-          </div>
-          <div className="stat-box">
-            <div className="stat-value">{completedTaskCount}</div>
-            <div className="stat-label">已完成</div>
-          </div>
-          <div className="stat-box">
-            <div className="stat-value">{templates.length}</div>
-            <div className="stat-label">模板</div>
-          </div>
+        <div className="settings-status-grid library-status-grid">
+          {libraryStatusCards.map((card) => (
+            <div className="settings-status-card" key={card.label}>
+              <span>{card.icon}</span>
+              <div>
+                <strong>{card.value}</strong>
+                <small>{card.label} · {card.meta}</small>
+              </div>
+            </div>
+          ))}
         </div>
 
-        <section className="section-panel">
-          <div className="panel-title">
-            <ShieldCheck size={14} />
-            组织协作
+        <div className="settings-center-layout library-center-layout">
+          <aside className="settings-index library-index" aria-label="Library 目录">
+            <label className="settings-search">
+              <Search size={14} />
+              <input
+                value={librarySearch}
+                onChange={(event) => setLibrarySearch(event.target.value)}
+                placeholder="搜索任务、文件、模板、成本"
+              />
+            </label>
+            <nav className="settings-index-list">
+              {librarySections.map((section) => (
+                <button
+                  key={section.id}
+                  type="button"
+                  className={`settings-index-button ${
+                    !normalizedLibrarySearch && section.id === activeSection.id ? "is-active" : ""
+                  }`}
+                  onClick={() => {
+                    setActiveLibrarySection(section.id);
+                    setLibrarySearch("");
+                  }}
+                >
+                  <span>{section.icon}</span>
+                  <span>
+                    <strong>{section.label}</strong>
+                    <small>{section.description}</small>
+                  </span>
+                  <em>{section.status}</em>
+                </button>
+              ))}
+            </nav>
+          </aside>
+
+          <div className="settings-content library-content">
+            {normalizedLibrarySearch ? (
+              <p className="settings-search-note">
+                搜索“{librarySearch}”匹配到 {visibleLibrarySections.length} 个模块。
+              </p>
+            ) : null}
+
+            {visibleLibrarySections.length ? (
+              visibleLibrarySections.map((section) => (
+                <section key={section.id} className="section-panel settings-section-card library-section-card">
+                  <div className="settings-section-heading">
+                    <div>
+                      <span>{section.icon}</span>
+                      <div>
+                        <strong>{section.label}</strong>
+                        <small>{section.description}</small>
+                      </div>
+                    </div>
+                    <em>{section.status}</em>
+                  </div>
+                  {section.render()}
+                </section>
+              ))
+            ) : (
+              <section className="section-panel settings-section-card">
+                <div className="settings-empty-result">
+                  <Search size={18} />
+                  <strong>没有找到相关资产</strong>
+                  <span>换个关键词试试，例如任务、文件、模板、成本、组织。</span>
+                </div>
+              </section>
+            )}
           </div>
-          {renderOrganizationPanel()}
-        </section>
-
-        <div className="view-grid two-columns">
-          <section className="section-panel">
-            <div className="panel-title">历史任务</div>
-            {renderTaskLibrary()}
-          </section>
-          <section className="section-panel">
-            <div className="panel-title">
-              <FileText size={14} />
-              上传文件
-            </div>
-            {renderUploadedFileLibrary()}
-          </section>
         </div>
-
-        <div className="view-grid two-columns">
-          <section className="section-panel">
-            <div className="panel-title">
-              <BookmarkPlus size={14} />
-              模板
-            </div>
-            {renderTemplatePanel()}
-          </section>
-          <section className="section-panel">
-            <div className="panel-title">
-              <FileSpreadsheet size={14} />
-              Billing
-            </div>
-            <BillingPanel summary={billingSummary} />
-          </section>
-        </div>
-
-        <section className="section-panel">
-          <div className="panel-title">
-            <Sparkles size={14} />
-            模板市场
-          </div>
-          {renderMarketplacePanel()}
-        </section>
 
       </div>
     );
@@ -5608,7 +6185,30 @@ export function AgentWorkspace() {
         </nav>
 
         <div className="rail-section recent-section">
-          <div className="section-label">最近任务</div>
+          <div className="section-label recent-section-label">
+            <span>最近任务</span>
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="新建任务文件夹"
+              title="新建任务文件夹"
+              onClick={() => void createRecentTaskFolder()}
+            >
+              <FolderPlus size={14} />
+            </button>
+            <button
+              type="button"
+              className={`icon-button ${bulkTaskMode ? "is-active" : ""}`}
+              aria-label="批量选择任务"
+              title="批量选择任务"
+              onClick={() => {
+                setBulkTaskMode((current) => !current);
+                setSelectedTaskIds([]);
+              }}
+            >
+              <CheckCircle2 size={14} />
+            </button>
+          </div>
           <label className="rail-search">
             <Search size={13} />
             <input
@@ -5617,28 +6217,7 @@ export function AgentWorkspace() {
               placeholder="搜索任务"
             />
           </label>
-          {visibleTasks.length === 0 ? (
-            <p className="muted-note">还没有任务。</p>
-          ) : (
-            visibleTasks.slice(0, 50).map((task) => (
-              <button
-                key={task.id}
-                className={`task-list-button ${activeTask?.id === task.id ? "is-active" : ""}`}
-                onClick={() => {
-                  setActiveNav("agent");
-                  void selectTask(task.id);
-                }}
-              >
-                <span className={`status-dot ${task.status}`} />
-                <span>
-                  <span className="task-title">{getUserVisiblePrompt(task.prompt)}</span>
-                  <span className="task-meta">
-                    {statusText[task.status]} · {formatDate(task.createdAt)}
-                  </span>
-                </span>
-              </button>
-            ))
-          )}
+          {renderRecentTaskFolders()}
         </div>
       </aside>
 
@@ -5721,6 +6300,7 @@ export function AgentWorkspace() {
       </main>
 
       {!hideRightRail ? <aside className="right-rail">{renderRightRail()}</aside> : null}
+      {renderRecentTaskContextMenu()}
     </div>
   );
 }
@@ -5897,7 +6477,7 @@ function TaskDetail({
   isScheduling: boolean;
   onSchedule: (task: Task) => void;
 }) {
-  const visiblePrompt = getUserVisiblePrompt(task.prompt);
+  const visiblePrompt = getTaskDisplayTitle(task);
   const uploadedContext = parsePromptUploadedFiles(task.prompt);
   const usefulEvents = task.events.filter(isUsefulTimelineEvent);
   const artifactCount = task.artifacts.length;
